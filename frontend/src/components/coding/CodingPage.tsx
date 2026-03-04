@@ -9,7 +9,7 @@ import type { PydanticField, Document, Assignment } from "@/lib/types";
 
 interface CodingPageProps {
   projectId: string;
-  documents: (Document & { assignment?: Assignment })[];
+  documents: (Document & { assignment?: Pick<Assignment, "id" | "status"> })[];
   fields: PydanticField[];
   existingAnswers: Record<string, Record<string, any>>; // documentId -> answers
 }
