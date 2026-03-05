@@ -1,3 +1,6 @@
+"use client";
+
+import { useActionState } from "react";
 import { createProject } from "@/actions/projects";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -5,6 +8,8 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
 export default function NewProjectPage() {
+  const [state, formAction, pending] = useActionState(createProject, null);
+
   return (
     <main className="mx-auto max-w-lg p-6">
       <Card>
@@ -12,7 +17,10 @@ export default function NewProjectPage() {
           <CardTitle>Novo Projeto</CardTitle>
         </CardHeader>
         <CardContent>
-          <form action={createProject} className="space-y-4">
+          <form action={formAction} className="space-y-4">
+            {state?.error && (
+              <p className="text-sm text-destructive">{state.error}</p>
+            )}
             <div className="space-y-2">
               <label htmlFor="name" className="text-sm font-medium">
                 Nome do projeto
@@ -37,9 +45,10 @@ export default function NewProjectPage() {
             </div>
             <Button
               type="submit"
+              disabled={pending}
               className="w-full bg-brand hover:bg-brand/90 text-brand-foreground"
             >
-              Criar Projeto
+              {pending ? "Criando..." : "Criar Projeto"}
             </Button>
           </form>
         </CardContent>

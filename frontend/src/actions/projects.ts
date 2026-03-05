@@ -4,12 +4,12 @@ import { createSupabaseServer } from "@/lib/supabase/server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 
-export async function createProject(formData: FormData) {
+export async function createProject(_prev: unknown, formData: FormData) {
   const supabase = await createSupabaseServer();
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) throw new Error("Not authenticated");
+  if (!user) return { error: "Não autenticado" };
 
   const name = formData.get("name") as string;
   const description = formData.get("description") as string;
@@ -20,7 +20,7 @@ export async function createProject(formData: FormData) {
     .select()
     .single();
 
-  if (error) throw new Error(error.message);
+  if (error) return { error: error.message };
 
   // Add creator as coordinator
   const { error: memberError } = await supabase
@@ -31,7 +31,7 @@ export async function createProject(formData: FormData) {
       role: "coordenador",
     });
 
-  if (memberError) throw new Error(memberError.message);
+  if (memberError) return { error: memberError.message };
 
   revalidatePath("/dashboard");
   redirect(`/projects/${project.id}/documents`);
