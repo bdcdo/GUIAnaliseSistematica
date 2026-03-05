@@ -22,7 +22,7 @@ export function QuestionBanner({ fields, currentIndex, answers, onAnswer, onNavi
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key === "ArrowLeft" && currentIndex > 0) onNavigate(currentIndex - 1);
-    if (e.key === "ArrowRight" && currentIndex < fields.length - 1) onNavigate(currentIndex + 1);
+    if (e.key === "ArrowRight" && currentIndex < fields.length) onNavigate(currentIndex + 1);
   }, [currentIndex, fields.length, onNavigate]);
 
   useEffect(() => {
@@ -55,8 +55,8 @@ export function QuestionBanner({ fields, currentIndex, answers, onAnswer, onNavi
           <Button variant="outline" size="sm" onClick={() => onNavigate(currentIndex - 1)} disabled={currentIndex === 0}>
             ← Anterior
           </Button>
-          <Button size="sm" onClick={() => onNavigate(currentIndex + 1)} disabled={currentIndex === fields.length - 1} className="bg-brand hover:bg-brand/90 text-brand-foreground">
-            Próximo →
+          <Button size="sm" onClick={() => onNavigate(currentIndex + 1)} className="bg-brand hover:bg-brand/90 text-brand-foreground">
+            {currentIndex === fields.length - 1 ? "Enviar" : "Próximo →"}
           </Button>
         </div>
       </div>

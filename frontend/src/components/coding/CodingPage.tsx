@@ -94,27 +94,31 @@ export function CodingPage({
   );
 
   const handleQuestionNavigate = useCallback(
-    async (newIndex: number) => {
-      if (currentDoc && Object.keys(docAnswers).length > 0) {
-        try {
-          await saveResponse(projectId, currentDoc.id, docAnswers);
-        } catch (e) {
-          console.error("Failed to save:", e);
+    (newIndex: number) => {
+      // Past last question → save and advance to next document
+      if (newIndex >= fields.length) {
+        if (currentDoc && Object.keys(docAnswers).length > 0) {
+          saveResponse(projectId, currentDoc.id, docAnswers).catch((e) =>
+            console.error("Failed to save:", e)
+          );
         }
+        if (docIndex < documents.length - 1) {
+          setDocIndex(docIndex + 1);
+          setQuestionIndex(0);
+        }
+        return;
       }
-      setQuestionIndex(Math.max(0, Math.min(newIndex, fields.length - 1)));
+      setQuestionIndex(Math.max(0, newIndex));
     },
-    [currentDoc, docAnswers, projectId, fields.length]
+    [currentDoc, docAnswers, projectId, fields.length, docIndex, documents.length]
   );
 
   const handleDocNavigate = useCallback(
-    async (newIndex: number) => {
+    (newIndex: number) => {
       if (currentDoc && Object.keys(docAnswers).length > 0) {
-        try {
-          await saveResponse(projectId, currentDoc.id, docAnswers);
-        } catch (e) {
-          console.error("Failed to save:", e);
-        }
+        saveResponse(projectId, currentDoc.id, docAnswers).catch((e) =>
+          console.error("Failed to save:", e)
+        );
       }
       setDocIndex(Math.max(0, Math.min(newIndex, documents.length - 1)));
       setQuestionIndex(0);
@@ -147,66 +151,53 @@ export function CodingPage({
   );
 
   const handleBrowseQuestionNavigate = useCallback(
-    async (newIndex: number) => {
-      if (selectedBrowseDoc && Object.keys(browseAnswers).length > 0) {
-        try {
-          await saveResponse(projectId, selectedBrowseDoc.id, browseAnswers);
-        } catch (e) {
-          console.error("Failed to save:", e);
-        }
-      }
-
-      // Check if all fields answered and navigating past the last question
+    (newIndex: number) => {
+      // Past last question → save and go back to picker
       if (newIndex >= fields.length && selectedBrowseDoc) {
-        const allAnswered = fields.every(
-          (f) =>
-            browseAnswers[f.name] !== undefined &&
-            browseAnswers[f.name] !== null &&
-            browseAnswers[f.name] !== ""
-        );
-        if (allAnswered) {
-          // Update local browse doc list
-          setBrowseDocuments((prev) =>
-            prev?.map((d) =>
-              d.id === selectedBrowseDoc.id
-                ? {
-                    ...d,
-                    responseCount: d.userAlreadyResponded
-                      ? d.responseCount
-                      : d.responseCount + 1,
-                    userAlreadyResponded: true,
-                  }
-                : d
-            ) ?? null
+        if (Object.keys(browseAnswers).length > 0) {
+          saveResponse(projectId, selectedBrowseDoc.id, browseAnswers).catch((e) =>
+            console.error("Failed to save:", e)
           );
-          // Go back to picker
-          setSelectedBrowseDoc(null);
-          setBrowseAnswers({});
-          setBrowseQuestionIndex(0);
-          return;
         }
-      }
-
-      setBrowseQuestionIndex(Math.max(0, Math.min(newIndex, fields.length - 1)));
-    },
-    [selectedBrowseDoc, browseAnswers, projectId, fields]
-  );
-
-  const handleBrowseBack = useCallback(async () => {
-    if (selectedBrowseDoc && Object.keys(browseAnswers).length > 0) {
-      try {
-        await saveResponse(projectId, selectedBrowseDoc.id, browseAnswers);
-        // Update local state
+        // Update local browse doc list
         setBrowseDocuments((prev) =>
           prev?.map((d) =>
             d.id === selectedBrowseDoc.id
-              ? { ...d, userAlreadyResponded: true }
+              ? {
+                  ...d,
+                  responseCount: d.userAlreadyResponded
+                    ? d.responseCount
+                    : d.responseCount + 1,
+                  userAlreadyResponded: true,
+                }
               : d
           ) ?? null
         );
-      } catch (e) {
-        console.error("Failed to save:", e);
+        // Go back to picker
+        setSelectedBrowseDoc(null);
+        setBrowseAnswers({});
+        setBrowseQuestionIndex(0);
+        return;
       }
+
+      setBrowseQuestionIndex(Math.max(0, newIndex));
+    },
+    [selectedBrowseDoc, browseAnswers, projectId, fields.length]
+  );
+
+  const handleBrowseBack = useCallback(() => {
+    if (selectedBrowseDoc && Object.keys(browseAnswers).length > 0) {
+      saveResponse(projectId, selectedBrowseDoc.id, browseAnswers)
+        .then(() => {
+          setBrowseDocuments((prev) =>
+            prev?.map((d) =>
+              d.id === selectedBrowseDoc.id
+                ? { ...d, userAlreadyResponded: true }
+                : d
+            ) ?? null
+          );
+        })
+        .catch((e) => console.error("Failed to save:", e));
     }
     setSelectedBrowseDoc(null);
     setBrowseAnswers({});
