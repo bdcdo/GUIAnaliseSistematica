@@ -14,20 +14,20 @@ interface MemberListProps {
 
 export function MemberList({ projectId, members, currentUserId }: MemberListProps) {
   const handleRemove = async (memberId: string) => {
-    try {
-      await removeMember(projectId, memberId);
+    const result = await removeMember(projectId, memberId);
+    if (result?.error) {
+      toast.error(result.error);
+    } else {
       toast.success("Membro removido");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Erro desconhecido");
     }
   };
 
   const handleChangeRole = async (memberId: string, newRole: "coordenador" | "pesquisador") => {
-    try {
-      await changeRole(memberId, newRole, projectId);
+    const result = await changeRole(memberId, newRole, projectId);
+    if (result?.error) {
+      toast.error(result.error);
+    } else {
       toast.success("Papel atualizado");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Erro desconhecido");
     }
   };
 

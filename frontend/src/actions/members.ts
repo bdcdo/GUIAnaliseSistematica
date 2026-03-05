@@ -18,7 +18,7 @@ export async function addMember(
     .single();
 
   if (!profile) {
-    throw new Error("Usuário não encontrado. O email precisa estar cadastrado.");
+    return { error: "Usuário não encontrado. O email precisa estar cadastrado." };
   }
 
   const { error } = await supabase.from("project_members").insert({
@@ -29,9 +29,9 @@ export async function addMember(
 
   if (error) {
     if (error.code === "23505") {
-      throw new Error("Usuário já é membro deste projeto.");
+      return { error: "Usuário já é membro deste projeto." };
     }
-    throw new Error(error.message);
+    return { error: error.message };
   }
 
   revalidatePath(`/projects/${projectId}`);
@@ -44,7 +44,7 @@ export async function removeMember(projectId: string, memberId: string) {
     .delete()
     .eq("id", memberId);
 
-  if (error) throw new Error(error.message);
+  if (error) return { error: error.message };
   revalidatePath(`/projects/${projectId}`);
 }
 
@@ -59,6 +59,6 @@ export async function changeRole(
     .update({ role })
     .eq("id", memberId);
 
-  if (error) throw new Error(error.message);
+  if (error) return { error: error.message };
   revalidatePath(`/projects/${projectId}`);
 }

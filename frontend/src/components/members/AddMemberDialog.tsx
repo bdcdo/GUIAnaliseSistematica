@@ -19,13 +19,13 @@ export function AddMemberDialog({ projectId }: AddMemberDialogProps) {
 
   const handleAdd = async () => {
     setLoading(true);
-    try {
-      await addMember(projectId, email, role);
+    const result = await addMember(projectId, email, role);
+    if (result?.error) {
+      toast.error(result.error);
+    } else {
       toast.success("Membro adicionado!");
       setEmail("");
       setOpen(false);
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "Erro desconhecido");
     }
     setLoading(false);
   };

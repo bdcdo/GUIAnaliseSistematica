@@ -12,7 +12,8 @@ interface DocumentRow {
 
 export async function uploadDocuments(
   projectId: string,
-  documents: DocumentRow[]
+  documents: DocumentRow[],
+  revalidate: boolean = true
 ) {
   const supabase = await createSupabaseServer();
 
@@ -24,15 +25,10 @@ export async function uploadDocuments(
     metadata: doc.metadata || null,
   }));
 
-  // Batch insert in chunks of 100
-  const chunkSize = 100;
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    const chunk = rows.slice(i, i + chunkSize);
-    const { error } = await supabase.from("documents").insert(chunk);
-    if (error) throw new Error(error.message);
-  }
+  const { error } = await supabase.from("documents").insert(rows);
+  if (error) return { error: error.message };
 
-  revalidatePath(`/projects/${projectId}/documents`);
+  if (revalidate) revalidatePath(`/projects/${projectId}/documents`);
   return { count: rows.length };
 }
 
@@ -43,6 +39,6 @@ export async function deleteDocument(projectId: string, documentId: string) {
     .delete()
     .eq("id", documentId);
 
-  if (error) throw new Error(error.message);
+  if (error) return { error: error.message };
   revalidatePath(`/projects/${projectId}/documents`);
 }

@@ -13,20 +13,23 @@ interface DocumentUploadProps {
 
 export function DocumentUpload({ projectId }: DocumentUploadProps) {
   const [loading, setLoading] = useState(false);
-  const [preview, setPreview] = useState<Record<string, string>[] | null>(null);
+  const [parsedData, setParsedData] = useState<Record<string, string>[] | null>(null);
   const [columns, setColumns] = useState<string[]>([]);
   const [mapping, setMapping] = useState<{ text: string; title: string; external_id: string }>({
     text: "",
     title: "",
     external_id: "",
   });
+  const [progress, setProgress] = useState<{ current: number; total: number } | null>(null);
+
+  const preview = parsedData?.slice(0, 5) ?? null;
 
   const handleFile = useCallback((file: File) => {
     Papa.parse(file, {
       header: true,
       complete: (results) => {
         const data = results.data as Record<string, string>[];
-        setPreview(data.slice(0, 5));
+        setParsedData(data);
         const cols = results.meta.fields || [];
         setColumns(cols);
         setMapping({ text: "", title: "", external_id: "" });
@@ -41,36 +44,40 @@ export function DocumentUpload({ projectId }: DocumentUploadProps) {
   }, [handleFile]);
 
   const handleUpload = async () => {
-    if (!preview || !mapping.text) return;
+    if (!parsedData || !mapping.text) return;
+
+    const docs = parsedData
+      .filter((row) => row[mapping.text]?.trim())
+      .map((row) => ({
+        text: row[mapping.text],
+        title: mapping.title ? row[mapping.title] : undefined,
+        external_id: mapping.external_id ? row[mapping.external_id] : undefined,
+      }));
+
+    if (docs.length === 0) {
+      toast.error("Nenhum documento válido encontrado");
+      return;
+    }
+
     setLoading(true);
+    setProgress({ current: 0, total: docs.length });
 
     try {
-      // Re-parse full file would be needed here, using preview for now
-      // In production, store the full parsed data
-      const file = (document.querySelector('input[type="file"]') as HTMLInputElement)?.files?.[0];
-      if (!file) return;
-
-      Papa.parse(file, {
-        header: true,
-        complete: async (results) => {
-          const data = results.data as Record<string, string>[];
-          const docs = data
-            .filter((row) => row[mapping.text]?.trim())
-            .map((row) => ({
-              text: row[mapping.text],
-              title: mapping.title ? row[mapping.title] : undefined,
-              external_id: mapping.external_id ? row[mapping.external_id] : undefined,
-            }));
-
-          const result = await uploadDocuments(projectId, docs);
-          toast.success(`${result.count} documentos importados!`);
-          setPreview(null);
-          setLoading(false);
-        },
-      });
+      const chunkSize = 100;
+      for (let i = 0; i < docs.length; i += chunkSize) {
+        const chunk = docs.slice(i, i + chunkSize);
+        const isLast = i + chunkSize >= docs.length;
+        const result = await uploadDocuments(projectId, chunk, isLast);
+        if (result.error) throw new Error(result.error);
+        setProgress({ current: Math.min(i + chunkSize, docs.length), total: docs.length });
+      }
+      toast.success(`${docs.length} documentos importados!`);
+      setParsedData(null);
     } catch (e) {
-      toast.error("Erro ao importar documentos");
+      toast.error(e instanceof Error ? e.message : "Erro ao importar documentos");
+    } finally {
       setLoading(false);
+      setProgress(null);
     }
   };
 
@@ -149,7 +156,9 @@ export function DocumentUpload({ projectId }: DocumentUploadProps) {
             </table>
           </div>
           <Button onClick={handleUpload} disabled={loading || !mapping.text} className="bg-brand hover:bg-brand/90 text-brand-foreground">
-            {loading ? "Importando..." : "Importar"}
+            {loading
+              ? progress ? `Importando ${progress.current}/${progress.total}...` : "Importando..."
+              : "Importar"}
           </Button>
         </div>
       )}
