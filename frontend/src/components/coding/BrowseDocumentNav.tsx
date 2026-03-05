@@ -2,13 +2,14 @@
 
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ArrowLeft, Shuffle } from "lucide-react";
+import { ArrowLeft, Shuffle, Maximize2 } from "lucide-react";
 
 interface BrowseDocumentNavProps {
   title: string;
   responseCount: number;
   onBack: () => void;
   onRandom: () => void;
+  onToggleFullscreen?: () => void;
 }
 
 export function BrowseDocumentNav({
@@ -16,6 +17,7 @@ export function BrowseDocumentNav({
   responseCount,
   onBack,
   onRandom,
+  onToggleFullscreen,
 }: BrowseDocumentNavProps) {
   return (
     <div className="flex h-8 items-center justify-between border-b px-4 text-sm">
@@ -42,6 +44,11 @@ export function BrowseDocumentNav({
         >
           <Shuffle className="h-4 w-4" />
         </Button>
+        {onToggleFullscreen && (
+          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onToggleFullscreen}>
+            <Maximize2 className="h-3.5 w-3.5" />
+          </Button>
+        )}
       </div>
     </div>
   );

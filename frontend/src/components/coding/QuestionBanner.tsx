@@ -13,9 +13,10 @@ interface QuestionBannerProps {
   answers: Record<string, any>;
   onAnswer: (fieldName: string, value: any) => void;
   onNavigate: (index: number) => void;
+  isFullscreen?: boolean;
 }
 
-export function QuestionBanner({ fields, currentIndex, answers, onAnswer, onNavigate }: QuestionBannerProps) {
+export function QuestionBanner({ fields, currentIndex, answers, onAnswer, onNavigate, isFullscreen }: QuestionBannerProps) {
   const field = fields[currentIndex];
   const answered = fields.map((f) => answers[f.name] !== undefined && answers[f.name] !== null && answers[f.name] !== "");
 
@@ -34,7 +35,7 @@ export function QuestionBanner({ fields, currentIndex, answers, onAnswer, onNavi
   return (
     <div className="border-t bg-card">
       <ProgressDots total={fields.length} currentIndex={currentIndex} answered={answered} onNavigate={onNavigate} />
-      <div className="max-h-[40vh] overflow-y-auto px-4 pb-4">
+      <div className={`overflow-y-auto px-4 pb-4 ${isFullscreen ? "max-h-[30vh]" : "max-h-[40vh]"}`}>
         <AnimatePresence mode="wait">
           <motion.div
             key={field.name}

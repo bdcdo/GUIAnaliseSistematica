@@ -7,6 +7,7 @@ import { DocumentReader } from "./DocumentReader";
 import { QuestionBanner } from "./QuestionBanner";
 import { DocumentPicker } from "./DocumentPicker";
 import { BrowseDocumentNav } from "./BrowseDocumentNav";
+import { FullscreenNav } from "./FullscreenNav";
 import { saveResponse } from "@/actions/responses";
 import { getDocumentsForBrowse, getDocumentForCoding } from "@/actions/documents";
 import type { BrowseDocument } from "@/actions/documents";
@@ -35,6 +36,10 @@ export function CodingPage({
   // Mode state
   const [mode, setMode] = useState<"assigned" | "browse">(hasAssignments ? "assigned" : "browse");
 
+  // Fullscreen state
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const toggleFullscreen = useCallback(() => setIsFullscreen((prev) => !prev), []);
+
   // Browse mode state
   const [browseDocuments, setBrowseDocuments] = useState<BrowseDocument[] | null>(null);
   const [browseLoading, setBrowseLoading] = useState(false);
@@ -58,6 +63,21 @@ export function CodingPage({
         .finally(() => setBrowseLoading(false));
     }
   }, [mode, projectId]);
+
+  // Fullscreen keyboard shortcuts
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && isFullscreen) {
+        setIsFullscreen(false);
+      }
+      if (e.key === "F" && e.ctrlKey && e.shiftKey) {
+        e.preventDefault();
+        setIsFullscreen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  }, [isFullscreen]);
 
   // --- Assigned mode handlers ---
   const currentDoc = documents[docIndex];
@@ -221,24 +241,35 @@ export function CodingPage({
     ? browseDocuments?.find((d) => d.id === selectedBrowseDoc.id)
     : null;
 
+  const assignedTitle = currentDoc?.title || currentDoc?.external_id || "Documento";
+  const browseTitle = selectedBrowseDoc?.title || selectedBrowseDoc?.external_id || "Documento";
+
   return (
-    <div className="flex h-[calc(100vh-88px)] flex-col">
-      <Tabs
-        value={mode}
-        onValueChange={(v) => setMode(v as "assigned" | "browse")}
-        className="shrink-0"
-      >
-        <div className="border-b px-4">
-          <TabsList className="h-9">
-            <TabsTrigger value="assigned" className="text-xs">
-              Atribuídos ({documents.length})
-            </TabsTrigger>
-            <TabsTrigger value="browse" className="text-xs">
-              Explorar
-            </TabsTrigger>
-          </TabsList>
-        </div>
-      </Tabs>
+    <div
+      className={
+        isFullscreen
+          ? "fixed inset-0 z-50 flex flex-col bg-background"
+          : "flex h-[calc(100vh-88px)] flex-col"
+      }
+    >
+      {!isFullscreen && (
+        <Tabs
+          value={mode}
+          onValueChange={(v) => setMode(v as "assigned" | "browse")}
+          className="shrink-0"
+        >
+          <div className="border-b px-4">
+            <TabsList className="h-9">
+              <TabsTrigger value="assigned" className="text-xs">
+                Atribuídos ({documents.length})
+              </TabsTrigger>
+              <TabsTrigger value="browse" className="text-xs">
+                Explorar
+              </TabsTrigger>
+            </TabsList>
+          </div>
+        </Tabs>
+      )}
 
       {mode === "assigned" && (
         <>
@@ -248,14 +279,23 @@ export function CodingPage({
             </div>
           ) : (
             <>
-              <DocumentNav
-                title={
-                  currentDoc.title || currentDoc.external_id || "Documento"
-                }
-                currentIndex={docIndex}
-                total={documents.length}
-                onNavigate={handleDocNavigate}
-              />
+              {isFullscreen ? (
+                <FullscreenNav
+                  title={assignedTitle}
+                  currentIndex={docIndex}
+                  total={documents.length}
+                  onNavigate={handleDocNavigate}
+                  onExit={toggleFullscreen}
+                />
+              ) : (
+                <DocumentNav
+                  title={assignedTitle}
+                  currentIndex={docIndex}
+                  total={documents.length}
+                  onNavigate={handleDocNavigate}
+                  onToggleFullscreen={toggleFullscreen}
+                />
+              )}
               <DocumentReader text={currentDoc.text} />
               <QuestionBanner
                 fields={fields}
@@ -263,6 +303,7 @@ export function CodingPage({
                 answers={docAnswers}
                 onAnswer={handleAnswer}
                 onNavigate={handleQuestionNavigate}
+                isFullscreen={isFullscreen}
               />
             </>
           )}
@@ -282,16 +323,21 @@ export function CodingPage({
             />
           ) : (
             <>
-              <BrowseDocumentNav
-                title={
-                  selectedBrowseDoc.title ||
-                  selectedBrowseDoc.external_id ||
-                  "Documento"
-                }
-                responseCount={browseDocInfo?.responseCount ?? 0}
-                onBack={handleBrowseBack}
-                onRandom={handleBrowseRandom}
-              />
+              {isFullscreen ? (
+                <FullscreenNav
+                  title={browseTitle}
+                  responseCount={browseDocInfo?.responseCount ?? 0}
+                  onExit={toggleFullscreen}
+                />
+              ) : (
+                <BrowseDocumentNav
+                  title={browseTitle}
+                  responseCount={browseDocInfo?.responseCount ?? 0}
+                  onBack={handleBrowseBack}
+                  onRandom={handleBrowseRandom}
+                  onToggleFullscreen={toggleFullscreen}
+                />
+              )}
               <DocumentReader text={selectedBrowseDoc.text} />
               <QuestionBanner
                 fields={fields}
@@ -299,6 +345,7 @@ export function CodingPage({
                 answers={browseAnswers}
                 onAnswer={handleBrowseAnswer}
                 onNavigate={handleBrowseQuestionNavigate}
+                isFullscreen={isFullscreen}
               />
             </>
           )}
