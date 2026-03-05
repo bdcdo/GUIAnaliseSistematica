@@ -19,26 +19,27 @@ export default async function ProjectLayout({
 
   if (!user) redirect("/auth/login");
 
-  const { data: project } = await supabase
-    .from("projects")
-    .select("*")
-    .eq("id", id)
-    .single();
+  const [{ data: project }, { data: membership }, { data: profile }] =
+    await Promise.all([
+      supabase
+        .from("projects")
+        .select("id, name, created_by")
+        .eq("id", id)
+        .single(),
+      supabase
+        .from("project_members")
+        .select("role")
+        .eq("project_id", id)
+        .eq("user_id", user.id)
+        .single(),
+      supabase
+        .from("profiles")
+        .select("first_name")
+        .eq("id", user.id)
+        .single(),
+    ]);
 
   if (!project) notFound();
-
-  const { data: membership } = await supabase
-    .from("project_members")
-    .select("role")
-    .eq("project_id", id)
-    .eq("user_id", user.id)
-    .single();
-
-  const { data: profile } = await supabase
-    .from("profiles")
-    .select("first_name")
-    .eq("id", user.id)
-    .single();
 
   const isCoordinator =
     membership?.role === "coordenador" || project.created_by === user.id;

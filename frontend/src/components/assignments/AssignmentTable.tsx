@@ -6,7 +6,7 @@ import type { Document, ProjectMember, Assignment } from "@/lib/types";
 
 interface AssignmentTableProps {
   projectId: string;
-  documents: Document[];
+  documents: Pick<Document, "id" | "external_id">[];
   researchers: (ProjectMember & { profiles: { first_name: string | null; email: string } })[];
   assignments: Assignment[];
 }

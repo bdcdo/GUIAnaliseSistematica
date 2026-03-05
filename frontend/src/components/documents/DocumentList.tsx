@@ -1,23 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useDeferredValue } from "react";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import type { Document } from "@/lib/types";
 
+type DocumentSummary = Pick<Document, "id" | "external_id" | "title"> & {
+  responseCount?: number;
+};
+
 interface DocumentListProps {
-  documents: (Document & { responseCount?: number })[];
-  onSelect: (doc: Document) => void;
+  documents: DocumentSummary[];
+  onSelect: (doc: DocumentSummary) => void;
 }
 
 export function DocumentList({ documents, onSelect }: DocumentListProps) {
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
 
   const filtered = documents.filter(
     (d) =>
-      (d.title?.toLowerCase().includes(search.toLowerCase()) ||
-        d.external_id?.toLowerCase().includes(search.toLowerCase()) ||
-        d.text.toLowerCase().includes(search.toLowerCase()))
+      (d.title?.toLowerCase().includes(deferredSearch.toLowerCase()) ||
+        d.external_id?.toLowerCase().includes(deferredSearch.toLowerCase()))
   );
 
   return (

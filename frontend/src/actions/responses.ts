@@ -80,4 +80,6 @@ export async function saveResponse(
         .eq("user_id", user.id);
     }
   }
+
+  revalidatePath(`/projects/${projectId}`, "layout");
 }

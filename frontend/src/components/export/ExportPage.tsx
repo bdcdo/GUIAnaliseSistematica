@@ -1,8 +1,13 @@
 "use client";
 
-import ReactMarkdown from "react-markdown";
+import dynamic from "next/dynamic";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+
+const ReactMarkdown = dynamic(() => import("react-markdown"), {
+  ssr: false,
+  loading: () => <div className="h-32 animate-pulse rounded bg-muted" />,
+});
 
 interface ExportPageProps {
   projectId: string;

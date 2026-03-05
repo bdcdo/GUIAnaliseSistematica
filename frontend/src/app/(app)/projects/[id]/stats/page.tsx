@@ -22,40 +22,40 @@ export default async function StatsPage({
     description: string;
   }[];
 
-  // Count assignments
-  const { count: totalAssignments } = await supabase
-    .from("assignments")
-    .select("*", { count: "exact", head: true })
-    .eq("project_id", id);
-
-  const { count: completedAssignments } = await supabase
-    .from("assignments")
-    .select("*", { count: "exact", head: true })
-    .eq("project_id", id)
-    .eq("status", "concluido");
-
-  // Count reviews
-  const { data: reviews } = await supabase
-    .from("reviews")
-    .select("field_name, verdict")
-    .eq("project_id", id);
-
-  // Get question meta for priorities
-  const { data: questionMeta } = await supabase
-    .from("question_meta")
-    .select("field_name, priority")
-    .eq("project_id", id);
+  const [
+    { count: totalAssignments },
+    { count: completedAssignments },
+    { data: reviews },
+    { data: questionMeta },
+    { data: responses },
+  ] = await Promise.all([
+    supabase
+      .from("assignments")
+      .select("*", { count: "exact", head: true })
+      .eq("project_id", id),
+    supabase
+      .from("assignments")
+      .select("*", { count: "exact", head: true })
+      .eq("project_id", id)
+      .eq("status", "concluido"),
+    supabase
+      .from("reviews")
+      .select("field_name, verdict")
+      .eq("project_id", id),
+    supabase
+      .from("question_meta")
+      .select("field_name, priority")
+      .eq("project_id", id),
+    supabase
+      .from("responses")
+      .select("document_id, answers")
+      .eq("project_id", id)
+      .eq("is_current", true),
+  ]);
 
   const priorityMap = new Map(
     questionMeta?.map((q) => [q.field_name, q.priority]) || []
   );
-
-  // Calculate agreement (simplified: % of fields without divergence)
-  const { data: responses } = await supabase
-    .from("responses")
-    .select("document_id, answers")
-    .eq("project_id", id)
-    .eq("is_current", true);
 
   let totalComparisons = 0;
   let agreements = 0;

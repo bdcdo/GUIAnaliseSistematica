@@ -11,22 +11,23 @@ export default async function AssignmentsPage({
   const { id } = await params;
   const supabase = await createSupabaseServer();
 
-  const { data: documents } = await supabase
-    .from("documents")
-    .select("*")
-    .eq("project_id", id)
-    .order("created_at", { ascending: true });
-
-  const { data: researchers } = await supabase
-    .from("project_members")
-    .select("*, profiles(*)")
-    .eq("project_id", id)
-    .eq("role", "pesquisador");
-
-  const { data: assignments } = await supabase
-    .from("assignments")
-    .select("*")
-    .eq("project_id", id);
+  const [{ data: documents }, { data: researchers }, { data: assignments }] =
+    await Promise.all([
+      supabase
+        .from("documents")
+        .select("id, external_id, title")
+        .eq("project_id", id)
+        .order("created_at", { ascending: true }),
+      supabase
+        .from("project_members")
+        .select("*, profiles(*)")
+        .eq("project_id", id)
+        .eq("role", "pesquisador"),
+      supabase
+        .from("assignments")
+        .select("*")
+        .eq("project_id", id),
+    ]);
 
   const typedResearchers = (researchers || []) as unknown as (ProjectMember & {
     profiles: { first_name: string | null; email: string };

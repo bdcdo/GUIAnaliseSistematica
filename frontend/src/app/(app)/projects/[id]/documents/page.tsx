@@ -10,17 +10,17 @@ export default async function DocumentsPage({
   const { id } = await params;
   const supabase = await createSupabaseServer();
 
-  const { data: documents } = await supabase
-    .from("documents")
-    .select("*")
-    .eq("project_id", id)
-    .order("created_at", { ascending: true });
-
-  // Get response counts per document
-  const { data: responseCounts } = await supabase
-    .from("responses")
-    .select("document_id")
-    .eq("project_id", id);
+  const [{ data: documents }, { data: responseCounts }] = await Promise.all([
+    supabase
+      .from("documents")
+      .select("id, external_id, title, created_at")
+      .eq("project_id", id)
+      .order("created_at", { ascending: true }),
+    supabase
+      .from("responses")
+      .select("document_id")
+      .eq("project_id", id),
+  ]);
 
   const countMap = new Map<string, number>();
   responseCounts?.forEach((r: { document_id: string }) => {

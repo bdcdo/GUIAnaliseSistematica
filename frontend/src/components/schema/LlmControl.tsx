@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
@@ -23,6 +23,13 @@ export function LlmControl({ projectId, config: initialConfig }: LlmControlProps
   const [progress, setProgress] = useState(0);
   const [total, setTotal] = useState(0);
   const [status, setStatus] = useState<string>("idle");
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
 
   const handleSave = async () => {
     try {
@@ -47,20 +54,23 @@ export function LlmControl({ projectId, config: initialConfig }: LlmControlProps
     }
   };
 
-  const pollProgress = async (id: string) => {
-    const interval = setInterval(async () => {
+  const pollProgress = (id: string) => {
+    if (intervalRef.current) clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(async () => {
       try {
         const res = await fetchFastAPI<{ status: string; progress: number; total: number; errors: string[] }>(`/api/llm/status/${id}`);
         setProgress(res.progress);
         setTotal(res.total);
         setStatus(res.status);
         if (res.status !== "running") {
-          clearInterval(interval);
+          if (intervalRef.current) clearInterval(intervalRef.current);
+          intervalRef.current = null;
           if (res.status === "completed") toast.success("LLM concluído!");
           if (res.status === "error") toast.error(res.errors[0] || "Erro na execução");
         }
       } catch {
-        clearInterval(interval);
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        intervalRef.current = null;
       }
     }, 2000);
   };
