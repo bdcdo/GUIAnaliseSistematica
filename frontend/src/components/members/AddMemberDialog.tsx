@@ -22,6 +22,10 @@ export function AddMemberDialog({ projectId }: AddMemberDialogProps) {
     const result = await addMember(projectId, email, role);
     if (result?.error) {
       toast.error(result.error);
+    } else if (result?.invited) {
+      toast.success("Convite enviado! O usuário receberá um email para acessar a plataforma.");
+      setEmail("");
+      setOpen(false);
     } else {
       toast.success("Membro adicionado!");
       setEmail("");

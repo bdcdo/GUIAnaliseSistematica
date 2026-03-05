@@ -24,7 +24,7 @@ export default function LoginPage() {
     });
 
     if (error) {
-      toast.error("Erro ao enviar link de login");
+      toast.error(error.message || "Erro ao enviar link de login");
     } else {
       toast.success("Link de login enviado! Verifique seu email.");
     }
