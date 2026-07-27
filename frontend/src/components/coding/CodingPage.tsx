@@ -7,13 +7,13 @@ import { useUrlState } from "@/hooks/useUrlState";
 import { useFieldOrder } from "@/hooks/useFieldOrder";
 import { useAutosaveOnExit } from "@/hooks/useAutosaveOnExit";
 import { useFullscreen } from "@/hooks/useFullscreen";
-import { useDirtyDocs, useIsDocDirty } from "@/hooks/useDirtyDocs";
+import { useDirtyDocs } from "@/hooks/useDirtyDocs";
 import { useCodingDrafts } from "@/hooks/useCodingDrafts";
+import { useCodingDraftWiring } from "./useCodingDraftWiring";
 import {
   CodingDraftBanner,
   CodingDraftUnavailableBanner,
 } from "./CodingDraftBanner";
-import type { CodingSnapshot } from "@/lib/coding-draft";
 import { CodingHeader, type DocSection } from "./CodingHeader";
 import { CodingEmptyStates } from "./CodingEmptyStates";
 import { AssignedCodingView } from "./AssignedCodingView";
@@ -317,63 +317,24 @@ function CodingPageInner({
   );
   useAutosaveOnExit({ activeDocId, getIsDirty, getPayload });
 
-  // --- Rascunho local (#608) ---
-  // O baseline do documento aberto é o que o SERVIDOR entregou, nunca o que está
-  // na tela: é contra ele que se decide se o rascunho ainda vale e o que ele
-  // sobrescreveria. Em Explorar o conteúdo vem do fetch do doc; em Atribuídos,
-  // das props do RSC.
-  const remoteSnapshot: CodingSnapshot | null = useMemo(() => {
-    if (!activeDocId) return null;
-    if (mode === "assigned") {
-      return {
-        answers: existingAnswers[activeDocId] ?? {},
-        notes:
-          typeof existingJustifications[activeDocId]?._notes === "string"
-            ? (existingJustifications[activeDocId]._notes as string)
-            : "",
-      };
-    }
-    const doc = browse.browseDoc;
-    if (!doc || doc.document.id !== activeDocId) return null;
-    return { answers: doc.initialAnswers, notes: doc.initialNotes };
-  }, [activeDocId, mode, existingAnswers, existingJustifications, browse.browseDoc]);
-
-  const openDocument = drafts.openDocument;
-  useEffect(() => {
-    // Em Explorar o baseline só existe depois do fetch; abrir antes classificaria
-    // o rascunho contra um documento vazio e anunciaria como sobrescrita tudo o
-    // que o servidor já tinha.
-    if (mode === "browse" && activeDocId && !remoteSnapshot) return;
-    openDocument(activeDocId, remoteSnapshot);
-  }, [openDocument, activeDocId, mode, remoteSnapshot]);
-
-  // Indicador de "não enviado": vem da sujeira em memória, não do storage — ver
-  // o comentário em `useDirtyDocs`.
-  const activeDocUnsent = useIsDocDirty(dirtyDocs, activeDocId);
-
-  // "Retomar" no modo Explorar entra por REMOUNT do filho keyed, e não por
-  // setState: `BrowseDocCoder` é construído sem estado derivado e sem setState em
-  // effect, e empurrar valor para dentro dele quebraria essa propriedade.
-  const [browseRestoreNonce, setBrowseRestoreNonce] = useState(0);
-  const [browseRestored, setBrowseRestored] = useState<CodingSnapshot | null>(null);
-  const restoreDraft = drafts.restoreDraft;
-  const handleRestoreDraft = useCallback(() => {
-    if (mode === "assigned") {
-      assigned.handleRestoreDraft();
-      return;
-    }
-    if (!browse.browseDocId) return;
-    const restored = restoreDraft(browse.browseDocId);
-    if (!restored) return;
-    setBrowseRestored(restored);
-    setBrowseRestoreNonce((n) => n + 1);
-    markDirty(browse.browseDocId);
-  }, [mode, assigned, browse.browseDocId, restoreDraft, markDirty]);
-
-  const discardDraft = drafts.discardDraft;
-  const handleDiscardDraft = useCallback(() => {
-    if (activeDocId) discardDraft(activeDocId);
-  }, [activeDocId, discardDraft]);
+  const {
+    activeDocUnsent,
+    handleRestoreDraft,
+    handleDiscardDraft,
+    browseRestored,
+    browseRestoreNonce,
+  } = useCodingDraftWiring({
+    mode,
+    activeDocId,
+    drafts,
+    dirtyDocs,
+    markDirty,
+    restoreAssignedDraft: assigned.handleRestoreDraft,
+    browseDocId: browse.browseDocId,
+    browseDoc: browse.browseDoc,
+    existingAnswers,
+    existingJustifications,
+  });
 
   if (fields.length === 0) {
     return <CodingEmptyStates kind="no-fields" />;
