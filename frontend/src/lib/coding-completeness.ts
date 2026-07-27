@@ -7,6 +7,7 @@ import {
   resolveSubfieldRule,
   resolveTarget,
 } from "@/lib/pydantic-field";
+import { isSubfieldRecord } from "@/lib/subfield-value";
 import type { AnswerFieldHashes, PydanticField } from "@/lib/types";
 
 // Campos que o humano precisa responder para a codificação contar como
@@ -68,8 +69,13 @@ function isSubfieldGroupAnswered(field: PydanticField, value: unknown): boolean 
   // fronteira, a régua reclassificava 125 codificações concluídas do Zolgensma
   // e do Judiciário, TODAS por essa mudança de forma e nenhuma por subcampo
   // obrigatório em branco (harness/2026-07-24-subfield-completeness).
-  if (typeof value !== "object" || Array.isArray(value)) return true;
-  const answers = value as Record<string, unknown>;
+  //
+  // A fronteira mora em `subfield-value.ts` porque o FieldRenderer decide pela
+  // MESMA leitura o que exibir. Enquanto cada lado a escrevia por conta
+  // própria, a resposta anistiada aqui era a que o renderizador não sabia
+  // mostrar — o ✓ com a tela vazia da #607.
+  if (!isSubfieldRecord(value)) return true;
+  const answers = value;
   const subfields = field.subfields ?? [];
 
   if (resolveSubfieldRule(field.subfield_rule) === "at_least_one") {

@@ -11,9 +11,22 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Check, Info, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OTHER_PREFIX, isOtherValue } from "@/lib/other-option";
+import { NOT_INFORMED } from "@/lib/sentinels";
+import { isSubfieldRecord, readLegacyGroupText } from "@/lib/subfield-value";
 import {
   arePartsValid,
   buildDateValue,
@@ -34,7 +47,6 @@ interface FieldRendererProps {
   onChange: (value: unknown) => void;
 }
 
-const NOT_INFORMED = "Não informada";
 const otherText = (v: string) => v.slice(OTHER_PREFIX.length);
 
 // Pure handler: backspace on an empty date part jumps focus to the previous
@@ -404,29 +416,153 @@ export function FieldRenderer({ field, value, onChange }: FieldRendererProps) {
 
   // text with subfields
   if (field.type === "text" && field.subfields && field.subfields.length > 0) {
-    const objValue =
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, string>)
-        : {};
-    const isNotInformed = value === "Não informada";
+    // Sem cast: o guard devolve `Record<string, unknown>` e é essa a verdade —
+    // o jsonb pode guardar `{anos: 42}`. A conversão para texto acontece na
+    // leitura do input, uma vez, em vez de ser prometida pelo tipo aqui.
+    const objValue = isSubfieldRecord(value) ? value : {};
+    const isNotInformed = value === NOT_INFORMED;
+    // Resposta coletada quando o campo ainda era texto simples. A régua de
+    // completude a conta como respondida (`coding-completeness.ts`), então ela
+    // precisa estar VISÍVEL — e nenhuma tecla pode descartá-la. Enquanto o
+    // valor está nesta forma os subcampos ficam inertes, e a única transição
+    // para a forma do grupo é o clique num destino nomeado (#607).
+    const legacyText = readLegacyGroupText(value);
+    // O id fica no bloco de texto, não na região inteira: `role="note"` inclui
+    // os botões, e um leitor de tela que a usasse como descrição de cada input
+    // anunciaria "Mover para Anos Meses Substituir por..." depois de cada
+    // rótulo. O `aria-describedby` aponta só para a explicação + o valor.
+    const legacyDescriptionId = `${subfieldIdPrefix}-legado-descricao`;
+    const subfields = field.subfields;
+    // Sob `all`, mover o texto para um subcampo deixa os outros obrigatórios
+    // em branco e rebaixa a codificação. É o comportamento correto — a anistia
+    // descrevia um valor que ninguém tinha tocado —, mas tem que ser
+    // anunciado antes do clique, não descoberto depois.
+    const requiredSubfields =
+      resolveSubfieldRule(field.subfield_rule) === "at_least_one"
+        ? []
+        : subfields.filter((sf) => resolveSubfieldRequired(sf.required));
+
+    // Só entra em cena quando NÃO há texto legado (abaixo), então o ramo que
+    // desmarca (`{}`) é alcançável: quem já está em "Não informada" não tem
+    // texto legado a proteger. A substituição destrutiva mora no aviso.
+    const notInformedButton = (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className={cn(
+          "h-7 text-xs",
+          isNotInformed && "bg-brand-muted text-brand border-brand",
+        )}
+        onClick={() => onChange(isNotInformed ? {} : NOT_INFORMED)}
+      >
+        {isNotInformed && <Check className="mr-1 size-3" />}
+        Não informada
+      </Button>
+    );
 
     return (
       <div className="space-y-2">
-        <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className={cn(
-              "h-7 text-xs",
-              isNotInformed && "bg-brand-muted text-brand border-brand",
-            )}
-            onClick={() => onChange(isNotInformed ? {} : "Não informada")}
+        {legacyText !== null && (
+          <div
+            role="note"
+            className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2.5"
           >
-            {isNotInformed && <Check className="mr-1 size-3" />}
-            Não informada
-          </Button>
-          {field.subfield_rule === "at_least_one" && (
+            <div className="flex items-start gap-2">
+              <Info className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+              <div id={legacyDescriptionId} className="min-w-0 space-y-1.5">
+                <p className="text-xs text-amber-800 dark:text-amber-300">
+                  Resposta registrada antes de esta pergunta ganhar subcampos.
+                  Ela continua valendo — nada se perde enquanto você não
+                  substituir.
+                </p>
+                <p className="text-sm font-medium break-words">{legacyText}</p>
+                {requiredSubfields.length > 0 && (
+                  <p className="text-xs text-amber-800 dark:text-amber-300">
+                    Esta pergunta exige preencher{" "}
+                    {requiredSubfields.map((sf) => sf.label).join(", ")}. Ao
+                    mover o texto para um deles, os outros seguirão pendentes.
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">Mover para:</span>
+              {subfields.map((sf) => (
+                <Button
+                  key={sf.key}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  aria-label={`Mover para ${sf.label}`}
+                  onClick={() => onChange({ [sf.key]: legacyText })}
+                >
+                  {sf.label}
+                </Button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">
+                Substituir por:
+              </span>
+              {/* O único caminho que ainda descarta o texto legado, e o único
+                  irreversível: "Mover para" deixa o texto num input à vista,
+                  daí bastar o clique; aqui a resposta anterior some da tela e
+                  do banco. A confirmação é o que impede que um clique errado
+                  faça sozinho o que a tecla deixou de fazer (#607).
+
+                  AlertDialog cru, e não `ConfirmActionDialog`: aquele é
+                  controlado (`open`/`isPending`), desenhado para server
+                  action, e exigiria `useState` AQUI. O `FieldRenderer` não
+                  remonta ao trocar de documento no modo Atribuídos, então
+                  estado próprio vazaria entre documentos; sem `open`, o
+                  diálogo se desmonta junto do aviso quando o valor deixa de
+                  ser legado, e o reset é por construção. */}
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                  >
+                    Não informada
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Descartar a resposta anterior?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      A resposta registrada antes de esta pergunta ganhar
+                      subcampos —{" "}
+                      <span className="font-medium text-foreground">
+                        {legacyText}
+                      </span>{" "}
+                      — será substituída por &ldquo;Não informada&rdquo;. Não há
+                      como recuperá-la depois. Para preservar o texto, use
+                      &ldquo;Mover para&rdquo;.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancelar</AlertDialogCancel>
+                    <AlertDialogAction
+                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      onClick={() => onChange(NOT_INFORMED)}
+                    >
+                      Descartar
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
+          </div>
+        )}
+        <div className="flex items-center gap-1.5">
+          {legacyText === null && notInformedButton}
+          {resolveSubfieldRule(field.subfield_rule) === "at_least_one" && (
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -444,7 +580,7 @@ export function FieldRenderer({ field, value, onChange }: FieldRendererProps) {
         </div>
         {!isNotInformed && (
           <div className="space-y-2">
-            {field.subfields.map((sf) => (
+            {subfields.map((sf) => (
               <div key={sf.key} className="flex items-center gap-2">
                 <label
                   htmlFor={`${subfieldIdPrefix}-${sf.key}`}
@@ -459,8 +595,18 @@ export function FieldRenderer({ field, value, onChange }: FieldRendererProps) {
                 </label>
                 <Input
                   id={`${subfieldIdPrefix}-${sf.key}`}
-                  className="text-sm"
-                  value={objValue[sf.key] || ""}
+                  className={cn("text-sm", legacyText !== null && "opacity-60")}
+                  value={
+                    legacyText !== null ? "" : String(objValue[sf.key] ?? "")
+                  }
+                  // `readOnly` é o que impede a perda: sem caminho de tecla,
+                  // não há como a digitação emitir um objeto que já perdeu o
+                  // texto legado. Mesmo mecanismo que o ramo de texto usa
+                  // quando um preset está ativo.
+                  readOnly={legacyText !== null}
+                  aria-describedby={
+                    legacyText !== null ? legacyDescriptionId : undefined
+                  }
                   onChange={(e) =>
                     onChange({ ...objValue, [sf.key]: e.target.value })
                   }

@@ -3,7 +3,7 @@
 // inform (e.g. `XX/03/2024` when only month+year are known). UI exposes
 // these as empty inputs; storage round-trip is preserved by buildDateValue.
 
-const NOT_INFORMED = "Não informada";
+import { NOT_INFORMED } from "@/lib/sentinels";
 
 export type DateParts = [day: string, month: string, year: string];
 export type DatePartName = "day" | "month" | "year";
