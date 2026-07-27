@@ -92,10 +92,6 @@ interface BuildPersistedResponseSnapshotParams {
   fields: PydanticField[];
   existing: ExistingResponseSnapshot | null;
   rawSubmittedAnswers: Record<string, unknown>;
-  // Submit explícito (não auto-save): habilita a promoção de uma response
-  // legacy à proveniência corrente quando este save a recodifica por completo
-  // contra o schema atual (#548). Auto-save nunca promove — não atesta nada.
-  promoteLegacyIfComplete: boolean;
 }
 
 function samePresentedValue(
@@ -231,7 +227,6 @@ function buildReconciledFieldHashes(
   existing: ExistingResponseSnapshot | null,
   persistedAnswers: Record<string, unknown>,
   changedFieldNames: Set<string>,
-  promoteLegacyIfComplete: boolean,
 ): ReconciledFieldHashes {
   const currentHashes = buildFieldHashMap(fields);
 
@@ -251,16 +246,20 @@ function buildReconciledFieldHashes(
   // ficaram em branco de verdade. Permanece grosseiro até que uma codificação
   // nova estabeleça proveniência.
   //
-  // Via de saída (#548): uma recodificação COMPLETA — submit explícito
-  // (`promoteLegacyIfComplete`) cuja codificação fica completa contra o schema
-  // ATUAL — é o único momento em que dá para afirmar que todos os campos de
-  // hoje existiam. Aí estampamos o schema inteiro como uma codificação nova,
-  // desligando o sentinela e marcando `stampsCurrentSchema` — o que libera
+  // Via de saída (#548): uma recodificação COMPLETA contra o schema ATUAL é o
+  // único momento em que dá para afirmar que todos os campos de hoje existiam.
+  // Aí estampamos o schema inteiro como uma codificação nova, desligando o
+  // sentinela e marcando `stampsCurrentSchema` — o que libera
   // `buildResponsePayload` a promover `pydantic_hash` + `schema_version_*`, e a
-  // response volta à fila `latest_major`. Fora daí (parcial ou auto-save) o
-  // sentinela é conservado, mantendo o fallback de staleness conservador.
+  // response volta à fila `latest_major`. Uma gravação parcial conserva o
+  // sentinela, mantendo o fallback de staleness conservador.
+  //
+  // Até o #608 a promoção era gateada também pelo canal de escrita
+  // (`promoteLegacyIfComplete`, falso no auto-save, que não atestava nada).
+  // Removido o auto-save, toda escrita que chega aqui é submit explícito: a
+  // completude do conjunto gravado voltou a ser a condição inteira.
   if (!storedHashes || Object.keys(storedHashes).length === 0) {
-    if (promoteLegacyIfComplete && isCodingComplete(fields, persistedAnswers)) {
+    if (isCodingComplete(fields, persistedAnswers)) {
       return {
         hashes: withAnswerProvenanceFallback(currentHashes, persistedAnswers),
         stampsCurrentSchema: true,
@@ -290,7 +289,6 @@ export function buildPersistedResponseSnapshot({
   fields,
   existing,
   rawSubmittedAnswers,
-  promoteLegacyIfComplete,
 }: BuildPersistedResponseSnapshotParams): PersistedResponseSnapshot {
   const storedAnswers = existing?.answers;
   // A leitura sem schema expõe o JSON bruto por compatibilidade, mas não há
@@ -314,7 +312,6 @@ export function buildPersistedResponseSnapshot({
     existing,
     persistedAnswers,
     reconciled.changedFieldNames,
-    promoteLegacyIfComplete,
   );
 
   return { submittedAnswers, persistedAnswers, answerFieldHashes, stampsCurrentSchema };
