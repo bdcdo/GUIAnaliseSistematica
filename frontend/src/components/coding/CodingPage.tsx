@@ -7,7 +7,13 @@ import { useUrlState } from "@/hooks/useUrlState";
 import { useFieldOrder } from "@/hooks/useFieldOrder";
 import { useAutosaveOnExit } from "@/hooks/useAutosaveOnExit";
 import { useFullscreen } from "@/hooks/useFullscreen";
-import { useDirtyDocs } from "@/hooks/useDirtyDocs";
+import { useDirtyDocs, useIsDocDirty } from "@/hooks/useDirtyDocs";
+import { useCodingDrafts } from "@/hooks/useCodingDrafts";
+import {
+  CodingDraftBanner,
+  CodingDraftUnavailableBanner,
+} from "./CodingDraftBanner";
+import type { CodingSnapshot } from "@/lib/coding-draft";
 import { CodingHeader, type DocSection } from "./CodingHeader";
 import { CodingEmptyStates } from "./CodingEmptyStates";
 import { AssignedCodingView } from "./AssignedCodingView";
@@ -142,6 +148,10 @@ function buildHeaderDocSection(
 
 interface CodingPageProps {
   projectId: string;
+  /** Membro DONO das escritas (`ownMemberUserId`), não o observado sob
+   *  impersonação: é a identidade do slot do rascunho local. Ver
+   *  `CodingDraftScope` em `lib/coding-draft.ts`. */
+  userId: string;
   documents: AssignedDoc[];
   codedAtByDoc?: Record<string, string>;
   fields: PydanticField[];
@@ -171,6 +181,7 @@ export function CodingPage(props: CodingPageProps) {
 
 function CodingPageInner({
   projectId,
+  userId,
   documents,
   codedAtByDoc = EMPTY_CODED_AT,
   fields,
@@ -217,8 +228,11 @@ function CodingPageInner({
     [fields, fieldOrder],
   );
 
-  // Dirty tracking via ref (sem re-render) — compartilhado entre os modos.
-  const { markDirty, markClean, isDirty } = useDirtyDocs();
+  // Sujeira compartilhada entre os modos. O store é imperativo para os handlers
+  // e reativo para a tela (ver `useDirtyDocs`): o indicador de "não enviado" sai
+  // DAQUI, nunca do resultado da persistência local.
+  const dirtyDocs = useDirtyDocs();
+  const { markDirty, markClean, isDirty } = dirtyDocs;
 
   const updateDocParam = useCallback(
     (docId: string | null) => {

@@ -71,8 +71,16 @@ export interface CodingDraftsApi {
   // Chamado quando o servidor confirmou a ESCRITA (`success: true`), inclusive
   // quando o documento segue pendente por obrigatória em aberto.
   submitConfirmed(docId: string, saved: CodingSnapshot): void;
+  // Abre um documento: estabelece o baseline a partir do que o servidor
+  // entregou e classifica o slot. Chamado de um effect pelo consumidor — e não
+  // recebido como parâmetro — porque o documento ativo só é conhecido DEPOIS dos
+  // hooks de modo, que por sua vez precisam do `recordDraft` daqui.
+  //
+  // Como a leitura do storage acontece só aqui, e effects não rodam no SSR, o
+  // primeiro render do cliente é idêntico ao do servidor por construção: nenhuma
+  // flag de hidratação é necessária.
+  openDocument(docId: string | null, remote: CodingSnapshot | null): void;
   recovery: CodingDraftRecovery;
-  isHydrated: boolean;
   storageAvailable: boolean;
   staleDiscardedCount: number;
 }
@@ -85,9 +93,6 @@ export interface UseCodingDraftsParams {
   // `false` sob impersonação ou rodada anterior: a tela é read-only e gravar
   // rascunho ali depositaria trabalho num slot que ninguém vai enviar.
   enabled: boolean;
-  openDocId: string | null;
-  // O que o servidor entregou no render para o documento aberto.
-  remote: CodingSnapshot | null;
   fields: PydanticField[];
 }
 
@@ -233,7 +238,7 @@ export function collectCodingDraftGarbage(
 }
 
 export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi {
-  const { projectId, userId, enabled, openDocId } = params;
+  const { projectId, userId, enabled } = params;
 
   // Refs atualizados a cada render, para que os effects de flush possam ser
   // registrados uma única vez e ainda ler o estado mais recente — mesmo padrão
@@ -242,20 +247,17 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
   const timersRef = useRef<Map<string, number>>(new Map());
   const keyPartsRef = useRef({ projectId, userId, enabled });
   keyPartsRef.current = { projectId, userId, enabled };
-  const remoteRef = useRef(params.remote);
-  remoteRef.current = params.remote;
   const fieldsRef = useRef(params.fields);
   fieldsRef.current = params.fields;
 
   const [recovery, setRecovery] = useState<CodingDraftRecovery>({ kind: "none" });
   const [storageAvailable, setStorageAvailable] = useState(true);
   const [staleDiscardedCount, setStaleDiscardedCount] = useState(0);
-  // A tela de codificação não pode esperar hidratação atrás de um skeleton — ela
-  // mostra o texto do documento a partir do servidor. `isHydrated` protege só a
-  // faixa de recuperação, que é UI aditiva: um elemento que aparece, não uma
-  // página que troca.
-  const [isHydrated, setIsHydrated] = useState(false);
-  useEffect(() => setIsHydrated(true), []);
+  // Último documento aberto: o GC nunca evicta o slot dele.
+  const openDocIdRef = useRef<string | null>(null);
+  // Distingue "nunca abriu" de "abriu o documento null": sem isso, a primeira
+  // chamada com `null` cairia no guard de idempotência e o GC nunca rodaria.
+  const openedOnceRef = useRef(false);
 
   const persist = useCallback((docId: string, token: string) => {
     const { projectId: pid, userId: uid, enabled: on } = keyPartsRef.current;
@@ -417,61 +419,76 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
     [dropSlot],
   );
 
-  // Leitura e classificação ao abrir um documento. Roda pós-hidratação, fora do
-  // seed do reducer: semear o formulário a partir do rascunho SERIA aplicá-lo em
-  // silêncio, e a issue pede o contrário.
-  useEffect(() => {
-    if (!isHydrated || !enabled || !openDocId) {
-      setRecovery({ kind: "none" });
-      return;
-    }
-    const scope = scopeFor({ projectId, userId }, openDocId);
-    const slot = readSlot(scope);
-    setStorageAvailable(slot.available);
-    if (slot.staleFormat) setStaleDiscardedCount((n) => n + 1);
+  // Leitura e classificação ao abrir um documento. Fora do seed do reducer de
+  // propósito: semear o formulário a partir do rascunho SERIA aplicá-lo em
+  // silêncio, e a issue pede o contrário. Idempotente por documento — reabrir o
+  // mesmo id não reclassifica, senão cada revalidação do RSC ressuscitaria uma
+  // oferta que a pesquisadora acabou de descartar.
+  const openDocument = useCallback(
+    (docId: string | null, remote: CodingSnapshot | null) => {
+      const { projectId: pid, userId: uid, enabled: on } = keyPartsRef.current;
+      if (openedOnceRef.current && openDocIdRef.current === docId) return;
+      const firstOpen = !openedOnceRef.current;
+      openedOnceRef.current = true;
+      openDocIdRef.current = docId;
 
-    const remote = remoteRef.current ?? { answers: {}, notes: "" };
+      // O GC roda na PRIMEIRA abertura, não num effect de mount: é aqui que se
+      // sabe qual slot preservar. Num effect de mount, `openDocument` ainda não
+      // teria sido chamado (o consumidor o chama do próprio effect, declarado
+      // depois), `keepKey` seria nulo, e o rascunho do documento na tela entraria
+      // na varredura — expirado ou acima do teto, seria apagado debaixo da
+      // pesquisadora.
+      if (firstOpen && on) {
+        const keep = docId
+          ? codingDraftStorageKey(scopeFor({ projectId: pid, userId: uid }, docId))
+          : null;
+        const collected = collectCodingDraftGarbage(uid, Date.now(), keep);
+        if (collected.staleDiscarded > 0) {
+          setStaleDiscardedCount((n) => n + collected.staleDiscarded);
+        }
+      }
 
-    // Abrir estabelece o baseline do documento — o hook é dono único dele a
-    // partir daqui. Preserva `persistedToken` de uma edição anterior nesta mesma
-    // sessão (ir e voltar entre documentos não pode fazer a aba perder a posse
-    // do próprio slot).
-    const previous = stateRef.current.get(openDocId);
-    stateRef.current.set(openDocId, {
-      base: remote,
-      draft: previous?.draft ?? null,
-      writeToken: previous?.writeToken ?? null,
-      persistedToken: previous?.persistedToken ?? null,
-      blocked: previous?.blocked ?? false,
-    });
+      if (!on || !docId) {
+        setRecovery({ kind: "none" });
+        return;
+      }
 
-    const classified = classifyCodingDraft(slot.envelope, remote, fieldsRef.current);
-    if (classified.kind === "redundant" && slot.envelope) {
-      // Repete o servidor: some do caminho em vez de virar ruído recorrente.
-      deleteSlotIfTokenMatches(scope, slot.envelope.writeToken);
-      setRecovery({ kind: "none" });
-      return;
-    }
-    if (classified.kind === "resumable" || classified.kind === "diverged") {
+      const scope = scopeFor({ projectId: pid, userId: uid }, docId);
+      const slot = readSlot(scope);
+      setStorageAvailable(slot.available);
+      if (slot.staleFormat) setStaleDiscardedCount((n) => n + 1);
+
+      const baseline = remote ?? { answers: {}, notes: "" };
+
+      // Abrir estabelece o baseline do documento — o hook é dono único dele a
+      // partir daqui. Preserva `persistedToken` de uma edição anterior nesta
+      // mesma sessão: ir e voltar entre documentos não pode fazer a aba perder a
+      // posse do próprio slot.
+      const previous = stateRef.current.get(docId);
+      stateRef.current.set(docId, {
+        base: previous?.draft ? previous.base : baseline,
+        draft: previous?.draft ?? null,
+        writeToken: previous?.writeToken ?? null,
+        persistedToken: previous?.persistedToken ?? null,
+        blocked: previous?.blocked ?? false,
+      });
+
+      const classified = classifyCodingDraft(slot.envelope, baseline, fieldsRef.current);
+      if (classified.kind === "redundant" && slot.envelope) {
+        // Repete o servidor: some do caminho em vez de virar ruído recorrente.
+        deleteSlotIfTokenMatches(scope, slot.envelope.writeToken);
+        setRecovery({ kind: "none" });
+        return;
+      }
       // Posse do slot é assumida só ao retomar; até lá, apenas oferecemos.
-      setRecovery(classified);
-      return;
-    }
-    setRecovery({ kind: "none" });
-  }, [isHydrated, enabled, openDocId, projectId, userId]);
-
-  // GC uma vez por mount, pós-hidratação.
-  useEffect(() => {
-    if (!isHydrated || !enabled) return;
-    const keep = openDocId
-      ? codingDraftStorageKey(scopeFor({ projectId, userId }, openDocId))
-      : null;
-    const result = collectCodingDraftGarbage(userId, Date.now(), keep);
-    if (result.staleDiscarded > 0) setStaleDiscardedCount((n) => n + result.staleDiscarded);
-    // Roda no mount; `openDocId` entra como valor inicial apenas — reagir a cada
-    // navegação transformaria o GC num custo por documento visitado.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHydrated, enabled, userId, projectId]);
+      setRecovery(
+        classified.kind === "resumable" || classified.kind === "diverged"
+          ? classified
+          : { kind: "none" },
+      );
+    },
+    [],
+  );
 
   // Flush garantido nos três gatilhos que o navegador oferece, mais o unmount.
   // O `beforeunload` aqui só persiste; quem avisa a pesquisadora é o guard de
@@ -493,12 +510,12 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
   }, [flushAll]);
 
   return {
+    openDocument,
     recordDraft,
     restoreDraft,
     discardDraft,
     submitConfirmed,
     recovery,
-    isHydrated,
     storageAvailable,
     staleDiscardedCount,
   };

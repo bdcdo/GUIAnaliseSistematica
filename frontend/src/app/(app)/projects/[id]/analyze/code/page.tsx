@@ -47,10 +47,11 @@ export default async function CodePage({
   const access = requireResolvedProjectAccess(
     await getProjectAccessContext(id, user),
   );
-  const { queueUserId, isImpersonating } = resolveProjectQueueIdentity(
-    access,
-    sp.viewAsUser,
-  );
+  // `ownMemberUserId` é quem ESCREVE; `queueUserId` é só a fila exibida. O
+  // rascunho local se chaveia pelo primeiro — chavear pelo observado faria o
+  // master, sob impersonação, depositar trabalho no slot da pesquisadora.
+  const { ownMemberUserId, queueUserId, isImpersonating } =
+    resolveProjectQueueIdentity(access, sp.viewAsUser);
   const roundParam = sp.round ?? CURRENT_FILTER_VALUE;
 
   const supabase = await createSupabaseServer();
@@ -257,6 +258,7 @@ export default async function CodePage({
     <Suspense fallback={<div className="p-6 text-sm text-muted-foreground">Carregando…</div>}>
       <CodingPage
         projectId={id}
+        userId={ownMemberUserId}
         documents={filteredDocuments}
         codedAtByDoc={codedAtByDoc}
         fields={fields}

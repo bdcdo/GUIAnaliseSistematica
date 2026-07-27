@@ -43,22 +43,27 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function render(over: Partial<UseCodingDraftsParams> = {}) {
+// `openDocument` é o que estabelece o baseline e classifica o slot; no app ele é
+// chamado de um effect do `CodingPage`, aqui é chamado explicitamente.
+function render(
+  over: Partial<UseCodingDraftsParams> & {
+    openDocId?: string | null;
+    remote?: CodingSnapshot | null;
+  } = {},
+) {
+  const { openDocId = DOC, remote = EMPTY, ...rest } = over;
   const params: UseCodingDraftsParams = {
     projectId: PROJECT,
     userId: USER,
     enabled: true,
-    openDocId: DOC,
-    remote: EMPTY,
     fields: FIELDS,
-    ...over,
+    ...rest,
   };
   const view = renderHook((p: UseCodingDraftsParams) => useCodingDrafts(p), {
     initialProps: params,
   });
-  // O hook só age pós-hidratação; sem este flush nada do effect rodou ainda.
   act(() => {
-    vi.advanceTimersByTime(0);
+    view.result.current.openDocument(openDocId, remote);
   });
   return view;
 }
@@ -148,6 +153,16 @@ describe("gravação e debounce", () => {
     act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     expect(stored()).toMatchObject({ userId: USER, projectId: PROJECT, documentId: DOC });
+  });
+
+  // O baseline é estabelecido ao abrir o documento, e o hook é seu dono único.
+  // Mutação vermelha: cair para um baseline vazio quando não há registro — o
+  // formulário inteiro seria gravado como se fosse edição da pesquisadora.
+  it("não grava rascunho de documento que nunca foi aberto", () => {
+    const { result } = render();
+    act(() => result.current.recordDraft("doc-nunca-aberto", snap({ q1: "a" })));
+    flushDebounce();
+    expect(window.localStorage.length).toBe(0);
   });
 
   // Sob impersonação a tela é read-only; gravar ali depositaria trabalho num

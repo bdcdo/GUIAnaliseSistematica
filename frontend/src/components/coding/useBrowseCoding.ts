@@ -7,6 +7,7 @@ import { useDocumentForCoding } from "@/hooks/useDocumentForCoding";
 import { saveCodingResponse } from "@/lib/coding-autosave";
 import { notifySaved } from "@/lib/coding-save-feedback";
 import { type CodingDraft } from "./BrowseDocCoder";
+import type { CodingSnapshot } from "@/lib/coding-draft";
 import type { AutosavePayload } from "@/hooks/useAutosaveOnExit";
 import type { AssignedDoc } from "@/lib/types";
 
@@ -19,6 +20,8 @@ interface UseBrowseCodingParams {
   setSubmitting: (value: boolean) => void;
   markDirty: (docId: string) => void;
   markClean: (docId: string) => void;
+  recordDraft: (docId: string, draft: CodingSnapshot) => void;
+  submitConfirmed: (docId: string, saved: CodingSnapshot) => void;
   isDirty: (docId: string | null | undefined) => boolean;
   updateDocParam: (docId: string | null) => void;
 }
@@ -43,6 +46,8 @@ export function useBrowseCoding({
   setSubmitting,
   markDirty,
   markClean,
+  recordDraft,
+  submitConfirmed,
   isDirty,
   updateDocParam,
 }: UseBrowseCodingParams) {
@@ -104,7 +109,12 @@ export function useBrowseCoding({
   const handleDraftChange = useCallback(
     (draft: CodingDraft) => {
       browseDraftRef.current = draft;
-      if (browseDocId) markDirty(browseDocId);
+      if (browseDocId) {
+        markDirty(browseDocId);
+        // Diferente do modo Atribuídos, aqui o conteúdo novo chega pronto no
+        // callback (o estado vive no filho keyed), então o registro é direto.
+        recordDraft(browseDocId, draft);
+      }
     },
     [browseDocId, markDirty],
   );
@@ -121,6 +131,7 @@ export function useBrowseCoding({
         });
         if (result.success) {
           markClean(browseDocId);
+          submitConfirmed(browseDocId, { answers, notes });
           notifySaved(result.missingRequired);
           markResponded(browseDocId);
           browseDraftRef.current = null;

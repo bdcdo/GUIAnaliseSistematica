@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useReducer, useRef } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { sortByRecent } from "@/lib/coding-sort";
 import {
   autosaveDirtyDoc,
@@ -8,6 +8,7 @@ import {
 } from "@/lib/coding-autosave";
 import { clearHiddenConditionalAnswers } from "@/lib/conditional";
 import { notifySaved } from "@/lib/coding-save-feedback";
+import type { CodingSnapshot } from "@/lib/coding-draft";
 import { toast } from "sonner";
 import type { AutosavePayload } from "@/hooks/useAutosaveOnExit";
 import type { CodingSortMode } from "./CodingPage";
@@ -88,6 +89,12 @@ interface UseAssignedCodingParams {
   markDirty: (docId: string) => void;
   markClean: (docId: string) => void;
   isDirty: (docId: string | null | undefined) => boolean;
+  /** Rede local do #608: registra a edição corrente para o rascunho em
+   *  localStorage. O baseline é do hook de rascunho, não daqui. */
+  recordDraft: (docId: string, draft: CodingSnapshot) => void;
+  /** Chamado quando o servidor confirmou a ESCRITA, inclusive com obrigatória
+   *  em aberto — ver `submitConfirmed`. */
+  submitConfirmed: (docId: string, saved: CodingSnapshot) => void;
   updateDocParam: (docId: string | null) => void;
   setParams: (
     updates: Record<string, string | null>,
@@ -118,6 +125,8 @@ export function useAssignedCoding({
   markDirty,
   markClean,
   isDirty,
+  recordDraft,
+  submitConfirmed,
   updateDocParam,
   setParams,
 }: UseAssignedCodingParams) {
@@ -145,6 +154,18 @@ export function useAssignedCoding({
   // próximo doc; sem o guard, teclas digitadas durante o save editariam o doc já
   // salvo com o snapshot antigo e seriam descartadas na navegação.
   const savingRef = useRef(false);
+
+  // O rascunho local é registrado a partir do estado já reduzido, não de dentro
+  // dos handlers: `handleAnswer` despacha e não vê o resultado, e recompor o
+  // valor novo no call site duplicaria `clearHiddenConditionalAnswers` — a
+  // limpeza de condicionais órfãs (#252) que o reducer faz. O guard de sujeira é
+  // o que impede que abrir um documento limpo registre o conteúdo do servidor
+  // como se fosse edição (o que apagaria um rascunho ainda não retomado).
+  const docId = currentDoc?.id;
+  useEffect(() => {
+    if (!docId || !isDirty(docId)) return;
+    recordDraft(docId, { answers: docAnswers, notes: docNotes });
+  }, [docId, docAnswers, docNotes, isDirty, recordDraft]);
 
   const handleAnswer = useCallback(
     (fieldName: string, value: unknown) => {
@@ -182,6 +203,10 @@ export function useAssignedCoding({
         return;
       }
       markClean(currentDoc.id);
+      // A escrita aconteceu: o rascunho local virou redundante e o baseline
+      // passa a ser o que foi gravado. Vem ANTES do early-return abaixo de
+      // propósito — um envio que deixou obrigatória em aberto também gravou.
+      submitConfirmed(currentDoc.id, { answers: docAnswers, notes: docNotes });
       notifySaved(result.missingRequired);
       // Save com obrigatórias em aberto mantém o pesquisador NO documento:
       // avançar tiraria a tela de baixo do aviso que acabou de pedir para
@@ -217,6 +242,7 @@ export function useAssignedCoding({
     sortedDocuments,
     updateDocParam,
     markClean,
+    submitConfirmed,
     setSubmitting,
   ]);
 
