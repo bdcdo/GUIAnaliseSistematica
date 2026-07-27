@@ -42,6 +42,8 @@ const mockConfirmEquivalent = vi.mocked(confirmEquivalentVerdict);
 const mockUnmarkPair = vi.mocked(unmarkEquivalencePair);
 
 const DOC = doc("doc1", "Doc 1", "texto");
+/** Origem que CASA com (currentDoc, currentFieldName) do `setup` abaixo. */
+const ORIGIN = { documentId: "doc1", fieldName: "q1" };
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -97,8 +99,9 @@ describe("modo somente leitura", () => {
     const { result, recordReview, goNextField } = setup(true);
 
     await act(async () => {
-      await result.current.handleVerdict("concordo", "r1");
+      await result.current.handleVerdict(ORIGIN, "concordo", "r1");
       await result.current.handleConfirmEquivalent(
+        ORIGIN,
         ["r1", "r2"],
         "r1",
         "fundida",
@@ -114,7 +117,87 @@ describe("modo somente leitura", () => {
     expect(recordReview).not.toHaveBeenCalled();
     expect(goNextField).not.toHaveBeenCalled();
     expect(toastSuccess).not.toHaveBeenCalled();
-    expect(toastError).not.toHaveBeenCalled();
+    // As duas ESCRITAS de veredito passaram a avisar em vez de recusar em
+    // silêncio (#613): os controles já nascem `disabled` em somente-leitura, e
+    // um deles ter chamado o handler mesmo assim é um bug que queremos ver.
+    // `handleMarkReviewed`/`handleUnmarkPair` seguem silenciosos.
+    expect(toastError).toHaveBeenCalledTimes(2);
+    expect(toastError).toHaveBeenCalledWith(
+      "Modo somente leitura: nenhuma decisão é registrada.",
+      expect.objectContaining({ id: "compare-write-blocked-read-only" }),
+    );
+  });
+});
+
+// Defesa em profundidade da #613: mesmo com os cards do campo anterior ainda no
+// DOM, uma decisão tomada num campo não pode ser gravada em outro. O guard vive
+// aqui — a fronteira de escrita — e não só no container, porque é aqui que os
+// dois vetores (veredito regular e equivalência) se encontram.
+describe("origem divergente do campo atual", () => {
+  const OUTRO_CAMPO = { documentId: "doc1", fieldName: "q_anterior" };
+  let consoleError: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    consoleError.mockRestore();
+  });
+
+  it("handleVerdict recusa antes da Server Action e devolve false", async () => {
+    const { result, recordReview, goNextField } = setup();
+    let returned: boolean | undefined;
+
+    await act(async () => {
+      returned = await result.current.handleVerdict(
+        OUTRO_CAMPO,
+        "ALFA-opcao-1",
+        "r1",
+      );
+    });
+
+    expect(returned).toBe(false);
+    expect(mockSubmitVerdict).not.toHaveBeenCalled();
+    expect(recordReview).not.toHaveBeenCalled();
+    expect(goNextField).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringContaining("pertence a outro campo"),
+      expect.objectContaining({ id: "compare-write-blocked-origin-mismatch" }),
+    );
+  });
+
+  it("handleConfirmEquivalent recusa antes da Server Action", async () => {
+    const { result, recordReview, goNextField } = setup();
+
+    await act(async () => {
+      await result.current.handleConfirmEquivalent(
+        OUTRO_CAMPO,
+        ["r1", "r2"],
+        "r1",
+        "fundida",
+      );
+    });
+
+    expect(mockConfirmEquivalent).not.toHaveBeenCalled();
+    expect(recordReview).not.toHaveBeenCalled();
+    expect(goNextField).not.toHaveBeenCalled();
+    expect(toastError).toHaveBeenCalledWith(
+      expect.stringContaining("pertence a outro campo"),
+      expect.objectContaining({ id: "compare-write-blocked-origin-mismatch" }),
+    );
+  });
+
+  it("documento divergente com o MESMO nome de campo também é recusado", async () => {
+    const { result } = setup();
+
+    await act(async () => {
+      await result.current.handleVerdict(
+        { documentId: "outro-doc", fieldName: "q1" },
+        "concordo",
+        "r1",
+      );
+    });
+
+    expect(mockSubmitVerdict).not.toHaveBeenCalled();
   });
 });
 
@@ -124,7 +207,7 @@ describe("handleVerdict", () => {
     const { result, recordReview, goNextField } = setup();
 
     await act(async () => {
-      await result.current.handleVerdict("concordo", "r1");
+      await result.current.handleVerdict(ORIGIN, "concordo", "r1");
     });
 
     expectNoOptimisticWrite(recordReview, goNextField, "falhou");
@@ -135,7 +218,7 @@ describe("handleVerdict", () => {
     const { result, recordReview, goNextField } = setup();
 
     await act(async () => {
-      await result.current.handleVerdict("concordo", "r1");
+      await result.current.handleVerdict(ORIGIN, "concordo", "r1");
     });
 
     expectOptimisticWrite(recordReview, goNextField, "doc1", "q1", {
@@ -152,7 +235,12 @@ describe("handleConfirmEquivalent — o caminho da issue #366", () => {
     const { result, recordReview, goNextField } = setup();
 
     await act(async () => {
-      await result.current.handleConfirmEquivalent(["r1", "r2"], "r1", "fundida");
+      await result.current.handleConfirmEquivalent(
+        ORIGIN,
+        ["r1", "r2"],
+        "r1",
+        "fundida",
+      );
     });
 
     expectNoOptimisticWrite(recordReview, goNextField, "não foi");
@@ -163,7 +251,12 @@ describe("handleConfirmEquivalent — o caminho da issue #366", () => {
     const { result, recordReview, goNextField } = setup();
 
     await act(async () => {
-      await result.current.handleConfirmEquivalent(["r1", "r2"], "r1", "fundida");
+      await result.current.handleConfirmEquivalent(
+        ORIGIN,
+        ["r1", "r2"],
+        "r1",
+        "fundida",
+      );
     });
 
     expectOptimisticWrite(recordReview, goNextField, "doc1", "q1", {
@@ -229,7 +322,7 @@ describe("rejeição da Server Action (fora do try dela) → toast.error, sem es
     const { result, recordReview, goNextField } = setup();
 
     await act(async () => {
-      await result.current.handleVerdict("concordo", "r1");
+      await result.current.handleVerdict(ORIGIN, "concordo", "r1");
     });
 
     expect(recordReview).not.toHaveBeenCalled();
@@ -243,7 +336,12 @@ describe("rejeição da Server Action (fora do try dela) → toast.error, sem es
     const { result, recordReview, goNextField } = setup();
 
     await act(async () => {
-      await result.current.handleConfirmEquivalent(["r1", "r2"], "r1", "fundida");
+      await result.current.handleConfirmEquivalent(
+        ORIGIN,
+        ["r1", "r2"],
+        "r1",
+        "fundida",
+      );
     });
 
     expect(recordReview).not.toHaveBeenCalled();

@@ -9,6 +9,10 @@ import {
   fireEvent,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+// Import só de TIPO (apagado na compilação, então não colide com o `vi.mock`
+// da view): serve para o harness derivar as assinaturas reais em vez de
+// redigitá-las — ver `MockComparisonPanel` abaixo.
+import type { ComparisonPanel } from "@/components/compare/ComparisonPanel";
 
 // Mocks dos Server Actions e do toast (efeitos colaterais fora do escopo do
 // teste de lógica do container).
@@ -40,23 +44,28 @@ vi.mock("next/navigation", () => ({
 // Mock das views: expõem só os controles necessários para dirigir a lógica do
 // container. NÃO testam o render dos filhos reais (CompareNav/ComparisonPanel/
 // DocumentReader), que este PR não altera e têm contrato garantido por tsc.
+//
+// As assinaturas de callback são DERIVADAS das props reais do `ComparisonPanel`
+// em vez de redigitadas: uma cópia à mão diverge em silêncio quando o contrato
+// muda, e foi o que aconteceu ao acrescentar a origem do veredito (#613) — o
+// harness continuou chamando `onConfirmEquivalent` com a aridade antiga, os
+// argumentos escorregaram uma posição e só o teste em execução denunciou.
+type RealPanelProps = Parameters<typeof ComparisonPanel>[0];
+
 interface MockComparisonPanel {
+  documentId: string;
   fieldName: string;
   fieldIndex: number;
   comment: string;
   onCommentChange: (v: string) => void;
   onFieldNavigate: (i: number) => void;
-  onVerdict: (verdict: string, chosenResponseId?: string) => void;
+  onVerdict: RealPanelProps["onVerdict"];
   pendingVerdict: PendingVerdict | null;
-  onPrepareVerdict: (pending: PendingVerdict) => void;
+  onPrepareVerdict: RealPanelProps["onPrepareVerdict"];
   onConfirmPendingVerdict: () => void;
   onDiscardPendingVerdict: () => void;
   isSavingVerdict: boolean;
-  onConfirmEquivalent: (
-    responseIds: string[],
-    gabaritoId: string,
-    verdictDisplay: string,
-  ) => Promise<void>;
+  onConfirmEquivalent: RealPanelProps["onConfirmEquivalent"];
   onMarkReviewed: () => void;
 }
 
@@ -96,6 +105,13 @@ vi.mock("@/components/compare/CompareWorkspace", () => ({
             kind: "response",
             verdict: "Deferido",
             chosenResponseId: "r1",
+            // Espelha o painel real: a origem sai das props do render corrente
+            // (CompareFieldReview), não de uma constante — é isso que o
+            // container valida antes de aceitar o rascunho.
+            origin: {
+              documentId: comparisonPanel.documentId,
+              fieldName: comparisonPanel.fieldName,
+            },
           })
         }
       >
@@ -108,6 +124,10 @@ vi.mock("@/components/compare/CompareWorkspace", () => ({
             kind: "response",
             verdict: "Indeferido",
             chosenResponseId: "r2",
+            origin: {
+              documentId: comparisonPanel.documentId,
+              fieldName: comparisonPanel.fieldName,
+            },
           })
         }
       >
@@ -130,6 +150,10 @@ vi.mock("@/components/compare/CompareWorkspace", () => ({
         data-testid="confirm-equiv"
         onClick={() =>
           void comparisonPanel.onConfirmEquivalent(
+            {
+              documentId: comparisonPanel.documentId,
+              fieldName: comparisonPanel.fieldName,
+            },
             ["r1", "r2"],
             "r1",
             "Equivalentes",
@@ -357,7 +381,11 @@ describe("ComparePage — comentário (fix no-derived-state)", () => {
 });
 
 describe("ComparePage — navegação e filtro", () => {
-  it("trocar o filtro reseta o índice de campo para o primeiro", async () => {
+  // O campo atual é rastreado por NOME (#613). Consequência direta: um ciclo de
+  // filtro devolve a revisora ao campo em que ela estava, em vez de jogá-la no
+  // primeiro — o nome fixado continua presente na lista completa. Antes, com
+  // índice, `changeFilter` zerava a posição.
+  it("ciclo de filtro (todos → campoB → todos) devolve ao campo em que estava", async () => {
     const user = userEvent.setup();
     render(<ComparePage {...makeProps()} />);
 
@@ -365,7 +393,16 @@ describe("ComparePage — navegação e filtro", () => {
     expect(text("field-name")).toBe("campoB");
 
     await user.click(screen.getByTestId("set-filter-all"));
+    expect(text("field-name")).toBe("campoB");
+  });
+
+  it("filtrar por um campo que não é o atual move para o campo filtrado", async () => {
+    const user = userEvent.setup();
+    render(<ComparePage {...makeProps()} />);
+
     expect(text("field-name")).toBe("campoA");
+    await user.click(screen.getByTestId("set-filter-b"));
+    expect(text("field-name")).toBe("campoB");
   });
 
   it("filtrar por um campo estreita a fila e o avanço fica preso nele", async () => {
@@ -392,7 +429,11 @@ describe("ComparePage — navegação e filtro", () => {
     expect(text("field-name")).toBe("campoA");
   });
 
-  it("clampa o índice de campo quando divergentFields encolhe (não vira undefined)", async () => {
+  it("o campo atual NÃO se desloca quando um campo ANTERIOR sai da fila", async () => {
+    // Regressão literal do caso real da #613: a revisora resolveu q4 por
+    // equivalência, avançou para q8, e o revalidate seguinte devolveu a lista
+    // sem q4 — com índice, ela passou a ver (e a gravar em) q14 sem ter clicado
+    // em nada. Com o pin por nome, o campo exibido não muda.
     const user = userEvent.setup();
     const fieldsABC: PydanticField[] = [
       ...fields,
@@ -405,13 +446,40 @@ describe("ComparePage — navegação e filtro", () => {
     };
     const { rerender } = render(<ComparePage {...base} />);
 
-    // Navega até o último campo (campoC) → fieldIndex interno = 2.
+    await user.keyboard("n");
+    expect(text("field-name")).toBe("campoB");
+
+    // campoA (ANTERIOR ao atual) sai da fila; com índice, campoB viraria campoC.
+    rerender(
+      <ComparePage
+        {...base}
+        divergentFields={{ d1: ["campoB", "campoC"], d2: ["campoA"] }}
+      />,
+    );
+
+    expect(text("field-name")).toBe("campoB");
+  });
+
+  it("o campo atual sai da fila → volta ao primeiro campo pendente", async () => {
+    const user = userEvent.setup();
+    const fieldsABC: PydanticField[] = [
+      ...fields,
+      { name: "campoC", type: "text", options: null, description: "Campo C", hash: "hC" },
+    ];
+    const base = {
+      ...makeProps(),
+      fields: fieldsABC,
+      divergentFields: { d1: ["campoA", "campoB", "campoC"], d2: ["campoA"] },
+    };
+    const { rerender } = render(<ComparePage {...base} />);
+
+    // Navega até o último campo (campoC).
     await user.keyboard("n");
     await user.keyboard("n");
     expect(text("field-name")).toBe("campoC");
 
     // Servidor revalida e o doc passa a ter só 2 campos divergentes; o filtro e
-    // o doc não mudaram, então fieldIndex (=2) fica fora de range.
+    // o doc não mudaram, e o campo FIXADO deixou de existir.
     rerender(
       <ComparePage
         {...base}
@@ -419,8 +487,9 @@ describe("ComparePage — navegação e filtro", () => {
       />,
     );
 
-    // Sem o clamp, docFields[2] seria undefined; com clamp cai no último válido.
-    expect(text("field-name")).toBe("campoB");
+    // Cai no primeiro pendente — mesmo idioma da re-pinagem de documento
+    // ("voltando ao topo") — e nunca em `undefined`.
+    expect(text("field-name")).toBe("campoA");
   });
 });
 

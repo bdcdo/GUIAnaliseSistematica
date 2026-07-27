@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { isDocComplete } from "@/lib/compare-assignment-status";
 import { findNextPendingDocIndex } from "@/lib/compare-queue-navigation";
-import { pinnedDocIndex } from "@/hooks/usePinnedDoc";
+import { pinnedIndex } from "@/hooks/usePinnedDoc";
 import type { ReviewsByDoc } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
 import type { CompareDocument } from "./compare-types";
@@ -61,7 +61,9 @@ export function useCompareNavigation({
   const [pinnedDocId, setPinnedDocId] = useState<string | null>(
     () => documents[0]?.id ?? null,
   );
-  const [fieldIndex, setFieldIndex] = useState(0);
+  // `null` = "nenhum campo escolhido ainda neste recorte"; o guard de render
+  // abaixo resolve para o primeiro campo da lista.
+  const [pinnedFieldName, setPinnedFieldName] = useState<string | null>(null);
   const [filter, setFilter] = useState("all");
 
   // O parecer atual é derivado de `pinnedDocId` (o doc exibido, atualizado a
@@ -72,7 +74,7 @@ export function useCompareNavigation({
   // `documents[0]`.
   const docIndex = useMemo(
     () =>
-      pinnedDocIndex(
+      pinnedIndex(
         documents.map((d) => d.id),
         pinnedDocId,
       ),
@@ -130,19 +132,96 @@ export function useCompareNavigation({
     [allDocDivergent],
   );
 
-  const docFields =
-    filter === "all"
-      ? allDocDivergent
-      : allDocDivergent.filter((fn) => fn === filter);
-  // `fieldIndex` pode ficar fora de range se `docFields` encolher sob o usuário
-  // (ex.: um revalidate reduziu os campos divergentes do doc fixado) sem que o
-  // filtro ou o doc — os únicos pontos que resetam `fieldIndex` — mudem. Clampa
-  // na leitura para `currentFieldName` nunca cair em `undefined` havendo campos.
-  const clampedFieldIndex =
-    docFields.length > 0 ? Math.min(fieldIndex, docFields.length - 1) : 0;
-  const currentFieldName = docFields[clampedFieldIndex];
+  // Memoizado porque alimenta as deps dos callbacks de navegação abaixo: o ramo
+  // filtrado produziria array novo a cada render e tiraria a identidade estável
+  // de que o effect de teclado (`useCompareKeyboard`) depende.
+  const docFields = useMemo(
+    () =>
+      filter === "all"
+        ? allDocDivergent
+        : allDocDivergent.filter((fn) => fn === filter),
+    [allDocDivergent, filter],
+  );
+
+  // O campo atual é derivado do NOME fixado, não de um índice — mesmo motivo do
+  // `pinnedDocId` acima, e mesma primitiva. `allDocDivergent` é recomputado no
+  // servidor a cada `revalidatePath` (`computeDivergentFieldNames`): a lista
+  // encolhe quando uma equivalência funde grupos e cresce quando o snapshot de
+  // um par deixa de casar. Com índice, esse encolhimento deslocava a revisora
+  // para OUTRO campo em silêncio, sem clique e sem passar por `guardNavigation`
+  // — o segundo defeito provado da #613 (caso real: confirmar equivalência em
+  // q4 fez o índice apontar de q8 para q14).
+  const fieldIndex = pinnedIndex(docFields, pinnedFieldName);
+  const currentFieldName = docFields[fieldIndex];
+
+  // Re-pinagem quando o nome fixado não resolve: pin `null` (primeiro render) ou
+  // o campo saiu da lista. Nos dois casos `fieldIndex` caiu para o fallback 0 e
+  // o campo exibido deixou de ser o pinado. Ajuste condicional de estado durante
+  // o render (padrão "adjusting state when a prop changes" dos docs do React),
+  // não effect — `set-state-in-effect` proíbe o setState síncrono em effect, e é
+  // o mesmo idioma já usado para o doc logo acima.
+  if (docFields.length > 0 && docFields[fieldIndex] !== pinnedFieldName) {
+    setPinnedFieldName(docFields[0]);
+  }
+
   const currentField = fields.find((f) => f.name === currentFieldName);
   const isCurrentFieldDivergent = divergentSet.has(currentFieldName);
+
+  // Avisa quando a COMPOSIÇÃO da fila de campos muda sob a revisora. Com o pin
+  // por nome ela não é mais deslocada, mas a fila mudar em silêncio (o
+  // denominador de "Campo 2/6" virar 5, ou o campo em que ela estava sumir) é
+  // desorientador — e foi o que tornou a #613 difícil de relatar.
+  //
+  // As três supressões abaixo são o que separa um aviso útil de um toast que se
+  // aprende a ignorar; sem elas ele dispararia a cada confirmação de
+  // equivalência e a cada troca de parecer.
+  const queueSignatureRef = useRef<string | null>(null);
+  const prevQueueDocIdRef = useRef<string | undefined>(undefined);
+  const prevQueueFilterRef = useRef(filter);
+  const prevFieldNameRef = useRef<string | undefined>(undefined);
+  const currentDocId = currentDoc?.id;
+  useEffect(() => {
+    const signature = docFields.join("|");
+    const prevSignature = queueSignatureRef.current;
+    const prevDocId = prevQueueDocIdRef.current;
+    const prevFilter = prevQueueFilterRef.current;
+    const prevFieldName = prevFieldNameRef.current;
+    queueSignatureRef.current = signature;
+    prevQueueDocIdRef.current = currentDocId;
+    prevQueueFilterRef.current = filter;
+    prevFieldNameRef.current = currentFieldName;
+
+    if (prevSignature === null) return; // primeira montagem: não há "mudou"
+    if (prevSignature === signature) return;
+    if (prevDocId !== currentDocId) return; // (1) troca de parecer
+    if (prevFilter !== filter) return; // (2) troca de filtro
+
+    const stillPresent = new Set(docFields);
+    const departed = prevSignature
+      .split("|")
+      .filter((fn) => fn.length > 0 && !stillPresent.has(fn));
+    // (3) consequência da própria ação dela: confirmar uma equivalência funde
+    // grupos e tira o campo da fila. Como `recordReview` já gravou o veredito
+    // local, "todo campo que saiu já tem veredito" identifica exatamente esse
+    // caso — e é o mais comum de todos.
+    const docReviews = currentDocId ? localReviews[currentDocId] : undefined;
+    if (departed.length > 0 && departed.every((fn) => !!docReviews?.[fn])) {
+      return;
+    }
+
+    if (prevFieldName && departed.includes(prevFieldName)) {
+      toast.info(
+        "O campo que você estava revisando saiu da fila de divergências — voltando ao primeiro campo pendente.",
+        { id: "compare-field-left-queue" },
+      );
+      return;
+    }
+    // `id` fixo: uma sequência de `revalidatePath` colapsa num aviso só.
+    toast.info(
+      `A fila de divergências deste parecer mudou (${prevSignature.split("|").filter((fn) => fn.length > 0).length} → ${docFields.length} campos). Você continua no campo atual.`,
+      { id: "compare-queue-changed" },
+    );
+  }, [docFields, filter, currentDocId, currentFieldName, localReviews]);
 
   const reviewedDocsCount = useMemo(
     () =>
@@ -179,10 +258,14 @@ export function useCompareNavigation({
 
   const hasNextDoc = nextPendingDocIndex >= 0;
 
+  // Trocar de parecer começa do primeiro campo do novo doc: `null` é resolvido
+  // pelo guard de render. Explícito (e não deixado para a re-pinagem automática)
+  // porque um doc novo pode ter um campo divergente de MESMO NOME, e herdar a
+  // posição nesse caso seria uma continuidade acidental, não uma decisão.
   const handleNextDoc = useCallback(() => {
     if (nextPendingDocIndex >= 0) {
       setPinnedDocId(documents[nextPendingDocIndex].id);
-      setFieldIndex(0);
+      setPinnedFieldName(null);
     }
   }, [nextPendingDocIndex, documents]);
 
@@ -191,29 +274,44 @@ export function useCompareNavigation({
       if (documents.length === 0) return;
       const clamped = Math.max(0, Math.min(newIndex, documents.length - 1));
       setPinnedDocId(documents[clamped].id);
-      setFieldIndex(0);
+      setPinnedFieldName(null);
     },
     [documents],
   );
 
-  // Parte do índice CLAMPADO (não do `idx` cru do estado): se o estado ficou
-  // fora de range por um encolhimento de `docFields`, navegar a partir do índice
-  // exibido evita ficar preso num índice morto.
-  const docFieldsLength = docFields.length;
-  const goNextField = useCallback(() => {
-    setFieldIndex(
-      clampedFieldIndex < docFieldsLength - 1
-        ? clampedFieldIndex + 1
-        : clampedFieldIndex,
-    );
-  }, [clampedFieldIndex, docFieldsLength]);
-  const goPrevField = useCallback(() => {
-    setFieldIndex(clampedFieldIndex > 0 ? clampedFieldIndex - 1 : clampedFieldIndex);
-  }, [clampedFieldIndex]);
+  // A API de borda continua por ÍNDICE (ProgressDots navega por posição e o
+  // painel exibe "Campo N/M"); a tradução índice → nome vive aqui, para que o
+  // estado interno seja sempre o nome.
+  const setFieldIndex = useCallback(
+    (index: number) => {
+      if (docFields.length === 0) return;
+      const clamped = Math.max(0, Math.min(index, docFields.length - 1));
+      setPinnedFieldName(docFields[clamped]);
+    },
+    [docFields],
+  );
 
+  // Fixa o NOME do vizinho, não a posição dele: é esta linha que fecha o caso
+  // real da #613 — o avanço automático após confirmar uma equivalência
+  // (`handleConfirmEquivalent` → `goNextField`) deixa de deslocar quando o
+  // refresh seguinte chega com a lista já sem o campo fundido.
+  const goNextField = useCallback(() => {
+    if (fieldIndex < docFields.length - 1) {
+      setPinnedFieldName(docFields[fieldIndex + 1]);
+    }
+  }, [docFields, fieldIndex]);
+  const goPrevField = useCallback(() => {
+    if (fieldIndex > 0) setPinnedFieldName(docFields[fieldIndex - 1]);
+  }, [docFields, fieldIndex]);
+
+  // O pin NÃO é resetado aqui: o guard de render já resolve os dois sentidos, e
+  // resolvê-los por omissão dá o comportamento melhor nos dois. Ao filtrar por
+  // um campo único, o nome fixado sai do recorte e a re-pinagem aponta para o
+  // campo filtrado; ao voltar para "all", o nome continua presente na lista
+  // completa e a revisora permanece onde estava — antes, o reset de índice a
+  // jogava de volta no campo 1.
   const changeFilter = useCallback((value: string) => {
     setFilter(value);
-    setFieldIndex(0);
   }, []);
 
   return {
@@ -221,7 +319,7 @@ export function useCompareNavigation({
     currentDoc,
     allDocDivergent,
     docFields,
-    fieldIndex: clampedFieldIndex,
+    fieldIndex,
     setFieldIndex,
     filter,
     changeFilter,

@@ -12,7 +12,12 @@ import {
   unmarkEquivalencePair,
 } from "@/actions/equivalences";
 import type { ReviewsByDoc, VerdictInfo } from "@/lib/compare-reviews";
-import type { CompareDocument, FieldResponse } from "./compare-types";
+import {
+  verdictOriginMatches,
+  type CompareDocument,
+  type FieldResponse,
+  type VerdictOrigin,
+} from "./compare-types";
 
 interface UseCompareVerdictsParams {
   readOnly: boolean;
@@ -29,8 +34,15 @@ interface UseCompareVerdictsParams {
 }
 
 export interface CompareVerdicts {
-  handleVerdict: (verdict: string, chosenResponseId?: string) => Promise<boolean>;
+  // `origin` em primeira posição e obrigatório nas duas escritas: a fronteira
+  // não confia no chamador para ter resolvido o campo certo (#613).
+  handleVerdict: (
+    origin: VerdictOrigin,
+    verdict: string,
+    chosenResponseId?: string,
+  ) => Promise<boolean>;
   handleConfirmEquivalent: (
+    origin: VerdictOrigin,
     responseIds: string[],
     gabaritoId: string,
     verdictDisplay: string,
@@ -105,18 +117,74 @@ function buildSnapshot(fieldResponses: FieldResponse[]): ResponseSnapshotEntry[]
     }));
 }
 
-function canSubmitCompareVerdict(
+type CompareWriteBlockReason =
+  | "read-only"
+  | "no-doc"
+  | "no-field"
+  | "not-divergent"
+  | "origin-mismatch";
+
+/**
+ * Resultado do gate de escrita. Discriminado (e não um booleano) porque as
+ * cinco razões de recusa levam a mensagens diferentes: colapsá-las num `false`
+ * era exatamente o que fazia `handleVerdict` retornar sem dizer nada à revisora
+ * (#613, "ruídos adjacentes"). O `doc` viaja no ramo `ok` para preservar o
+ * estreitamento de tipo que o antigo type guard dava.
+ */
+type CompareWriteGate =
+  | { ok: true; doc: CompareDocument }
+  | { ok: false; reason: CompareWriteBlockReason };
+
+const COMPARE_WRITE_BLOCK_MESSAGE: Record<CompareWriteBlockReason, string> = {
+  // Os controles já nascem `disabled` em somente-leitura; chegar aqui significa
+  // que um deles escapou do gate visual — a mensagem é o sinal desse bug.
+  "read-only": "Modo somente leitura: nenhuma decisão é registrada.",
+  "no-doc": "Nenhum parecer selecionado — recarregue a página.",
+  "no-field": "Nenhum campo selecionado — recarregue a página.",
+  "not-divergent":
+    "Este campo não está mais divergente e não aceita veredito. Recarregue a página.",
+  "origin-mismatch":
+    "Essa resposta pertence a outro campo e não pode ser registrada aqui. Recarregue a página — a tela está exibindo conteúdo desatualizado.",
+};
+
+/**
+ * Fronteira de escrita da Comparação. Valida a ORIGEM recebida (o campo em que
+ * a decisão foi tomada) contra o campo atual, em vez de simplesmente confiar no
+ * campo do render corrente — que era o buraco pelo qual um clique em card
+ * fantasma gravava no campo seguinte (#613).
+ */
+function compareWriteGate(
   readOnly: boolean,
   currentDoc: CompareDocument | undefined,
   currentFieldName: string,
   isCurrentFieldDivergent: boolean,
-): currentDoc is CompareDocument {
-  return (
-    !readOnly &&
-    currentDoc !== undefined &&
-    currentFieldName.length > 0 &&
-    isCurrentFieldDivergent
-  );
+  origin: VerdictOrigin,
+): CompareWriteGate {
+  if (readOnly) return { ok: false, reason: "read-only" };
+  if (currentDoc === undefined) return { ok: false, reason: "no-doc" };
+  if (currentFieldName.length === 0) return { ok: false, reason: "no-field" };
+  if (!isCurrentFieldDivergent) return { ok: false, reason: "not-divergent" };
+  if (!verdictOriginMatches(origin, currentDoc.id, currentFieldName)) {
+    return { ok: false, reason: "origin-mismatch" };
+  }
+  return { ok: true, doc: currentDoc };
+}
+
+/** Recusa com mensagem visível; devolve `false` para o `return` do chamador. */
+function rejectCompareWrite(
+  reason: CompareWriteBlockReason,
+  context: Record<string, unknown>,
+): false {
+  // `console.error` (e não warn) porque `origin-mismatch` só é alcançável se a
+  // tela exibir conteúdo de um campo desmontado: se aparecer em produção, é um
+  // vetor novo e queremos vê-lo.
+  console.error("compare: escrita recusada", { reason, ...context });
+  toast.error(COMPARE_WRITE_BLOCK_MESSAGE[reason], {
+    // `id` fixo: cliques repetidos no mesmo card fantasma atualizam o mesmo
+    // toast em vez de empilhar uma pilha de avisos idênticos.
+    id: `compare-write-blocked-${reason}`,
+  });
+  return false;
 }
 
 /**
@@ -145,17 +213,26 @@ export function useCompareVerdicts({
   goNextField,
 }: UseCompareVerdictsParams): CompareVerdicts {
   const handleVerdict = useCallback(
-    async (verdict: string, chosenResponseId?: string) => {
-      if (
-        !canSubmitCompareVerdict(
-          readOnly,
-          currentDoc,
+    async (
+      origin: VerdictOrigin,
+      verdict: string,
+      chosenResponseId?: string,
+    ) => {
+      const gate = compareWriteGate(
+        readOnly,
+        currentDoc,
+        currentFieldName,
+        isCurrentFieldDivergent,
+        origin,
+      );
+      if (!gate.ok) {
+        return rejectCompareWrite(gate.reason, {
+          origin,
           currentFieldName,
-          isCurrentFieldDivergent,
-        )
-      ) {
-        return false;
+          verdict,
+        });
       }
+      const currentDocument = gate.doc;
 
       const verdictComment = comment || undefined;
       const info: VerdictInfo = {
@@ -166,7 +243,7 @@ export function useCompareVerdicts({
       const saved = await actionSucceeded(
         submitVerdict({
           projectId,
-          documentId: currentDoc.id,
+          documentId: currentDocument.id,
           fieldName: currentFieldName,
           verdict,
           chosenResponseId,
@@ -176,7 +253,7 @@ export function useCompareVerdicts({
         "Failed to submit compare verdict",
         {
           projectId,
-          documentId: currentDoc.id,
+          documentId: currentDocument.id,
           fieldName: currentFieldName,
           verdict,
           chosenResponseId,
@@ -188,14 +265,14 @@ export function useCompareVerdicts({
       // Escrita otimista só após o sucesso: `recordReview` grava em `overrides`
       // (estado da sessão, não auto-revertido). Gravar antes deixaria o campo
       // exibido como revisado mesmo quando o save falha, até um reload.
-      recordReview(currentDoc.id, currentFieldName, info);
+      recordReview(currentDocument.id, currentFieldName, info);
 
       toast.success("Veredito salvo!");
 
       // Usa `info` recém-emitido sobre o estado atual (que o setState ainda não
       // refletiu neste closure) para decidir se o documento fechou.
       const nextDocReviews = {
-        ...localReviews[currentDoc.id],
+        ...localReviews[currentDocument.id],
         [currentFieldName]: info,
       };
       const allFieldsReviewed = allDocDivergent.every(
@@ -225,23 +302,33 @@ export function useCompareVerdicts({
 
   const handleConfirmEquivalent = useCallback(
     async (
+      origin: VerdictOrigin,
       responseIds: string[],
       gabaritoId: string,
       verdictDisplay: string,
     ) => {
-      if (
-        !canSubmitCompareVerdict(
-          readOnly,
-          currentDoc,
+      // O mesmo gate do veredito regular: o botão "Confirmar N respostas como
+      // equivalentes" também vive na subárvore de cards e, num painel fantasma,
+      // gravaria a equivalência (em `response_equivalences`, não só em
+      // `reviews`) contra o campo errado.
+      const gate = compareWriteGate(
+        readOnly,
+        currentDoc,
+        currentFieldName,
+        isCurrentFieldDivergent,
+        origin,
+      );
+      if (!gate.ok) {
+        rejectCompareWrite(gate.reason, {
+          origin,
           currentFieldName,
-          isCurrentFieldDivergent,
-        )
-      ) {
+          responseIds,
+        });
         return;
       }
 
       const verdictComment = comment || undefined;
-      const docId = currentDoc.id;
+      const docId = gate.doc.id;
       const fieldName = currentFieldName;
       const info: VerdictInfo = {
         verdict: verdictDisplay,

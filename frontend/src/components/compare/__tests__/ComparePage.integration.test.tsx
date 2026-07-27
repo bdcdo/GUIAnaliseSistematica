@@ -450,6 +450,43 @@ describe("ComparePage — árvore real (smoke)", () => {
     expectNoCompareWrites();
   });
 
+  // Defesa em profundidade da #613, na árvore real. A propriedade que faz estas
+  // asserções valerem alguma coisa é o fixture ter conjuntos de resposta
+  // DISJUNTOS por campo (campoA: Deferido/Indeferido; campoB: Sim/Não): assim
+  // "gravou valor de outro campo" é inequívoco, sem depender de qual card foi
+  // clicado. É a mesma propriedade que o fixture E2E preserva de propósito.
+  it("após navegar, a tela mostra só os cards do campo atual", async () => {
+    const user = userEvent.setup();
+    renderReal();
+
+    expect(screen.getAllByTestId("agreement-group")).toHaveLength(1);
+    expect(screen.getByText("Deferido")).not.toBeNull();
+
+    await user.keyboard("n");
+
+    // Critério de aceitação 1 da #613: uma raiz, sempre.
+    expect(screen.getAllByTestId("agreement-group")).toHaveLength(1);
+    expect(screen.getByText("Sim")).not.toBeNull();
+    expect(screen.queryByText("Deferido")).toBeNull();
+    expect(screen.queryByText("Indeferido")).toBeNull();
+  });
+
+  it("veredito confirmado depois de navegar grava no campo novo, com valor do campo novo", async () => {
+    const user = userEvent.setup();
+    renderReal();
+
+    await user.keyboard("n");
+    await user.keyboard("1{Enter}");
+
+    expect(submitVerdict).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(submitVerdict).mock.calls[0][0] as {
+      fieldName: string;
+      verdict: string;
+    };
+    expect(call.fieldName).toBe("campoB");
+    expect(["Sim", "Não"]).toContain(call.verdict);
+  });
+
   it("'Descartar' no painel real limpa a seleção sem salvar", async () => {
     const user = userEvent.setup();
     renderReal();

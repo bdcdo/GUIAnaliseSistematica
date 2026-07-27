@@ -232,7 +232,13 @@ export function AgreementGroup({
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="space-y-1.5">
+      {/*
+        `data-testid` é contrato de teste, não estilo: a asserção da #613 conta
+        quantas raízes de lista de cards existem no DOM após navegar (tem que ser
+        sempre 1). Contar por classe Tailwind quebraria no primeiro ajuste de
+        layout, silenciosamente e sempre para o lado do verde.
+      */}
+      <div className="space-y-1.5" data-testid="agreement-group">
         {allowEquivalence && groups.length > 1 && (
           <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-muted-foreground/20 bg-muted/30 px-2.5 py-1.5 text-[11px] leading-tight text-muted-foreground">
             <p className="min-w-0 flex-1">
