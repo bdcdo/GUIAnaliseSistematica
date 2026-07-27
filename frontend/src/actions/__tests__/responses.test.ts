@@ -828,6 +828,18 @@ describe("saveResponse — unicidade da resposta corrente (#609)", () => {
     expect(state.existingReadCount).toBe(2);
   });
 
+  it("projeto sem schema grava a resposta e NÃO sincroniza fila de codificação", async () => {
+    // Sem campos não há régua de completude a aplicar, então não há status de
+    // assignment a derivar. É o único caso em que o sync é pulado.
+    state.pydanticFields = [];
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", {});
+
+    expect(r.success).toBe(true);
+    expect(state.responseInsertPayload).not.toBeNull();
+    expect(state.assignmentUpdatePayload).toBeNull();
+  });
+
   it("falha ao LER a resposta corrente aborta o save — não cria linha nova", async () => {
     // O bug que transformava uma duplicata em série: o erro do SELECT era
     // descartado, `existing` vinha nulo e o save seguia para o INSERT.
