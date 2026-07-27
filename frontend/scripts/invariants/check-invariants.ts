@@ -94,6 +94,35 @@ async function fetchAll<T>(
   }
 }
 
+/**
+ * Busca linhas por um conjunto conhecido de ids, em lotes. Existe para as
+ * colunas JSONB volumosas (`answers`, `response_snapshot`), em que varrer a
+ * tabela inteira com `fetchAll` traria megabytes que a invariante descarta.
+ *
+ * O lote é de 100 e não maior porque o `.in()` do PostgREST vai na URL: ~500
+ * UUIDs estouram o limite e a query volta como erro de request, não de dados.
+ */
+async function fetchByIds<T>(
+  table: string,
+  columns: string,
+  ids: readonly string[],
+): Promise<T[]> {
+  const CHUNK = 100;
+  const rows: T[] = [];
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const batch = ids.slice(i, i + CHUNK);
+    const { data, error } = await supabase
+      .from(table)
+      .select(columns)
+      .in("id", batch);
+    if (error) {
+      throw new Error(`${table} por id (lote de ${batch.length}): ${error.message}`);
+    }
+    rows.push(...((data ?? []) as T[]));
+  }
+  return rows;
+}
+
 // Documentos soft-deletados ficam fora das invariantes de fila/status: o dedup
 // de 2026-06 deixa de propósito, na cópia excluída, linhas que conflitariam
 // com UNIQUE na sobrevivente (ver pipeline-processos/dedup, local). Elas são
@@ -667,25 +696,34 @@ const invariants: Invariant[] = [
   {
     name: "review-verdict-do-campo-declarado",
     motivation:
-      "#613: card do campo ANTERIOR sobrevivia à troca de campo e o clique gravava aquele valor no campo atual — 2 casos provados em 1.016 reviews com chosen_response_id. A régua é a `response_snapshot`, gravada no MESMO closure que decide `field_name`: se o veredito não bate com o que a tela mostrava para a resposta escolhida, e o valor pertence a outro campo dela, a decisão foi tomada num campo e gravada em outro",
+      "#613: card do campo ANTERIOR sobrevivia à troca de campo e o clique gravava aquele valor no campo atual — 2 casos provados em 1.016 reviews com chosen_response_id. A régua é a `response_snapshot`, gravada no MESMO closure que decide `field_name`: se o veredito não bate com o que a tela mostrava para a resposta escolhida, e o valor pertence a outro campo dela, a decisão foi tomada num campo e gravada em outro. As violações conhecidas em 2026-07-27 estão rastreadas na #623; elas NÃO são resíduo antigo — foram gravadas no mesmo dia, com o defeito ainda ativo em produção, então uma contagem que SOBE aqui é sinal de que a causa voltou",
     run: async () => {
-      const [reviews, responses, projects] = await Promise.all([
+      const [reviews, projects] = await Promise.all([
         fetchAll<ReviewVerdictRow>(
           "reviews",
           "id, project_id, field_name, verdict, chosen_response_id",
           (q) => q.not("chosen_response_id", "is", null),
-        ),
-        fetchAll<{ id: string; answers: Record<string, unknown> | null }>(
-          "responses",
-          "id, answers",
         ),
         fetchAll<{ id: string; pydantic_fields: PydanticField[] | null }>(
           "projects",
           "id, pydantic_fields",
         ),
       ]);
-      const answersOf = new Map(responses.map((r) => [r.id, r.answers ?? {}]));
       const fieldsOf = new Map(projects.map((p) => [p.id, p.pydantic_fields ?? []]));
+
+      // `answers` é JSONB da codificação inteira: buscar só as respostas de fato
+      // ESCOLHIDAS por algum veredito faz o custo escalar com `reviews`, não com
+      // o corpus de `responses` (mesmo motivo da fase 2 abaixo).
+      const chosenIds = [
+        ...new Set(reviews.map((rv) => rv.chosen_response_id!)),
+      ];
+      const answersOf = new Map<string, Record<string, unknown>>();
+      for (const row of await fetchByIds<{
+        id: string;
+        answers: Record<string, unknown> | null;
+      }>("responses", "id, answers", chosenIds)) {
+        answersOf.set(row.id, row.answers ?? {});
+      }
 
       // Fase 1 (metadados): candidato = divergência crua num campo `single` com
       // opções. O recorte por TIPO é o que exclui as duas famílias de ruído
@@ -707,18 +745,14 @@ const invariants: Invariant[] = [
         );
       });
 
-      // Fase 2: `response_snapshot` é JSONB volumoso — só dos candidatos, em
-      // lotes de 100 ids (500 UUIDs estouram a URL do PostgREST).
-      const CHUNK = 100;
+      // Fase 2: `response_snapshot` é JSONB volumoso — só dos candidatos.
       const snapshotOf = new Map<string, unknown>();
-      for (let i = 0; i < candidates.length; i += CHUNK) {
-        const ids = candidates.slice(i, i + CHUNK).map((c) => c.id);
-        const { data, error } = await supabase
-          .from("reviews")
-          .select("id, response_snapshot")
-          .in("id", ids);
-        if (error) throw new Error(`reviews snapshot (lote de ${ids.length}): ${error.message}`);
-        for (const row of data ?? []) snapshotOf.set(row.id as string, row.response_snapshot);
+      for (const row of await fetchByIds<{ id: string; response_snapshot: unknown }>(
+        "reviews",
+        "id, response_snapshot",
+        candidates.map((c) => c.id),
+      )) {
+        snapshotOf.set(row.id, row.response_snapshot);
       }
 
       const violations: Violation[] = [];

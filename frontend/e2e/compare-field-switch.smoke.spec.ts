@@ -127,7 +127,13 @@ async function fixtureDocIds(
 async function goToField(page: Page, target: number): Promise<void> {
   const header = page.getByText(new RegExp(`Campo \\d+/${TOTAL_FIELDS}`)).first();
   for (let attempt = 0; attempt < TOTAL_FIELDS * 2; attempt++) {
-    const text = await header.innerText();
+    // A leitura do cabeçalho vai por `expect.poll` — e não por um `innerText`
+    // direto — porque um re-render entre a asserção de visibilidade e a leitura
+    // desanexa o nó, e aí o `innerText` cru estoura em vez de tentar de novo.
+    let text = "";
+    await expect
+      .poll(async () => (text = await header.innerText()), { timeout: 10_000 })
+      .toContain("Campo");
     if (text.includes(`Campo ${target}/${TOTAL_FIELDS}`)) return;
     await page.keyboard.press("n");
     await expect

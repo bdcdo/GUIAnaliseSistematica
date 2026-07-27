@@ -481,7 +481,7 @@ describe("ComparePage — navegação e filtro", () => {
     expect(text("field-name")).toBe("campoB");
   });
 
-  it("o campo atual sai da fila → volta ao primeiro campo pendente", async () => {
+  it("o campo atual sai da fila → volta ao primeiro campo da fila", async () => {
     const user = userEvent.setup();
     const fieldsABC: PydanticField[] = [
       ...fields,
@@ -508,8 +508,10 @@ describe("ComparePage — navegação e filtro", () => {
       />,
     );
 
-    // Cai no primeiro pendente — mesmo idioma da re-pinagem de documento
-    // ("voltando ao topo") — e nunca em `undefined`.
+    // Cai no primeiro campo DA FILA — mesmo idioma da re-pinagem de documento
+    // ("voltando ao topo") — e nunca em `undefined`. Note que "primeiro da fila"
+    // não é sinônimo de "pendente": campoA pode já ter veredito nesta sessão e
+    // só sair da lista no revalidate seguinte. O aviso ao usuário diz o mesmo.
     expect(text("field-name")).toBe("campoA");
   });
 });

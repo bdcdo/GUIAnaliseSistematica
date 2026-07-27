@@ -70,8 +70,12 @@ export function queueChangeNotice(
   if (previousFieldName !== undefined && departed.includes(previousFieldName)) {
     return {
       id: "compare-field-left-queue",
+      // "primeiro campo da fila", não "primeiro campo pendente": a re-pinagem
+      // aponta para `docFields[0]`, que é o primeiro campo DIVERGENTE do parecer
+      // — e ele pode já ter veredito dado nesta sessão, já que o campo só sai da
+      // fila no revalidate seguinte. Prometer "pendente" seria falso na tela.
       message:
-        "O campo que você estava revisando saiu da fila de divergências — voltando ao primeiro campo pendente.",
+        "O campo que você estava revisando saiu da fila de divergências — voltando ao primeiro campo da fila.",
     };
   }
 

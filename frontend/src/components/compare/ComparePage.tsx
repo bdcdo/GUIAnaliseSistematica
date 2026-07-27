@@ -18,6 +18,7 @@ import type { ReviewsByDoc } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
 import type { DocCoverage } from "@/app/(app)/projects/[id]/analyze/compare/page";
 import {
+  COMPARE_ORIGIN_MISMATCH_MESSAGE,
   verdictOriginMatches,
   type CompareDocument,
   type CompareResponse,
@@ -270,23 +271,19 @@ export function ComparePage({
       // é onde a revisora consegue relacionar o aviso ao que acabou de fazer. A
       // mensagem diz o que fazer (recarregar), porque com conteúdo desmontado na
       // tela nenhum clique naquela região vai funcionar (#613).
-      if (
-        !currentDoc ||
-        !verdictOriginMatches(next.origin, currentDoc.id, currentFieldName)
-      ) {
+      if (!currentOrigin || !verdictOriginMatches(next.origin, currentOrigin)) {
         console.error("compare: rascunho de outro campo recusado", {
           origin: next.origin,
-          atual: { documentId: currentDoc?.id, fieldName: currentFieldName },
+          atual: currentOrigin,
         });
-        toast.error(
-          "Essa resposta pertence a outro campo e não pode ser registrada aqui. Recarregue a página — a tela está exibindo conteúdo desatualizado.",
-          { id: "compare-origin-mismatch" },
-        );
+        toast.error(COMPARE_ORIGIN_MISMATCH_MESSAGE, {
+          id: "compare-origin-mismatch",
+        });
         return;
       }
       setPendingVerdict(next);
     },
-    [currentDoc, currentFieldName],
+    [currentOrigin],
   );
 
   // Único entrypoint para todo submit via handleVerdict: confirmação de

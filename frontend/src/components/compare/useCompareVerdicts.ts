@@ -13,6 +13,7 @@ import {
 } from "@/actions/equivalences";
 import type { ReviewsByDoc, VerdictInfo } from "@/lib/compare-reviews";
 import {
+  COMPARE_ORIGIN_MISMATCH_MESSAGE,
   verdictOriginMatches,
   type CompareDocument,
   type FieldResponse,
@@ -143,8 +144,9 @@ const COMPARE_WRITE_BLOCK_MESSAGE: Record<CompareWriteBlockReason, string> = {
   "no-field": "Nenhum campo selecionado — recarregue a página.",
   "not-divergent":
     "Este campo não está mais divergente e não aceita veredito. Recarregue a página.",
-  "origin-mismatch":
-    "Essa resposta pertence a outro campo e não pode ser registrada aqui. Recarregue a página — a tela está exibindo conteúdo desatualizado.",
+  // Mesma frase da recusa primária no clique (`ComparePage`): as duas camadas
+  // são defesa em profundidade da MESMA condição, então compartilham o texto.
+  "origin-mismatch": COMPARE_ORIGIN_MISMATCH_MESSAGE,
 };
 
 /**
@@ -164,7 +166,12 @@ function compareWriteGate(
   if (currentDoc === undefined) return { ok: false, reason: "no-doc" };
   if (currentFieldName.length === 0) return { ok: false, reason: "no-field" };
   if (!isCurrentFieldDivergent) return { ok: false, reason: "not-divergent" };
-  if (!verdictOriginMatches(origin, currentDoc.id, currentFieldName)) {
+  if (
+    !verdictOriginMatches(origin, {
+      documentId: currentDoc.id,
+      fieldName: currentFieldName,
+    })
+  ) {
     return { ok: false, reason: "origin-mismatch" };
   }
   return { ok: true, doc: currentDoc };

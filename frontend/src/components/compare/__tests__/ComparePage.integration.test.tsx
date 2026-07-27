@@ -471,12 +471,24 @@ describe("ComparePage — árvore real (smoke)", () => {
     expect(screen.queryByText("Indeferido")).toBeNull();
   });
 
+  // Deliberadamente pelo MOUSE, e não pelo teclado: o teclado sempre leu
+  // `answerGroups` frescos e por isso nunca foi o vetor da #613 (ver o
+  // comentário em `useCompareKeyboard`). Um teste de teclado aqui afirmaria uma
+  // propriedade que já valia ANTES da correção — verde tanto no código são
+  // quanto no doente, que é a definição de teste que não testa nada.
   it("veredito confirmado depois de navegar grava no campo novo, com valor do campo novo", async () => {
     const user = userEvent.setup();
     renderReal();
 
     await user.keyboard("n");
-    await user.keyboard("1{Enter}");
+
+    // O primeiro card na tela: posição natural do clique, e exatamente onde
+    // ficava o card fantasma do campo anterior.
+    const card = screen.getByRole("button", {
+      name: /Selecionar esta resposta para confirmar: Sim/i,
+    });
+    await user.click(card);
+    await user.click(screen.getByRole("button", { name: /^Confirmar$/ }));
 
     expect(submitVerdict).toHaveBeenCalledTimes(1);
     const call = vi.mocked(submitVerdict).mock.calls[0][0] as {
@@ -484,7 +496,9 @@ describe("ComparePage — árvore real (smoke)", () => {
       verdict: string;
     };
     expect(call.fieldName).toBe("campoB");
-    expect(["Sim", "Não"]).toContain(call.verdict);
+    // Valor do conjunto de campoB. Como os conjuntos são disjuntos, "Deferido"
+    // aqui seria prova de campo trocado.
+    expect(call.verdict).toBe("Sim");
   });
 
   it("'Descartar' no painel real limpa a seleção sem salvar", async () => {

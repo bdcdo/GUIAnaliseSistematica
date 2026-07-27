@@ -86,14 +86,30 @@ export type PendingVerdict = (
   | { kind: "custom"; verdict: string }
 ) & { origin: VerdictOrigin };
 
-/** Origem e destino descrevem o mesmo par (documento, campo)? */
+/**
+ * Origem e destino descrevem o mesmo par (documento, campo)?
+ *
+ * Os dois lados são `VerdictOrigin` — e não um struct contra `(documentId,
+ * fieldName)` soltos — porque a assinatura assimétrica convidava a trocar a
+ * ordem das duas strings sem o compilador reclamar, exatamente no ponto que
+ * decide se uma escrita cruzada é aceita.
+ */
 export function verdictOriginMatches(
-  origin: VerdictOrigin,
-  documentId: string,
-  fieldName: string,
+  a: VerdictOrigin,
+  b: VerdictOrigin,
 ): boolean {
-  return origin.documentId === documentId && origin.fieldName === fieldName;
+  return a.documentId === b.documentId && a.fieldName === b.fieldName;
 }
+
+/**
+ * Texto único da recusa por origem divergente. Vive aqui, ao lado de
+ * `verdictOriginMatches`, porque as duas camadas que recusam (a primária no
+ * clique, em `ComparePage`, e o backstop de escrita em `useCompareVerdicts`)
+ * são defesa em profundidade deliberada: duas cópias da mesma frase divergiriam
+ * na primeira vez que alguém reescrevesse uma delas.
+ */
+export const COMPARE_ORIGIN_MISMATCH_MESSAGE =
+  "Essa resposta pertence a outro campo e não pode ser registrada aqui. Recarregue a página — a tela está exibindo conteúdo desatualizado.";
 
 export function pendingVerdictLabel(pending: PendingVerdict): string {
   switch (pending.kind) {

@@ -14,6 +14,12 @@
 // prova, não indício. Se alguém uniformizar as opções "para simplificar", o
 // smoke continua verde e para de testar o que interessa (#613).
 //
+// Segunda propriedade load-bearing: os 6 campos são `single`. A asserção
+// central do spec conta `data-testid="agreement-group"`, que só o
+// `AgreementGroup` emite — um campo `multi` renderiza `MultiOptionReview`, sem
+// esse testid, e a contagem passaria a valer vacuamente para ele. Ao acrescentar
+// campo aqui, ou mantenha `single`, ou dê ao spec uma âncora equivalente.
+//
 // Idempotente: reutiliza projeto, documentos, membros e respostas pelo nome/
 // título, então rodar de novo é seguro e devolve sempre o mesmo id.
 //

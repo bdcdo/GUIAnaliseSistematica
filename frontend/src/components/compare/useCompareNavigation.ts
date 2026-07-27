@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { isDocComplete } from "@/lib/compare-assignment-status";
 import { findNextPendingDocIndex } from "@/lib/compare-queue-navigation";
 import { pinnedIndex } from "@/hooks/usePinnedDoc";
-import { queueChangeNotice } from "./compare-queue-change";
+import { useQueueChangeNotice } from "./useQueueChangeNotice";
 import type { ReviewsByDoc } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
 import type { CompareDocument } from "./compare-types";
@@ -156,11 +156,17 @@ export function useCompareNavigation({
   const currentFieldName = docFields[fieldIndex];
 
   // Re-pinagem quando o nome fixado não resolve: pin `null` (primeiro render) ou
-  // o campo saiu da lista. Nos dois casos `fieldIndex` caiu para o fallback 0 e
-  // o campo exibido deixou de ser o pinado. Ajuste condicional de estado durante
-  // o render (padrão "adjusting state when a prop changes" dos docs do React),
-  // não effect — `set-state-in-effect` proíbe o setState síncrono em effect, e é
-  // o mesmo idioma já usado para o doc logo acima.
+  // o campo saiu da lista. Ajuste condicional de estado durante o render (padrão
+  // "adjusting state when a prop changes" dos docs do React), não effect —
+  // `set-state-in-effect` proíbe o setState síncrono em effect, e é o mesmo
+  // idioma já usado para o doc logo acima.
+  //
+  // O que esta linha compra NÃO é o campo exibido: `pinnedIndex` já cai em 0, então
+  // `currentFieldName` seria idêntico sem ela. Ela existe para impedir
+  // RESSURREIÇÃO — a fila também CRESCE (quando o snapshot de um par deixa de
+  // casar), e um pin órfão que voltasse a aparecer teleportaria a revisora para
+  // um campo que ela não escolheu, sem clique. Descartar o pin morto no mesmo
+  // render em que ele deixa de resolver fecha essa janela.
   if (docFields.length > 0 && docFields[fieldIndex] !== pinnedFieldName) {
     setPinnedFieldName(docFields[0]);
   }
@@ -168,37 +174,17 @@ export function useCompareNavigation({
   const currentField = fields.find((f) => f.name === currentFieldName);
   const isCurrentFieldDivergent = divergentSet.has(currentFieldName);
 
-  // Avisa quando a COMPOSIÇÃO da fila de campos muda sob a revisora. A decisão
-  // (inclusive as três supressões que impedem o aviso de virar ruído) mora em
-  // `queueChangeNotice`, puro e testado à parte; aqui fica só o rastreio do
-  // render anterior e o efeito colateral.
-  const prevQueueRef = useRef<{
-    fields: readonly string[] | null;
-    fieldName: string | undefined;
-    docId: string | undefined;
-    filter: string;
-  }>({ fields: null, fieldName: undefined, docId: undefined, filter });
+  // Avisa quando a COMPOSIÇÃO da fila de campos muda sob a revisora. Tanto a
+  // decisão (com as três supressões que impedem o aviso de virar ruído) quanto o
+  // rastreio do render anterior moram em `compare-queue-change`.
   const currentDocId = currentDoc?.id;
-  useEffect(() => {
-    const prev = prevQueueRef.current;
-    prevQueueRef.current = {
-      fields: docFields,
-      fieldName: currentFieldName,
-      docId: currentDocId,
-      filter,
-    };
-    const notice = queueChangeNotice({
-      previousFields: prev.fields,
-      currentFields: docFields,
-      previousFieldName: prev.fieldName,
-      previousDocId: prev.docId,
-      currentDocId,
-      previousFilter: prev.filter,
-      currentFilter: filter,
-      reviewedFields: currentDocId ? localReviews[currentDocId] : undefined,
-    });
-    if (notice) toast.info(notice.message, { id: notice.id });
-  }, [docFields, filter, currentDocId, currentFieldName, localReviews]);
+  useQueueChangeNotice({
+    currentFields: docFields,
+    currentFieldName,
+    currentDocId,
+    currentFilter: filter,
+    reviewedFields: currentDocId ? localReviews[currentDocId] : undefined,
+  });
 
   const reviewedDocsCount = useMemo(
     () =>
