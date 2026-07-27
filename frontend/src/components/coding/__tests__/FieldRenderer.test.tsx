@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { FieldRenderer } from "@/components/coding/FieldRenderer";
 import type { PydanticField } from "@/lib/types";
@@ -138,6 +138,10 @@ describe("FieldRenderer (grupo de subcampos) — valor legado em texto (#607)", 
       ([emitido]) => !JSON.stringify(emitido ?? null).includes(LEGACY_TEXT),
     );
     expect(perdeuOLegado).toBe(false);
+    // Sem esta linha o caso passaria com ZERO chamadas — `[].some()` é `false`,
+    // e "nenhuma emissão ruim" não distingue "nada se perdeu" de "nada
+    // aconteceu". A sobrevivência é afirmada, não inferida da ausência.
+    expect(screen.getByText(LEGACY_TEXT)).toBeTruthy();
   });
 
   it("mantém os subcampos inertes enquanto o valor for legado", () => {
@@ -162,7 +166,7 @@ describe("FieldRenderer (grupo de subcampos) — valor legado em texto (#607)", 
     expect(lastOnChangeCall(onChange)).toEqual({ anos: LEGACY_TEXT });
   });
 
-  // O mesmo botão que hoje troca o texto legado pela sentinela em um clique
+  // O mesmo botão que antes trocava o texto legado pela sentinela em um clique
   // silencioso. Dentro do aviso, ele fica sob o mesmo enquadramento de ato
   // consciente que os botões de destino.
   it("põe o botão 'Não informada' dentro do aviso, junto das outras substituições", () => {
@@ -173,6 +177,60 @@ describe("FieldRenderer (grupo de subcampos) — valor legado em texto (#607)", 
     const aviso = screen.getByRole("note");
     const naoInformada = screen.getByRole("button", { name: "Não informada" });
     expect(aviso.contains(naoInformada)).toBe(true);
+  });
+
+  // A substituição pela sentinela é o único caminho irreversível que sobrou:
+  // "Mover para" deixa o texto num input à vista, este apaga a resposta.
+  // `pointerEventsCheck: 0` porque o overlay do Radix confunde o userEvent —
+  // mesma razão do DocumentSelector.test.tsx.
+  describe("substituir pela sentinela exige confirmação", () => {
+    const abrirConfirmacao = async () => {
+      const user = userEvent.setup({ pointerEventsCheck: 0 });
+      const onChange = vi.fn();
+      render(
+        <FieldRenderer field={grupo} value={LEGACY_TEXT} onChange={onChange} />,
+      );
+      await user.click(screen.getByRole("button", { name: "Não informada" }));
+      return { user, onChange };
+    };
+
+    // Enquanto o diálogo está em cena o Radix marca o resto da página como
+    // `aria-hidden`, então o aviso sai da árvore de acessibilidade e não dá
+    // para consultá-lo por papel aqui — a sobrevivência do texto é afirmada no
+    // caso do Cancelar, com o diálogo já fechado. O que este caso sustenta é o
+    // essencial: o clique abriu uma pergunta em vez de gravar.
+    it("o clique no botão não descarta o texto sozinho", async () => {
+      const { onChange } = await abrirConfirmacao();
+
+      expect(onChange).not.toHaveBeenCalled();
+      expect(await screen.findByRole("alertdialog")).toBeTruthy();
+    });
+
+    it("a confirmação cita o texto que será perdido", async () => {
+      await abrirConfirmacao();
+
+      const dialogo = await screen.findByRole("alertdialog");
+      expect(dialogo.textContent).toContain(LEGACY_TEXT);
+    });
+
+    it("só depois de confirmar a sentinela é gravada", async () => {
+      const { user, onChange } = await abrirConfirmacao();
+
+      await user.click(await screen.findByRole("button", { name: "Descartar" }));
+
+      expect(lastOnChangeCall(onChange)).toBe("Não informada");
+    });
+
+    it("cancelar preserva a resposta anterior", async () => {
+      const { user, onChange } = await abrirConfirmacao();
+
+      await user.click(await screen.findByRole("button", { name: "Cancelar" }));
+
+      expect(onChange).not.toHaveBeenCalled();
+      expect(
+        within(screen.getByRole("note")).getByText(LEGACY_TEXT),
+      ).toBeTruthy();
+    });
   });
 
   it("depois de mover, o subcampo seguinte se soma ao que já foi movido", async () => {

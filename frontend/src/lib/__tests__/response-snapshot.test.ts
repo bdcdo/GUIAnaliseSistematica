@@ -509,6 +509,13 @@ describe("buildPersistedResponseSnapshot", () => {
   // apresentada ao formulário não seja a via que o elimina. `keepIfStillPresentable`
   // devolve o valor cru porque esses campos têm `options: null`, e o campo não
   // revisado fica fora de `changedFieldNames`.
+  //
+  // O fixture diverge do #607 real de propósito: `computeFieldHash` é
+  // `name|type|options|description` (schema-utils.ts) e NÃO inclui `subfields`,
+  // então ganhar subcampos não muda o hash — no banco, `q7-antigo` e `q7-novo`
+  // seriam o mesmo valor. Com hashes iguais a asserção não discriminaria nada
+  // ("preservou o da época" e "estampou o de hoje" dariam o mesmo resultado);
+  // a diferença artificial é o que faz o teste distinguir os dois caminhos.
   describe("grupo de subcampos com valor coletado em outra forma (#607)", () => {
     const grupo = field({
       name: "q7",
