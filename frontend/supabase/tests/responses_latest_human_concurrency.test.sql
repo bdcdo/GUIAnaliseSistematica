@@ -8,7 +8,12 @@
 --
 -- Diferentemente dos testes transacionais comuns, as fixtures precisam estar
 -- commitadas para duas conexões dblink enxergarem o mesmo estado. O arquivo usa
--- UUIDs reservados e remove tudo ao final.
+-- UUIDs reservados e remove tudo no fim do caminho feliz — sob ON_ERROR_STOP=1
+-- um DO que falha aborta ANTES do cleanup, deixando as fixtures commitadas. O
+-- que devolve o banco ao estado limpo nesse caso são os DELETE do topo, que
+-- re-rodam sobre os mesmos UUIDs reservados na execução seguinte; as conexões
+-- dblink morrem junto com a sessão psql. Por isso uma falha aqui não exige
+-- limpeza manual, mas o resíduo sobrevive até a próxima execução.
 --
 -- O que aqui se prova NÃO é a unicidade — disso cuida
 -- responses_one_latest_human.test.sql, em uma sessão só. Aqui se prova o
@@ -259,6 +264,23 @@ SELECT extensions.dblink_send_query(
   $$SELECT pg_temp.try_insert_other_respondent()$$
 );
 SELECT pg_catalog.pg_sleep(0.2);
+
+-- Sem esta asserção o cenário degrada em silêncio: se a espera sumir, o INSERT
+-- roda sem disputa e o 'inserted' abaixo continua verde, provando bem menos do
+-- que o comentário acima afirma. A mensagem atribui a falha ao mutex, e não à
+-- unicidade, para que um vermelho futuro não seja lido como regressão da #609.
+DO $$
+BEGIN
+  IF extensions.dblink_is_busy('issue609_b') <> 1 THEN
+    RAISE EXCEPTION
+      'FALHOU: a gravação do OUTRO respondente não esperou. A espera vem do '
+      'FOR UPDATE em documents de enqueue_auto_review_reconciliation, não da '
+      'unicidade: se ele saiu, este cenário parou de exercer contenção.';
+  END IF;
+  RAISE NOTICE 'OK 3a: a gravação do outro respondente espera o mutex do documento';
+END;
+$$;
+
 SELECT extensions.dblink_exec('issue609_a', 'COMMIT');
 
 CREATE TEMP TABLE issue609_other_result AS
