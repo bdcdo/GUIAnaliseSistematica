@@ -1,9 +1,6 @@
 "use server";
 
-import {
-  createSupabaseServer,
-  type SupabaseServerClient,
-} from "@/lib/supabase/server";
+import { createSupabaseServer, type SupabaseServerClient } from "@/lib/supabase/server";
 import { resolveProjectMemberActor } from "@/lib/auth";
 import { revalidatePath, revalidateTag } from "next/cache";
 import { buildPersistedResponseSnapshot } from "@/lib/response-snapshot";
@@ -152,10 +149,7 @@ function resolveSchemaProvenance({
   project,
   stampsCurrentSchema,
   existing,
-}: Pick<
-  BuildResponsePayloadParams,
-  "project" | "stampsCurrentSchema" | "existing"
->) {
+}: Pick<BuildResponsePayloadParams, "project" | "stampsCurrentSchema" | "existing">) {
   if (!!existing && !stampsCurrentSchema) return {};
   // O fallback {major 0, minor 1, patch 0} é canônico e vive uma única vez em
   // `deriveProjectVersionContext` — reusá-lo evita a duplicação que o cabeçalho
@@ -186,9 +180,7 @@ function buildResponsePayload({
   const justifications = notes ? { _notes: notes } : null;
 
   const roundIdToPersist =
-    project?.round_strategy === "manual"
-      ? (project?.current_round_id ?? null)
-      : null;
+    project?.round_strategy === "manual" ? (project?.current_round_id ?? null) : null;
 
   // Para humanos is_partial descreve O QUE FOI GRAVADO, não por qual canal a
   // escrita chegou: uma resposta só deixa de ser parcial quando o conjunto
@@ -214,8 +206,7 @@ function buildResponsePayload({
   // deixou de estar completo). A imutabilidade descrita na migration
   // 20260425000000 vale so para o fluxo LLM.
   const submittedBefore = existing?.is_partial === false;
-  const isPartialToWrite =
-    !codingIsComplete || (isAutoSave && !submittedBefore);
+  const isPartialToWrite = !codingIsComplete || (isAutoSave && !submittedBefore);
 
   const payload = {
     answers: answersToPersist,
