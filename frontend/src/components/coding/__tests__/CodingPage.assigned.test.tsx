@@ -121,6 +121,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
   it("sem documentos atribuídos: mostra o empty-state 'no-doc'", async () => {
     render(
       <CodingPage
+        userId="user-teste"
         projectId="p1"
         documents={[]}
         fields={FIELDS}
@@ -139,6 +140,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
 
     render(
       <CodingPage
+        userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1")]}
         fields={FIELDS}
@@ -165,6 +167,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
   it("documento normal: renderiza o doc certo com as respostas existentes", async () => {
     render(
       <CodingPage
+        userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1"), assignedDoc("a2")]}
         fields={FIELDS}
@@ -182,6 +185,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
   it("fora do escopo habilitado no projeto: config chega ao QuestionsPanel com status normal", async () => {
     render(
       <CodingPage
+        userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1")]}
         fields={FIELDS}
@@ -206,6 +210,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
   it("fora do escopo com pendência do próprio usuário: status pending_mine com o motivo", async () => {
     render(
       <CodingPage
+        userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1")]}
         fields={FIELDS}

@@ -31,6 +31,10 @@ interface BrowseCodingViewProps {
   onSubmit: (draft: CodingDraft) => void;
   onDraftChange: (draft: CodingDraft) => void;
   outOfScope?: OutOfScopeConfig;
+  /** Alterações não enviadas neste documento (#608). */
+  unsent?: boolean;
+  restoredDraft?: CodingDraft | null;
+  restoreNonce?: number;
 }
 
 /** Estado centralizado de falha + ação de retry do modo Explorar (lista e doc
@@ -74,6 +78,9 @@ export function BrowseCodingView({
   onSubmit,
   onDraftChange,
   outOfScope,
+  unsent,
+  restoredDraft,
+  restoreNonce = 0,
 }: BrowseCodingViewProps) {
   if (browseError) {
     return (
@@ -114,7 +121,9 @@ export function BrowseCodingView({
   }
   return (
     <BrowseDocCoder
-      key={browseDocId}
+      // O nonce força o remount ao retomar um rascunho: é assim que o conteúdo
+      // recuperado entra no seed sem setState em effect.
+      key={`${browseDocId}:${restoreNonce}`}
       doc={browseDoc}
       fields={fields}
       submitting={submitting}
@@ -127,6 +136,8 @@ export function BrowseCodingView({
       onSubmit={onSubmit}
       onDraftChange={onDraftChange}
       outOfScope={outOfScope}
+      unsent={unsent}
+      restoredDraft={restoredDraft}
     />
   );
 }

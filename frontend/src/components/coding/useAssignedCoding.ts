@@ -25,7 +25,11 @@ type AssignedAction =
   | { type: "answer"; docId: string; field: string; value: unknown; fields: PydanticField[] }
   | { type: "notes"; docId: string; notes: string }
   | { type: "index"; index: number }
-  | { type: "allDone"; value: boolean };
+  | { type: "allDone"; value: boolean }
+  // Aplicação EXPLÍCITA de um rascunho local (#608). Nunca entra pelo seed do
+  // reducer: semear a partir do rascunho seria aplicá-lo em silêncio, e o
+  // requisito é o oposto — a faixa oferece, a pesquisadora decide.
+  | { type: "restoreDraft"; docId: string; answers: Record<string, unknown>; notes: string };
 
 function reducer(state: AssignedState, action: AssignedAction): AssignedState {
   switch (action.type) {
@@ -60,6 +64,12 @@ function reducer(state: AssignedState, action: AssignedAction): AssignedState {
       return { ...state, docIndex: action.index, allDone: false };
     case "allDone":
       return { ...state, allDone: action.value };
+    case "restoreDraft":
+      return {
+        ...state,
+        allAnswers: { ...state.allAnswers, [action.docId]: action.answers },
+        allNotes: { ...state.allNotes, [action.docId]: action.notes },
+      };
   }
 }
 
@@ -92,6 +102,8 @@ interface UseAssignedCodingParams {
   /** Rede local do #608: registra a edição corrente para o rascunho em
    *  localStorage. O baseline é do hook de rascunho, não daqui. */
   recordDraft: (docId: string, draft: CodingSnapshot) => void;
+  /** Devolve o rascunho oferecido para aplicação explícita. */
+  restoreDraft: (docId: string) => CodingSnapshot | null;
   /** Chamado quando o servidor confirmou a ESCRITA, inclusive com obrigatória
    *  em aberto — ver `submitConfirmed`. */
   submitConfirmed: (docId: string, saved: CodingSnapshot) => void;
@@ -126,6 +138,7 @@ export function useAssignedCoding({
   markClean,
   isDirty,
   recordDraft,
+  restoreDraft,
   submitConfirmed,
   updateDocParam,
   setParams,
@@ -188,6 +201,23 @@ export function useAssignedCoding({
     },
     [currentDoc?.id, markDirty],
   );
+
+  // Aplica o rascunho oferecido pela faixa. Marca sujo porque o conteúdo passa a
+  // divergir do servidor — é justamente o que o indicador de "não enviado" e o
+  // aviso de saída precisam enxergar.
+  const handleRestoreDraft = useCallback(() => {
+    const id = currentDoc?.id;
+    if (!id) return;
+    const restored = restoreDraft(id);
+    if (!restored) return;
+    dispatch({
+      type: "restoreDraft",
+      docId: id,
+      answers: restored.answers,
+      notes: restored.notes,
+    });
+    markDirty(id);
+  }, [currentDoc?.id, restoreDraft, markDirty]);
 
   const handleSubmit = useCallback(async () => {
     if (!currentDoc || Object.keys(docAnswers).length === 0) return;
@@ -344,6 +374,7 @@ export function useAssignedCoding({
     handleAnswer,
     handleNotesChange,
     handleSubmit,
+    handleRestoreDraft,
     handleDocNavigate,
     handleSortChange,
     resetAllDone,

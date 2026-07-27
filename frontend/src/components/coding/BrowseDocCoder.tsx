@@ -39,6 +39,12 @@ interface BrowseDocCoderProps {
   /** Reporta o rascunho atual para cima (autosave-on-exit + dirty tracking). */
   onDraftChange: (draft: CodingDraft) => void;
   outOfScope?: OutOfScopeConfig;
+  /** Alterações não enviadas neste documento (#608). */
+  unsent?: boolean;
+  /** Rascunho local retomado pela pesquisadora. Entra pelo SEED, e o componente
+   *  é remontado por `key` quando ele muda — empurrar o valor por prop exigiria
+   *  setState em effect, e este componente é construído sem estado derivado. */
+  restoredDraft?: CodingDraft | null;
 }
 
 /**
@@ -65,11 +71,13 @@ export function BrowseDocCoder({
   onSubmit,
   onDraftChange,
   outOfScope,
+  unsent,
+  restoredDraft,
 }: BrowseDocCoderProps) {
   const [answers, setAnswers] = useState<Record<string, unknown>>(
-    () => doc.initialAnswers,
+    () => restoredDraft?.answers ?? doc.initialAnswers,
   );
-  const [notes, setNotes] = useState(() => doc.initialNotes);
+  const [notes, setNotes] = useState(() => restoredDraft?.notes ?? doc.initialNotes);
 
   // Espelho do rascunho corrente. Lê/escreve sempre o valor atual (não a
   // closure), então edições no mesmo tick não se sobrescrevem e os callbacks
@@ -137,6 +145,7 @@ export function BrowseDocCoder({
             readOnly={readOnly}
             onReorder={onReorder}
             outOfScope={outOfScope}
+            unsent={unsent}
           />
         </ResizablePanel>
       </ResizablePanelGroup>

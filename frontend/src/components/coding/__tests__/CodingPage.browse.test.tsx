@@ -193,7 +193,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     saveResponse.mockResolvedValue({ success: true });
 
     render(
-      <CodingPage projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
@@ -220,7 +220,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     saveResponse.mockResolvedValue({ success: true });
 
     render(
-      <CodingPage projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     expect((await screen.findByTestId("count-d1")).textContent).toBe("0");
@@ -244,7 +244,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     );
 
     render(
-      <CodingPage projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
@@ -279,6 +279,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
 
     render(
       <CodingPage
+        userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1")]}
         fields={FIELDS}
@@ -299,7 +300,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     getDocumentForCoding.mockResolvedValue(codingResult("d1", null));
 
     render(
-      <CodingPage projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
@@ -340,7 +341,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     );
 
     render(
-      <CodingPage projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
