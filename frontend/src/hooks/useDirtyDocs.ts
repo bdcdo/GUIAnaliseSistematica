@@ -87,25 +87,25 @@ export function useDirtyDocs(): DirtyDocsStore {
   );
 }
 
-// Leitura reativa por documento. `getVersion` é o snapshot; o predicado é
-// reavaliado a cada notificação.
+// Leitura reativa por documento. O snapshot é o próprio booleano — primitivo,
+// portanto estável por valor: devolver o `Set` faria o React comparar por
+// identidade e re-renderizar em loop, já que o conjunto é mutado in-place.
 export function useIsDocDirty(
   store: DirtyDocsStore,
   docId: string | null | undefined,
 ): boolean {
-  const version = useSyncExternalStore(
+  const getSnapshot = useCallback(() => store.isDirty(docId), [store, docId]);
+  return useSyncExternalStore(
     store.subscribe,
-    store.getVersion,
-    // No servidor não há sujeira: o valor inicial precisa casar com o primeiro
-    // render do cliente, senão o React acusa mismatch de hidratação.
-    () => 0,
+    getSnapshot,
+    // No servidor não há sujeira: o valor precisa casar com o primeiro render do
+    // cliente, senão o React acusa mismatch de hidratação.
+    () => false,
   );
-  return useMemo(() => store.isDirty(docId), [store, docId, version]);
 }
 
 // Quantos documentos têm alterações não enviadas — o sinal do aviso de saída,
 // que precisa valer para a fila inteira, não só para o documento aberto.
 export function useDirtyDocsCount(store: DirtyDocsStore): number {
-  const version = useSyncExternalStore(store.subscribe, store.getVersion, () => 0);
-  return useMemo(() => store.getDirtyCount(), [store, version]);
+  return useSyncExternalStore(store.subscribe, store.getDirtyCount, () => 0);
 }

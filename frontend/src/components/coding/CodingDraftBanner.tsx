@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { AlertTriangle, FileClock } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { CODING_DRAFT_NOTES_KEY, type CodingDraftRecovery } from "@/lib/coding-draft";
@@ -39,7 +40,8 @@ interface CodingDraftBannerProps {
   fields: PydanticField[];
   onRestore: () => void;
   onDiscard: () => void;
-  /** Injetável para o teste não depender do relógio real. */
+  /** Instante de referência da idade do rascunho. Injetável para o teste não
+   *  depender do relógio real; omitido, é capturado no mount. */
   now?: number;
 }
 
@@ -48,8 +50,14 @@ export function CodingDraftBanner({
   fields,
   onRestore,
   onDiscard,
-  now = Date.now(),
+  now,
 }: CodingDraftBannerProps) {
+  // `Date.now()` no corpo do componente é impuro no render. A idade exibida é
+  // uma ordem de grandeza ("há 2 horas"), não um cronômetro: capturar o instante
+  // no mount, num inicializador lazy, dá o mesmo texto sem a impureza.
+  const [mountedAt] = useState(() => Date.now());
+  const reference = now ?? mountedAt;
+
   if (recovery.kind !== "resumable" && recovery.kind !== "diverged") return null;
 
   const overwritten =
@@ -64,7 +72,7 @@ export function CodingDraftBanner({
         <FileClock className="size-4 shrink-0 text-amber-600" aria-hidden />
         <span className="flex-1">
           Você tem alterações não enviadas neste documento, salvas neste navegador{" "}
-          {humanizeAge(recovery.updatedAt, now)}.
+          {humanizeAge(recovery.updatedAt, reference)}.
         </span>
         <Button size="sm" variant="default" onClick={onRestore}>
           Retomar rascunho

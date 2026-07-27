@@ -246,9 +246,17 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
   const stateRef = useRef<Map<string, DocDraftState>>(new Map());
   const timersRef = useRef<Map<string, number>>(new Map());
   const keyPartsRef = useRef({ projectId, userId, enabled });
-  keyPartsRef.current = { projectId, userId, enabled };
   const fieldsRef = useRef(params.fields);
-  fieldsRef.current = params.fields;
+  // A sincronização acontece num effect sem deps (roda após cada render), e não
+  // no corpo do componente: escrever em ref durante o render quebra o modelo
+  // concorrente do React e é erro de lint (`react-hooks/refs`). Mesmo padrão de
+  // `useAutosaveOnExit`. Os leitores destes refs são handlers e listeners, que
+  // rodam sempre depois do commit.
+  const fields = params.fields;
+  useEffect(() => {
+    keyPartsRef.current = { projectId, userId, enabled };
+    fieldsRef.current = fields;
+  });
 
   const [recovery, setRecovery] = useState<CodingDraftRecovery>({ kind: "none" });
   const [storageAvailable, setStorageAvailable] = useState(true);
