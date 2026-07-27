@@ -200,19 +200,24 @@ describe("critério 4 — a tela diz se há alterações não enviadas", () => {
   });
 });
 
-describe("critério 2 — fechar a aba não perde trabalho", () => {
-  // A prova de que a rede local existe: o conteúdo digitado sobrevive ao
-  // `pagehide` sem nenhuma escrita no servidor. Mutação vermelha: remover o
-  // flush de `pagehide`/`visibilitychange` do hook de rascunho.
-  it("o que foi digitado é persistido localmente ao esconder a aba", async () => {
+describe("critério 2 — o que foi digitado sobrevive fora do servidor", () => {
+  // Esta suíte roda com timers REAIS (userEvent precisa deles), então o debounce
+  // de 300ms já disparou quando as asserções rodam. Consequência medida: este
+  // teste continua passando mesmo sem o `pagehide` — ele prova a existência da
+  // rede local, NÃO o flush de saída.
+  //
+  // Os três gatilhos de flush (`pagehide`, `visibilitychange:hidden`, unmount)
+  // são provados em `useCodingDrafts.test.ts`, com fake timers, cada um com a
+  // mutação que o derruba. Aqui, alegar o contrário seria uma asserção vácua.
+  it("o que foi digitado é persistido localmente, sem ir ao servidor", async () => {
     const user = userEvent.setup();
     renderPage();
 
     await typeAnswer(user, "Zolgensma");
-    window.dispatchEvent(new Event("pagehide"));
 
     await waitFor(() => expect(storedDraft()?.draft.answers).toEqual({ q1: "Zolgensma" }));
-    // E nada foi para o servidor: a gravação continua sendo ação explícita.
+    // Nenhuma escrita implícita: a gravação no servidor segue sendo ação
+    // explícita da pesquisadora (critério 1).
     expect(saveResponse).not.toHaveBeenCalled();
   });
 });
@@ -294,7 +299,6 @@ describe("envio confirmado", () => {
     renderPage();
 
     await typeAnswer(user, "Zolgensma");
-    window.dispatchEvent(new Event("pagehide"));
     await waitFor(() => expect(storedDraft()).not.toBeNull());
 
     await user.click(screen.getByRole("button", { name: /enviar/i }));
@@ -309,7 +313,7 @@ describe("envio confirmado", () => {
     renderPage();
 
     await typeAnswer(user, "Zolgensma");
-    window.dispatchEvent(new Event("pagehide"));
+    await waitFor(() => expect(storedDraft()).not.toBeNull());
 
     await user.click(screen.getByRole("button", { name: /enviar/i }));
 
