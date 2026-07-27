@@ -106,7 +106,7 @@ const invariants: Invariant[] = [
   {
     name: "responses-is-latest-unica",
     motivation:
-      "família de duplicatas por corrida/re-import (#490, dedup Zolgensma): no máximo 1 response is_latest por (documento, respondente)",
+      "invariante dos índices responses_one_latest_human_per_document (#609) e responses_one_latest_llm_per_document; até a #609 a regra humana vivia só na aplicação, e a família de duplicatas por corrida/re-import (#490, dedup Zolgensma) nascia daí. FAIL aqui deixou de ser 'mais uma corrida': é índice dropado ou canal de escrita que o contorna",
     run: async () => {
       const rows = await fetchAll<{
         id: string;

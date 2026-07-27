@@ -51,7 +51,9 @@ GATE_SUITES=(
   llm_rate_limit
   member_permission_rpcs
   project_members_column_guard
+  responses_one_latest_human
   auto_review_assignment_concurrency
+  responses_latest_human_concurrency
   unmark_equivalence_atomic
   auto_review_reconciliation_outbox
   arbitration_reopen
