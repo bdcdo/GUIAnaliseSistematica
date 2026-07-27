@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useMemo, useState } from "react";
 import { applyFieldOrder } from "@/lib/field-order";
 import { sortByRecent } from "@/lib/coding-sort";
 import { useUrlState } from "@/hooks/useUrlState";
@@ -283,16 +283,20 @@ function CodingPageInner({
     setSubmitting,
     markDirty,
     markClean,
-    isDirty,
     recordDraft: drafts.recordDraft,
     submitConfirmed: drafts.submitConfirmed,
     updateDocParam,
   });
 
-  // Troca de modo (Atribuídos↔Explorar). Ao SAIR do Explorar, descarta o
-  // rascunho de browse não salvo: o BrowseDocCoder (keyed) desmonta e, ao voltar,
-  // re-semeia do cache pré-edição; sem zerar o draft/dirty aqui, a edição sumiria
-  // da tela mas ainda seria salva no autosave-on-exit / "Voltar" (ghost save).
+  // Troca de modo (Atribuídos↔Explorar). Ao SAIR do Explorar, esquece o rascunho
+  // de browse EM MEMÓRIA: o BrowseDocCoder (keyed) desmonta e, ao voltar,
+  // re-semeia do cache pré-edição, então manter o ref preenchido descolaria o que
+  // a tela mostra do que o container acha que está editado.
+  //
+  // Até o #608 isto também zerava a sujeira, para evitar "ghost save" — o
+  // autosave gravando uma edição que a tela já tinha descartado. Sem autosave não
+  // há o que gravar, e o dirty passa a sobreviver à troca de modo de propósito: a
+  // edição continua no rascunho local, logo continua não enviada.
   const discardBrowseDraft = browse.discardDraft;
   const handleModeChange = useCallback(
     (next: "assigned" | "browse") => {

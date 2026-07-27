@@ -21,7 +21,6 @@ interface UseBrowseCodingParams {
   markClean: (docId: string) => void;
   recordDraft: (docId: string, draft: CodingSnapshot) => void;
   submitConfirmed: (docId: string, saved: CodingSnapshot) => void;
-  isDirty: (docId: string | null | undefined) => boolean;
   updateDocParam: (docId: string | null) => void;
 }
 
@@ -30,8 +29,8 @@ interface UseBrowseCodingParams {
  * seleção é derivada do `?doc=` da URL e o conteúdo do doc de
  * `useDocumentForCoding` — nada em `useState`/effect aqui, o que mantém os
  * diagnósticos de browse zerados (PR #257). O estado editável vive no filho
- * keyed `BrowseDocCoder`; este hook só guarda o rascunho num ref para o
- * autosave-on-exit centralizado (#28).
+ * keyed `BrowseDocCoder`; este hook só guarda o rascunho num ref, que o envio
+ * explícito consome.
  *
  * Cumpre os contratos da #257: `markResponded(id)` (update otimista do contador
  * pós-save), `invalidate(id)` após salvar (anti-staleness do cache de doc) e
@@ -47,7 +46,6 @@ export function useBrowseCoding({
   markClean,
   recordDraft,
   submitConfirmed,
-  isDirty,
   updateDocParam,
 }: UseBrowseCodingParams) {
   const {
@@ -70,8 +68,8 @@ export function useBrowseCoding({
     invalidate: invalidateBrowseDoc,
   } = useDocumentForCoding(projectId, browseDocId);
 
-  // Rascunho atual reportado pelo BrowseDocCoder; lido pelo autosave-on-exit.
-  // Ref (não estado) para não entrar no render.
+  // Rascunho atual reportado pelo BrowseDocCoder. Ref (não estado) para não
+  // entrar no render.
   const browseDraftRef = useRef<CodingDraft | null>(null);
   // Guarda de reentrância dos saves de browse: impede que um duplo-clique em
   // "Enviar"/"Voltar" dispare save/markResponded duas vezes antes do
@@ -106,8 +104,8 @@ export function useBrowseCoding({
     browseDraftRef.current = null;
   }, []);
 
-  // Reportado pelo BrowseDocCoder a cada edição: alimenta o autosave (via ref)
-  // e marca o doc como sujo.
+  // Reportado pelo BrowseDocCoder a cada edição: guarda o rascunho no ref,
+  // registra-o na rede local e marca o doc como não enviado.
   const handleDraftChange = useCallback(
     (draft: CodingDraft) => {
       browseDraftRef.current = draft;

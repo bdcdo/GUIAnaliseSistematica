@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { StrictMode } from "react";
 import { renderHook, act, cleanup } from "@testing-library/react";
 import { useUnsavedWorkGuard } from "@/hooks/useUnsavedWorkGuard";
 import { requestNavigation } from "@/lib/unsaved-work-guard";
@@ -32,7 +33,7 @@ describe("useUnsavedWorkGuard", () => {
     expect(proceed).not.toHaveBeenCalled();
   });
 
-  it("confirmar executa a navegação retida uma única vez e fecha o aviso", () => {
+  it("confirmar executa a navegação retida e fecha o aviso", () => {
     const { result } = renderHook(() => useUnsavedWorkGuard(true));
     const proceed = vi.fn();
     act(() => {
@@ -41,11 +42,27 @@ describe("useUnsavedWorkGuard", () => {
 
     act(() => result.current.confirmLeave());
 
-    // "Uma única vez" é a asserção que importa: o `proceed()` fica fora do
-    // updater de `setState` justamente porque updaters são reexecutados sob
-    // StrictMode, e navegar de dentro de um dispararia a saída em dobro.
     expect(proceed).toHaveBeenCalledTimes(1);
     expect(result.current.isPrompting).toBe(false);
+  });
+
+  it("sob StrictMode, confirmar navega UMA vez só", () => {
+    // O `StrictMode` é o que dá sentido a este teste, e sem ele ele seria vácuo:
+    // medi que, com `renderHook` normal, mover o `proceed()` para dentro do
+    // updater de `setPending` mantinha tudo verde — o updater roda uma vez e a
+    // contagem bate de qualquer jeito. É o double-invoke do StrictMode que
+    // separa as duas implementações, e por isso a proteção só é real aqui.
+    const { result } = renderHook(() => useUnsavedWorkGuard(true), {
+      wrapper: StrictMode,
+    });
+    const proceed = vi.fn();
+    act(() => {
+      requestNavigation(proceed);
+    });
+
+    act(() => result.current.confirmLeave());
+
+    expect(proceed).toHaveBeenCalledTimes(1);
   });
 
   it("ficar descarta a navegação retida sem executá-la", () => {

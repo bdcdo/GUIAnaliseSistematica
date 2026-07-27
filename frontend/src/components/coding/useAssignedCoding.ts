@@ -117,8 +117,11 @@ interface UseAssignedCodingParams {
  * Consolida `docIndex`/`allAnswers`/`allNotes`/`allDone` num `useReducer` com
  * init lazy semeado das props — zera `prefer-useReducer` e `no-derived-useState`
  * (que disparavam com os `useState` separados, em especial
- * `useState(existingAnswers)`). Preserva o autosave-on-navigate (#28): navegar
- * ou trocar a ordenação salva o doc sujo antes de mudar.
+ * `useState(existingAnswers)`).
+ *
+ * Nenhum handler daqui grava sozinho. Até o #608, navegar ou trocar a ordenação
+ * autosalvava o doc sujo (#28); a gravação saiu e o que protege a edição agora é
+ * o rascunho local, registrado no effect abaixo.
  */
 export function useAssignedCoding({
   projectId,

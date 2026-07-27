@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
+import { renderHook, act, cleanup } from "@testing-library/react";
 import { saveResponse } from "@/actions/responses";
 import { toast } from "sonner";
 import { CODING_SAVE_TRANSPORT_ERROR } from "@/lib/coding-autosave";
