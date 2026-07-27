@@ -58,7 +58,6 @@ export function AssignedCodingView({
   readOnly,
   onReorder,
   outOfScope,
-  unsent,
   allDone,
   onExploreMore,
   hasAssignments,
@@ -118,7 +117,6 @@ export function AssignedCodingView({
             readOnly={readOnly}
             onReorder={onReorder}
             outOfScope={outOfScope}
-            unsent={unsent}
           />
         </ResizablePanel>
       </ResizablePanelGroup>

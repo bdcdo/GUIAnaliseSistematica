@@ -76,6 +76,9 @@ const flushDebounce = () => {
 
 const stored = (key = KEY) => parseCodingDraft(window.localStorage.getItem(key));
 
+// Planta um envelope no localStorage. Os defaults vivem na desestruturação, e
+// não em `??` por campo: além de mais curto, é o que mantém o helper abaixo do
+// limiar de complexidade do gate.
 function plant(
   over: Partial<{
     key: string;
@@ -89,21 +92,31 @@ function plant(
     formatVersion: number;
   }> = {},
 ) {
-  const userId = over.userId ?? USER;
-  const projectId = over.projectId ?? PROJECT;
-  const documentId = over.documentId ?? DOC;
-  const envelope = {
-    formatVersion: over.formatVersion ?? CODING_DRAFT_FORMAT_VERSION,
-    writeToken: over.writeToken ?? "tok-plantado",
-    userId,
-    projectId,
-    documentId,
-    updatedAt: over.updatedAt ?? Date.now(),
-    base: over.base ?? EMPTY,
-    draft: over.draft ?? snap({ q1: "do rascunho" }),
-  };
-  const key = over.key ?? codingDraftStorageKey({ userId, projectId, documentId });
-  window.localStorage.setItem(key, JSON.stringify(envelope));
+  const {
+    userId = USER,
+    projectId = PROJECT,
+    documentId = DOC,
+    writeToken = "tok-plantado",
+    updatedAt = Date.now(),
+    base = EMPTY,
+    draft = snap({ q1: "do rascunho" }),
+    formatVersion = CODING_DRAFT_FORMAT_VERSION,
+    key = codingDraftStorageKey({ userId, projectId, documentId }),
+  } = over;
+
+  window.localStorage.setItem(
+    key,
+    JSON.stringify({
+      formatVersion,
+      writeToken,
+      userId,
+      projectId,
+      documentId,
+      updatedAt,
+      base,
+      draft,
+    }),
+  );
   return key;
 }
 

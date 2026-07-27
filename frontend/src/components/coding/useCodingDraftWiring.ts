@@ -91,11 +91,24 @@ export function useCodingDraftWiring({
     if (activeDocId) discardDraft(activeDocId);
   }, [activeDocId, discardDraft]);
 
+  // O rascunho retomado entra no Explorar como o documento INICIAL, e não como
+  // uma prop de seed do coder: `BrowseDocCoder` é construído sem estado derivado
+  // e sem setState em effect, e o remount por `key` já é o mecanismo de aplicação.
+  // Resolver aqui mantém aquele componente sem nenhuma decisão nova.
+  const browseDocForCoder = useMemo(() => {
+    if (!browseDoc || !browseRestored) return browseDoc;
+    return {
+      ...browseDoc,
+      initialAnswers: browseRestored.answers,
+      initialNotes: browseRestored.notes,
+    };
+  }, [browseDoc, browseRestored]);
+
   return {
     activeDocUnsent,
     handleRestoreDraft,
     handleDiscardDraft,
-    browseRestored,
+    browseDocForCoder,
     browseRestoreNonce,
   };
 }

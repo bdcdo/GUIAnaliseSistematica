@@ -31,13 +31,9 @@ export interface QuestionsPanelProps {
   onReorder?: (newOrder: string[]) => void;
   /** Presente = renderiza a pergunta "Documento fora do escopo?" primeiro. */
   outOfScope?: OutOfScopeConfig;
-  /** Há alterações ainda não enviadas neste documento (#608). Vem da sujeira em
-   *  memória, não do rascunho local: a tela precisa dizer a verdade mesmo quando
-   *  a cópia local não pôde ser gravada. */
-  unsent?: boolean;
 }
 
-export function QuestionsPanel({ fields, answers, onAnswer, onSubmit, submitting = false, notes = "", onNotesChange, readOnly = false, onReorder, outOfScope, unsent = false }: QuestionsPanelProps) {
+export function QuestionsPanel({ fields, answers, onAnswer, onSubmit, submitting = false, notes = "", onNotesChange, readOnly = false, onReorder, outOfScope }: QuestionsPanelProps) {
   const questionRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   const { outOfScopeState, setOutOfScopeState, outOfScopeBlocked } = useOutOfScopeState(outOfScope);
@@ -110,22 +106,10 @@ export function QuestionsPanel({ fields, answers, onAnswer, onSubmit, submitting
 
   return (
     <div className="flex h-full flex-col bg-card">
-      <div className="flex items-center justify-between gap-2 border-b px-4 py-2.5 shrink-0">
+      <div className="border-b px-4 py-2.5 shrink-0">
         <p className="text-xs font-medium text-muted-foreground">
           Perguntas ({answeredRequiredCount}/{requiredFields.length} obrigatórias respondidas)
         </p>
-        {/* Indicador permanente enquanto houver pendência — não um toast, que
-            some. É o que responde "isto está salvo?" sem a pesquisadora ter de
-            adivinhar, e some sozinho quando o envio é confirmado. */}
-        {unsent && (
-          <span
-            role="status"
-            className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-200"
-          >
-            <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
-            Alterações não enviadas
-          </span>
-        )}
       </div>
 
       <div

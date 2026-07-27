@@ -65,8 +65,6 @@ export function BrowseCodingView({
   onSubmit,
   onDraftChange,
   outOfScope,
-  unsent,
-  restoredDraft,
   restoreNonce = 0,
 }: BrowseCodingViewProps) {
   if (browseError) {
@@ -123,8 +121,6 @@ export function BrowseCodingView({
       onSubmit={onSubmit}
       onDraftChange={onDraftChange}
       outOfScope={outOfScope}
-      unsent={unsent}
-      restoredDraft={restoredDraft}
     />
   );
 }

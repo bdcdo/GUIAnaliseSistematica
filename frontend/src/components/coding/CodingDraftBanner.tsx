@@ -123,3 +123,23 @@ export function CodingDraftUnavailableBanner({ visible }: { visible: boolean }) 
     </div>
   );
 }
+
+// Indicador permanente de "há alterações não enviadas" (#608). Fica aqui, junto
+// das outras superfícies do rascunho local, e não inline no `QuestionsPanel`:
+// esse painel já é grande e o JSX condicional a mais o empurrava sobre o limiar
+// de complexidade do gate.
+//
+// O sinal que o alimenta vem da sujeira em memória, nunca do storage — ver
+// `useDirtyDocs`.
+export function UnsentChangesBadge({ visible }: { visible: boolean }) {
+  if (!visible) return null;
+  return (
+    <span
+      role="status"
+      className="flex items-center gap-1.5 whitespace-nowrap rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+    >
+      <span className="size-1.5 rounded-full bg-amber-500" aria-hidden />
+      Alterações não enviadas
+    </span>
+  );
+}

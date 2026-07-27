@@ -13,6 +13,7 @@ import { useCodingDraftWiring } from "./useCodingDraftWiring";
 import {
   CodingDraftBanner,
   CodingDraftUnavailableBanner,
+  UnsentChangesBadge,
 } from "./CodingDraftBanner";
 import { CodingHeader, type DocSection } from "./CodingHeader";
 import { CodingEmptyStates } from "./CodingEmptyStates";
@@ -321,7 +322,7 @@ function CodingPageInner({
     activeDocUnsent,
     handleRestoreDraft,
     handleDiscardDraft,
-    browseRestored,
+    browseDocForCoder,
     browseRestoreNonce,
   } = useCodingDraftWiring({
     mode,
@@ -439,6 +440,16 @@ function CodingPageInner({
           também não aparece. */}
       {!isFullscreen && (
         <>
+          {/* Um único indicador para os dois modos, junto das faixas do
+              rascunho: permanente enquanto houver pendência, some quando o envio
+              é confirmado. Fica aqui — e não dentro do painel de perguntas —
+              porque o sinal é da PÁGINA (o documento aberto), e porque duplicá-lo
+              por modo obrigava cada view a repassá-lo. */}
+          {activeDocUnsent && (
+            <div className="flex items-center gap-2 border-b px-4 py-1.5">
+              <UnsentChangesBadge visible />
+            </div>
+          )}
           <CodingDraftBanner
             recovery={drafts.recovery}
             fields={fields}
@@ -470,7 +481,6 @@ function CodingPageInner({
           readOnly={readOnly}
           onReorder={handleReorder}
           outOfScope={assignedOutOfScope}
-          unsent={activeDocUnsent}
           allDone={assigned.allDone}
           onExploreMore={handleExploreMore}
           hasAssignments={hasAssignments}
@@ -485,7 +495,7 @@ function CodingPageInner({
           browseDocId={browse.browseDocId}
           browseDocuments={browse.browseDocuments}
           browseDocLoading={browse.browseDocLoading}
-          browseDoc={browse.browseDoc}
+          browseDoc={browseDocForCoder}
           onSelect={browse.handleBrowseSelect}
           onRetry={browse.retryBrowse}
           onRetryDoc={browse.retryBrowseDoc}
@@ -500,8 +510,6 @@ function CodingPageInner({
           onSubmit={(draft) => void browse.handleBrowseSubmit(draft)}
           onDraftChange={browse.handleDraftChange}
           outOfScope={browseOutOfScope}
-          unsent={activeDocUnsent}
-          restoredDraft={browseRestored}
           restoreNonce={browseRestoreNonce}
         />
       )}

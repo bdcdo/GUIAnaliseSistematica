@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { CodingDraftRecovery, CodingSnapshot } from "@/lib/coding-draft";
 import {
   createCodingDraftSession,
@@ -29,15 +29,17 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
   const [storageAvailable, setStorageAvailable] = useState(true);
   const [staleDiscardedCount, setStaleDiscardedCount] = useState(0);
 
-  // Sessão criada uma única vez. Os callbacks são estáveis porque só usam os
-  // setters do React, cuja identidade é garantida.
-  const sessionRef = useRef<CodingDraftSession | null>(null);
-  sessionRef.current ??= createCodingDraftSession({
-    onRecovery: setRecovery,
-    onStorageAvailable: setStorageAvailable,
-    onStaleDiscarded: (n) => setStaleDiscardedCount((current) => current + n),
-  });
-  const session = sessionRef.current;
+  // Sessão criada uma única vez, por inicializador lazy de `useState`: um
+  // `ref.current ??= ...` no corpo do componente seria acesso a ref durante o
+  // render (erro de `react-hooks/refs`). Os callbacks são estáveis porque só
+  // usam os setters do React, cuja identidade é garantida.
+  const [session] = useState<CodingDraftSession>(() =>
+    createCodingDraftSession({
+      onRecovery: setRecovery,
+      onStorageAvailable: setStorageAvailable,
+      onStaleDiscarded: (n) => setStaleDiscardedCount((current) => current + n),
+    }),
+  );
 
   // A sessão recebe as chaves e o schema num effect sem deps (roda após cada
   // render), e não no corpo do componente: escrever durante o render quebra o
