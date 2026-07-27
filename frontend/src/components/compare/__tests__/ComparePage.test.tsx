@@ -117,6 +117,27 @@ vi.mock("@/components/compare/CompareWorkspace", () => ({
       >
         prepare verdict
       </button>
+      {/*
+        Simula o clique num card FANTASMA: o rascunho chega carimbado com um
+        campo que não é o exibido. É o que uma subárvore sobrevivente no DOM
+        produz por construção, já que ela não re-renderiza (#613).
+      */}
+      <button
+        data-testid="prepare-verdict-campo-fantasma"
+        onClick={() =>
+          comparisonPanel.onPrepareVerdict({
+            kind: "response",
+            verdict: "ALFA-do-campo-antigo",
+            chosenResponseId: "r-fantasma",
+            origin: {
+              documentId: comparisonPanel.documentId,
+              fieldName: "campo_ja_desmontado",
+            },
+          })
+        }
+      >
+        prepare verdict fantasma
+      </button>
       <button
         data-testid="prepare-verdict-2"
         onClick={() =>
@@ -924,6 +945,44 @@ describe("ComparePage — vereditos e equivalências (useCompareVerdicts)", () =
 // Antes deste PR, nenhum teste deste arquivo exercitava isCoordinator: true —
 // a bar do toggle e a diferenciação da mensagem de estado vazio ficavam sem
 // cobertura direta.
+describe("ComparePage — rascunho vindo de outro campo (#613)", () => {
+  let consoleError: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    consoleError.mockRestore();
+  });
+
+  it("não vira rascunho, não grava e avisa o que fazer", async () => {
+    const user = userEvent.setup();
+    render(<ComparePage {...makeProps()} />);
+
+    await user.click(screen.getByTestId("prepare-verdict-campo-fantasma"));
+
+    // O rascunho nem chega a existir: sem ele, não há o que confirmar, e o
+    // valor do campo antigo não tem por onde alcançar o campo atual.
+    expect(text("pending-verdict")).toBe("");
+    expect(toast.error).toHaveBeenCalledWith(
+      expect.stringContaining("pertence a outro campo"),
+      expect.objectContaining({ id: "compare-origin-mismatch" }),
+    );
+
+    await user.click(screen.getByTestId("confirm-verdict"));
+    expect(submitVerdict).not.toHaveBeenCalled();
+  });
+
+  it("um rascunho legítimo continua sendo aceito depois da recusa", async () => {
+    const user = userEvent.setup();
+    render(<ComparePage {...makeProps()} />);
+
+    await user.click(screen.getByTestId("prepare-verdict-campo-fantasma"));
+    await user.click(screen.getByTestId("prepare-verdict"));
+
+    expect(text("pending-verdict")).toBe("Deferido");
+  });
+});
+
 describe("ComparePage — toggle de fila (só coordenador)", () => {
   function emptyProps(overrides: Partial<ReturnType<typeof makeProps>> = {}) {
     return {
