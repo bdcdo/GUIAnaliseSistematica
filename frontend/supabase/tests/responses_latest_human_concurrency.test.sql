@@ -54,8 +54,14 @@ VALUES (
   '6b000000-0000-0000-0000-000000000001',
   'issue 609 concurrency',
   '6a000000-0000-0000-0000-000000000001',
-  -- O campo carrega `id` UUID porque projects.pydantic_fields tem CHECK de
-  -- shape que o exige; sem ele o INSERT da fixture é recusado.
+  -- O campo carrega `id` UUID porque essa é a forma real de PydanticField
+  -- (ver frontend/src/lib/pydantic-field.ts), não porque alguma constraint o
+  -- exija: hoje projects.pydantic_fields não tem CHECK de shape em migration
+  -- nenhuma. A versão anterior deste comentário afirmava o contrário, descrevendo
+  -- uma CHECK que existia só no container local desta máquina, aplicada fora do
+  -- controle de versão — as demais suítes de banco inserem `[{"name":"q1"}]` sem
+  -- `id` e passam. Manter o `id` mesmo assim: custa nada e a fixture continua
+  -- válida se um dia a constraint entrar de verdade.
   '[{"id":"6e000000-0000-0000-0000-000000000001","name":"q1"}]'
 );
 
