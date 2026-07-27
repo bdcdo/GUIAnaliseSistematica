@@ -1,6 +1,9 @@
 "use server";
 
-import { createSupabaseServer, type SupabaseServerClient } from "@/lib/supabase/server";
+import {
+  createSupabaseServer,
+  type SupabaseServerClient,
+} from "@/lib/supabase/server";
 import { resolveProjectMemberActor } from "@/lib/auth";
 import { revalidatePath, revalidateTag } from "next/cache";
 import { buildPersistedResponseSnapshot } from "@/lib/response-snapshot";
@@ -59,34 +62,34 @@ async function fetchSaveContext(
     { data: project, error: projErr },
     { data: doc },
   ] = await Promise.all([
-      supabase
-        .from("profiles")
-        .select("first_name, last_name")
-        .eq("id", effectiveId)
-        .single(),
-      supabase
-        .from("responses")
-        .select("id, is_partial, answers, answer_field_hashes")
-        .eq("project_id", projectId)
-        .eq("document_id", documentId)
-        .eq("respondent_id", effectiveId)
-        .eq("respondent_type", "humano")
-        .eq("is_latest", true)
-        .maybeSingle<ExistingResponseRow>(),
-      supabase
-        .from("projects")
-        .select(
-          "pydantic_hash, pydantic_fields, schema_version_major, schema_version_minor, schema_version_patch, round_strategy, current_round_id, automation_mode",
-        )
-        .eq("id", projectId)
-        .single(),
-      supabase
-        .from("documents")
-        .select("excluded_at")
-        .eq("id", documentId)
-        .eq("project_id", projectId)
-        .maybeSingle(),
-    ]);
+    supabase
+      .from("profiles")
+      .select("first_name, last_name")
+      .eq("id", effectiveId)
+      .single(),
+    supabase
+      .from("responses")
+      .select("id, is_partial, answers, answer_field_hashes")
+      .eq("project_id", projectId)
+      .eq("document_id", documentId)
+      .eq("respondent_id", effectiveId)
+      .eq("respondent_type", "humano")
+      .eq("is_latest", true)
+      .maybeSingle<ExistingResponseRow>(),
+    supabase
+      .from("projects")
+      .select(
+        "pydantic_hash, pydantic_fields, schema_version_major, schema_version_minor, schema_version_patch, round_strategy, current_round_id, automation_mode",
+      )
+      .eq("id", projectId)
+      .single(),
+    supabase
+      .from("documents")
+      .select("excluded_at")
+      .eq("id", documentId)
+      .eq("project_id", projectId)
+      .maybeSingle(),
+  ]);
   return { profile, existing, existingErr, project, projErr, doc };
 }
 
@@ -149,7 +152,10 @@ function resolveSchemaProvenance({
   project,
   stampsCurrentSchema,
   existing,
-}: Pick<BuildResponsePayloadParams, "project" | "stampsCurrentSchema" | "existing">) {
+}: Pick<
+  BuildResponsePayloadParams,
+  "project" | "stampsCurrentSchema" | "existing"
+>) {
   if (!!existing && !stampsCurrentSchema) return {};
   // O fallback {major 0, minor 1, patch 0} é canônico e vive uma única vez em
   // `deriveProjectVersionContext` — reusá-lo evita a duplicação que o cabeçalho
@@ -180,7 +186,9 @@ function buildResponsePayload({
   const justifications = notes ? { _notes: notes } : null;
 
   const roundIdToPersist =
-    project?.round_strategy === "manual" ? (project?.current_round_id ?? null) : null;
+    project?.round_strategy === "manual"
+      ? (project?.current_round_id ?? null)
+      : null;
 
   // Para humanos is_partial descreve O QUE FOI GRAVADO, não por qual canal a
   // escrita chegou: uma resposta só deixa de ser parcial quando o conjunto
@@ -206,7 +214,8 @@ function buildResponsePayload({
   // deixou de estar completo). A imutabilidade descrita na migration
   // 20260425000000 vale so para o fluxo LLM.
   const submittedBefore = existing?.is_partial === false;
-  const isPartialToWrite = !codingIsComplete || (isAutoSave && !submittedBefore);
+  const isPartialToWrite =
+    !codingIsComplete || (isAutoSave && !submittedBefore);
 
   const payload = {
     answers: answersToPersist,
@@ -234,7 +243,10 @@ interface PersistResponseRowParams {
 
 // "conflict" = outra sessão criou a resposta corrente entre o UPDATE e o
 // INSERT desta. Não é erro do usuário: o save precisa reler e repetir.
-type PersistOutcome = { status: "ok" } | { status: "conflict" } | { status: "error"; error: string };
+type PersistOutcome =
+  | { status: "ok" }
+  | { status: "conflict" }
+  | { status: "error"; error: string };
 
 // O índice único parcial que sustenta o ramo de conflito abaixo. Conferir o
 // nome é o que separa "perdi a corrida, releia" de qualquer outra violação de
@@ -288,7 +300,10 @@ async function persistResponseRow({
     ...payload,
   });
   if (!insErr) return { status: "ok" };
-  if (insErr.code === "23505" && insErr.message.includes(HUMAN_LATEST_UNIQUE_INDEX)) {
+  if (
+    insErr.code === "23505" &&
+    insErr.message.includes(HUMAN_LATEST_UNIQUE_INDEX)
+  ) {
     return { status: "conflict" };
   }
   return { status: "error", error: insErr.message };
@@ -306,6 +321,97 @@ function revalidateAfterSave(projectId: string, isAutoSave: boolean): void {
   revalidatePath(`/projects/${projectId}/analyze/arbitragem`);
   revalidatePath(`/projects/${projectId}/reviews`);
   revalidateTag(`project-${projectId}-progress`, { expire: 60 });
+}
+
+interface BuildSaveWriteParams {
+  fields: PydanticField[];
+  existing: ExistingResponseRow | null | undefined;
+  project: SaveResponseProjectFields | null | undefined;
+  answers: Record<string, unknown>;
+  isAutoSave: boolean;
+  notes?: string;
+}
+
+// Tudo que é derivado do que está gravado AGORA: o snapshot reconciliado, a
+// contagem de obrigatórias faltando e o payload. Separado da tentativa porque
+// é puro — e porque o retry precisa refazer exatamente estes três a partir da
+// releitura, nunca reaproveitar os da tentativa anterior.
+function buildSaveWrite({
+  fields,
+  existing,
+  project,
+  answers,
+  isAutoSave,
+  notes,
+}: BuildSaveWriteParams) {
+  // O formulário devolve um snapshot sanitizado, não um patch. A reconciliação
+  // compara esse snapshot com a projeção que foi apresentada e preserva o
+  // valor bruto + sua proveniência quando o campo não mudou (#484).
+  const snapshot = buildPersistedResponseSnapshot({
+    fields,
+    existing: existing
+      ? { answers: existing.answers, hashes: existing.answer_field_hashes }
+      : null,
+    rawSubmittedAnswers: answers,
+    // Só um submit explícito atesta a codificação inteira; auto-save não pode
+    // promover uma response legacy à versão corrente (#548).
+    promoteLegacyIfComplete: !isAutoSave,
+  });
+
+  // Régua de completude aplicada UMA vez, ao conjunto que vai ser gravado
+  // (`snapshot.persistedAnswers`) e com o carimbo per-campo da própria escrita —
+  // não ao que a tela mostrava. Dela saem os dois consumidores: o `is_partial`
+  // gravado e o `missingRequired` devolvido ao cliente. Se o schema mudou desde
+  // o carregamento do formulário, é esta contagem que impede o feedback de
+  // sucesso de anunciar uma conclusão que não houve (#519).
+  const missingRequired = missingRequiredHumanFields(
+    fields,
+    snapshot.persistedAnswers,
+    snapshot.answerFieldHashes,
+  ).length;
+
+  const payload = buildResponsePayload({
+    codingIsComplete: missingRequired === 0,
+    answersToPersist: snapshot.persistedAnswers,
+    answerFieldHashes: snapshot.answerFieldHashes,
+    stampsCurrentSchema: snapshot.stampsCurrentSchema,
+    project,
+    existing,
+    isAutoSave,
+    notes,
+  });
+
+  return { snapshot, missingRequired, payload };
+}
+
+// Os motivos para não gravar, avaliados antes de montar qualquer payload.
+// Nenhum deles depende do que foi digitado — só do estado do projeto, da
+// leitura da resposta corrente e do documento.
+function rejectedSaveContext({
+  projErr,
+  existingErr,
+  doc,
+}: {
+  projErr: { message: string } | null;
+  existingErr: { message: string } | null;
+  doc: { excluded_at: string | null } | null;
+}): SaveResponseResult | null {
+  if (projErr) return { success: false, error: projErr.message };
+
+  // Falha ao LER a resposta corrente aborta o save. Seguir como se não
+  // existisse gravaria por cima dela um snapshot construído sem os valores
+  // preservados (#484) — perda silenciosa, sem rastro. Falhar fechado aqui é
+  // o que a #609 corrige junto com o índice.
+  if (existingErr) return { success: false, error: existingErr.message };
+
+  // Doc já excluído (soft delete) não aceita mais respostas. Pedido de
+  // exclusão apenas PENDENTE não bloqueia: é reversível e o dado humano
+  // digitado é preservado.
+  if (doc?.excluded_at) {
+    return { success: false, error: "Documento removido do escopo do projeto" };
+  }
+
+  return null;
 }
 
 interface SaveAttemptParams {
@@ -340,67 +446,20 @@ async function runSaveAttempt({
   notes,
   isAutoSave,
 }: SaveAttemptParams): Promise<SaveResponseResult | { conflict: true }> {
-  const { profile, existing, existingErr, project, projErr, doc } = await fetchSaveContext(
-    supabase,
-    projectId,
-    documentId,
-    effectiveId,
-  );
+  const { profile, existing, existingErr, project, projErr, doc } =
+    await fetchSaveContext(supabase, projectId, documentId, effectiveId);
 
-  if (projErr) return { success: false, error: projErr.message };
+  const rejection = rejectedSaveContext({ projErr, existingErr, doc });
+  if (rejection) return rejection;
 
-  // Falha ao LER a resposta corrente aborta o save. Seguir como se não
-  // existisse gravaria por cima dela um snapshot construído sem os valores
-  // preservados (#484) — perda silenciosa, sem rastro. Falhar fechado aqui é
-  // o que a #609 corrige junto com o índice.
-  if (existingErr) return { success: false, error: existingErr.message };
-
-  // Doc já excluído (soft delete) não aceita mais respostas. Pedido de
-  // exclusão apenas PENDENTE não bloqueia: é reversível e o dado humano
-  // digitado é preservado.
-  if (doc?.excluded_at) {
-    return {
-      success: false,
-      error: "Documento removido do escopo do projeto",
-    };
-  }
-
-  const respondentName =
-    [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || userEmail;
+  const respondentName = resolveRespondentName(profile, userEmail);
 
   const fields = (project?.pydantic_fields as PydanticField[]) || [];
-
-  // O formulário devolve um snapshot sanitizado, não um patch. A reconciliação
-  // compara esse snapshot com a projeção que foi apresentada e preserva o
-  // valor bruto + sua proveniência quando o campo não mudou (#484).
-  const snapshot = buildPersistedResponseSnapshot({
+  const { snapshot, missingRequired, payload } = buildSaveWrite({
     fields,
-    existing: existing ? { answers: existing.answers, hashes: existing.answer_field_hashes } : null,
-    rawSubmittedAnswers: answers,
-    // Só um submit explícito atesta a codificação inteira; auto-save não pode
-    // promover uma response legacy à versão corrente (#548).
-    promoteLegacyIfComplete: !isAutoSave,
-  });
-
-  // Régua de completude aplicada UMA vez, ao conjunto que vai ser gravado
-  // (`snapshot.persistedAnswers`) e com o carimbo per-campo da própria escrita —
-  // não ao que a tela mostrava. Dela saem os dois consumidores: o `is_partial`
-  // gravado e o `missingRequired` devolvido ao cliente. Se o schema mudou desde
-  // o carregamento do formulário, é esta contagem que impede o feedback de
-  // sucesso de anunciar uma conclusão que não houve (#519).
-  const missingRequired = missingRequiredHumanFields(
-    fields,
-    snapshot.persistedAnswers,
-    snapshot.answerFieldHashes,
-  ).length;
-
-  const payload = buildResponsePayload({
-    codingIsComplete: missingRequired === 0,
-    answersToPersist: snapshot.persistedAnswers,
-    answerFieldHashes: snapshot.answerFieldHashes,
-    stampsCurrentSchema: snapshot.stampsCurrentSchema,
-    project,
     existing,
+    project,
+    answers,
     isAutoSave,
     notes,
   });
@@ -413,25 +472,78 @@ async function runSaveAttempt({
     respondentName,
     payload,
   });
-  if (outcome.status === "error") return { success: false, error: outcome.error };
+  if (outcome.status === "error")
+    return { success: false, error: outcome.error };
   if (outcome.status === "conflict") return { conflict: true };
 
-  if (fields.length > 0) {
-    const { error: syncErr } = await syncCodingAssignmentStatus(supabase, {
-      projectId,
-      documentId,
-      userId: effectiveId,
-      fields,
-      sanitizedAnswers: snapshot.submittedAnswers,
-      isAutoSave,
-      automationMode: project?.automation_mode,
-      hadCompletedResponse: existing?.is_partial === false,
-    });
-    if (syncErr) return { success: false, error: syncErr };
-  }
+  const syncErr = await syncAssignmentAfterSave({
+    supabase,
+    projectId,
+    documentId,
+    effectiveId,
+    fields,
+    project,
+    existing,
+    snapshot,
+    isAutoSave,
+  });
+  if (syncErr) return { success: false, error: syncErr };
 
   revalidateAfterSave(projectId, isAutoSave);
   return { success: true, missingRequired };
+}
+
+// Propaga a gravação para a fila de codificação. Projeto sem schema não tem
+// fila a sincronizar, e é o único caso em que o sync é pulado.
+async function syncAssignmentAfterSave({
+  supabase,
+  projectId,
+  documentId,
+  effectiveId,
+  fields,
+  project,
+  existing,
+  snapshot,
+  isAutoSave,
+}: {
+  supabase: SupabaseServerClient;
+  projectId: string;
+  documentId: string;
+  effectiveId: string;
+  fields: PydanticField[];
+  project: { automation_mode?: string | null } | null | undefined;
+  existing: { is_partial: boolean | null } | null | undefined;
+  snapshot: { submittedAnswers: Record<string, unknown> };
+  isAutoSave: boolean;
+}): Promise<string | undefined> {
+  if (fields.length === 0) return undefined;
+  const { error } = await syncCodingAssignmentStatus(supabase, {
+    projectId,
+    documentId,
+    userId: effectiveId,
+    fields,
+    sanitizedAnswers: snapshot.submittedAnswers,
+    isAutoSave,
+    automationMode: project?.automation_mode,
+    // Lido ANTES da escrita: distingue "já estava concluída" de "concluiu
+    // agora", que é o que impede o rebaixamento descrito em
+    // buildResponsePayload.
+    hadCompletedResponse: existing?.is_partial === false,
+  });
+  return error;
+}
+
+// Nome exibido como autoria da resposta. O e-mail é o fallback de quem ainda
+// não preencheu o perfil.
+function resolveRespondentName(
+  profile:
+    { first_name: string | null; last_name: string | null } | null | undefined,
+  userEmail: string,
+): string {
+  return (
+    [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") ||
+    userEmail
+  );
 }
 
 // Duas tentativas, não mais: o conflito só acontece quando outra sessão criou
@@ -480,7 +592,8 @@ export async function saveResponse(
 
     return {
       success: false,
-      error: "Outra gravação desta mesma codificação chegou primeiro; tente novamente",
+      error:
+        "Outra gravação desta mesma codificação chegou primeiro; tente novamente",
     };
   } catch (e) {
     return {
