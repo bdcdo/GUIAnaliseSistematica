@@ -14,6 +14,8 @@ import {
 import { Check, Info, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { OTHER_PREFIX, isOtherValue } from "@/lib/other-option";
+import { NOT_INFORMED } from "@/lib/sentinels";
+import { isSubfieldRecord, readLegacyGroupText } from "@/lib/subfield-value";
 import {
   arePartsValid,
   buildDateValue,
@@ -34,7 +36,6 @@ interface FieldRendererProps {
   onChange: (value: unknown) => void;
 }
 
-const NOT_INFORMED = "Não informada";
 const otherText = (v: string) => v.slice(OTHER_PREFIX.length);
 
 // Pure handler: backspace on an empty date part jumps focus to the previous
@@ -404,29 +405,96 @@ export function FieldRenderer({ field, value, onChange }: FieldRendererProps) {
 
   // text with subfields
   if (field.type === "text" && field.subfields && field.subfields.length > 0) {
-    const objValue =
-      value && typeof value === "object" && !Array.isArray(value)
-        ? (value as Record<string, string>)
-        : {};
-    const isNotInformed = value === "Não informada";
+    const objValue = isSubfieldRecord(value)
+      ? (value as Record<string, string>)
+      : {};
+    const isNotInformed = value === NOT_INFORMED;
+    // Resposta coletada quando o campo ainda era texto simples. A régua de
+    // completude a conta como respondida (`coding-completeness.ts`), então ela
+    // precisa estar VISÍVEL — e nenhuma tecla pode descartá-la. Enquanto o
+    // valor está nesta forma os subcampos ficam inertes, e a única transição
+    // para a forma do grupo é o clique num destino nomeado (#607).
+    const legacyText = readLegacyGroupText(value);
+    const legacyNoteId = `${subfieldIdPrefix}-legado`;
+    const subfields = field.subfields;
+    // Sob `all`, mover o texto para um subcampo deixa os outros obrigatórios
+    // em branco e rebaixa a codificação. É o comportamento correto — a anistia
+    // descrevia um valor que ninguém tinha tocado —, mas tem que ser
+    // anunciado antes do clique, não descoberto depois.
+    const requiredSubfields =
+      resolveSubfieldRule(field.subfield_rule) === "at_least_one"
+        ? []
+        : subfields.filter((sf) => resolveSubfieldRequired(sf.required));
+
+    const notInformedButton = (
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        className={cn(
+          "h-7 text-xs",
+          isNotInformed && "bg-brand-muted text-brand border-brand",
+        )}
+        onClick={() => onChange(isNotInformed ? {} : NOT_INFORMED)}
+      >
+        {isNotInformed && <Check className="mr-1 size-3" />}
+        Não informada
+      </Button>
+    );
 
     return (
       <div className="space-y-2">
-        <div className="flex items-center gap-1.5">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            className={cn(
-              "h-7 text-xs",
-              isNotInformed && "bg-brand-muted text-brand border-brand",
-            )}
-            onClick={() => onChange(isNotInformed ? {} : "Não informada")}
+        {legacyText !== null && (
+          <div
+            role="note"
+            id={legacyNoteId}
+            className="space-y-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2.5"
           >
-            {isNotInformed && <Check className="mr-1 size-3" />}
-            Não informada
-          </Button>
-          {field.subfield_rule === "at_least_one" && (
+            <div className="flex items-start gap-2">
+              <Info className="mt-0.5 size-3.5 shrink-0 text-amber-600" />
+              <div className="min-w-0 space-y-1.5">
+                <p className="text-xs text-amber-800 dark:text-amber-300">
+                  Resposta registrada antes de esta pergunta ganhar subcampos.
+                  Ela continua valendo — nada se perde enquanto você não
+                  substituir.
+                </p>
+                <p className="text-sm font-medium break-words">{legacyText}</p>
+                {requiredSubfields.length > 0 && (
+                  <p className="text-xs text-amber-800 dark:text-amber-300">
+                    Esta pergunta exige preencher{" "}
+                    {requiredSubfields.map((sf) => sf.label).join(", ")}. Ao
+                    mover o texto para um deles, os outros seguirão pendentes.
+                  </p>
+                )}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">Mover para:</span>
+              {subfields.map((sf) => (
+                <Button
+                  key={sf.key}
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="h-7 text-xs"
+                  aria-label={`Mover para ${sf.label}`}
+                  onClick={() => onChange({ [sf.key]: legacyText })}
+                >
+                  {sf.label}
+                </Button>
+              ))}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-xs text-muted-foreground">
+                Substituir por:
+              </span>
+              {notInformedButton}
+            </div>
+          </div>
+        )}
+        <div className="flex items-center gap-1.5">
+          {legacyText === null && notInformedButton}
+          {resolveSubfieldRule(field.subfield_rule) === "at_least_one" && (
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -444,7 +512,7 @@ export function FieldRenderer({ field, value, onChange }: FieldRendererProps) {
         </div>
         {!isNotInformed && (
           <div className="space-y-2">
-            {field.subfields.map((sf) => (
+            {subfields.map((sf) => (
               <div key={sf.key} className="flex items-center gap-2">
                 <label
                   htmlFor={`${subfieldIdPrefix}-${sf.key}`}
@@ -459,8 +527,16 @@ export function FieldRenderer({ field, value, onChange }: FieldRendererProps) {
                 </label>
                 <Input
                   id={`${subfieldIdPrefix}-${sf.key}`}
-                  className="text-sm"
-                  value={objValue[sf.key] || ""}
+                  className={cn("text-sm", legacyText !== null && "opacity-60")}
+                  value={legacyText !== null ? "" : objValue[sf.key] || ""}
+                  // `readOnly` é o que impede a perda: sem caminho de tecla,
+                  // não há como a digitação emitir um objeto que já perdeu o
+                  // texto legado. Mesmo mecanismo que o ramo de texto usa
+                  // quando um preset está ativo.
+                  readOnly={legacyText !== null}
+                  aria-describedby={
+                    legacyText !== null ? legacyNoteId : undefined
+                  }
                   onChange={(e) =>
                     onChange({ ...objValue, [sf.key]: e.target.value })
                   }

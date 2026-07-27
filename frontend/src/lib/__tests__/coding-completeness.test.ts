@@ -310,4 +310,57 @@ describe("isFieldAnswered — grupo cujo valor foi coletado em outra forma", () 
   it("objeto vazio na forma do grupo continua não respondido", () => {
     expect(isFieldAnswered(grupo, { ano: "", meses: "" })).toBe(false);
   });
+
+  // A anistia é MAIS LARGA que o texto legado que o FieldRenderer sabe exibir
+  // (`readLegacyGroupText`): ela alcança qualquer valor fora da forma do grupo.
+  // Estreitá-la para casar com o display rebaixaria codificações que o #606
+  // preservou de propósito — os dois predicados divergem por decisão, não por
+  // descuido (#607).
+  it("a anistia alcança qualquer valor fora da forma do grupo", () => {
+    expect(isFieldAnswered(grupo, 42)).toBe(true);
+    expect(isFieldAnswered(grupo, ["a"])).toBe(true);
+    expect(isFieldAnswered(grupo, "Não informada")).toBe(true);
+  });
+
+  // A ordem dos guards é o que mantém `null` fora da anistia: `typeof null` é
+  // "object", então trocar a fronteira por um predicado que testa null muda o
+  // que aconteceria AQUI se o guard de cima saísse.
+  it("null continua não respondido", () => {
+    expect(isFieldAnswered(grupo, null)).toBe(false);
+  });
+});
+
+// O que acontece quando a pesquisadora move o texto legado para um subcampo
+// (#607). Sob `at_least_one` — a regra dos três campos reais — a codificação
+// segue completa; sob `all` ela é rebaixada, e isso é correto: a anistia
+// descrevia um valor que ninguém tinha tocado, e no formato novo a resposta
+// está de fato incompleta. Por isso o FieldRenderer anuncia a pendência antes
+// do clique em vez de deixá-la ser descoberta depois.
+describe("isFieldAnswered — depois de mover o valor legado para um subcampo", () => {
+  const subfields = [
+    { key: "anos", label: "Anos", required: true },
+    { key: "meses", label: "Meses", required: true },
+  ];
+
+  it("sob at_least_one, mover para um subcampo mantém a codificação completa", () => {
+    const grupo = field({
+      name: "q7",
+      type: "text",
+      options: null,
+      subfields,
+      subfield_rule: "at_least_one",
+    });
+    expect(isFieldAnswered(grupo, { anos: "18 anos e 6 meses" })).toBe(true);
+  });
+
+  it("sob all, mover deixa os outros obrigatórios pendentes", () => {
+    const grupo = field({
+      name: "q7",
+      type: "text",
+      options: null,
+      subfields,
+      subfield_rule: "all",
+    });
+    expect(isFieldAnswered(grupo, { anos: "18 anos e 6 meses" })).toBe(false);
+  });
 });

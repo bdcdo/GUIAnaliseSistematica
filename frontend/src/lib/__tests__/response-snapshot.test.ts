@@ -502,6 +502,58 @@ describe("buildPersistedResponseSnapshot", () => {
     expect(result.persistedAnswers).toEqual({ legado: "valor" });
     expect(result.answerFieldHashes).toEqual({ legado: "hash-antigo" });
   });
+
+  // Caracterização do write path para a resposta em texto de um campo que
+  // virou grupo de subcampos (#607). A UI garante que nenhuma tecla descarte
+  // esse valor; aqui se fixa a outra metade da garantia — que a projeção
+  // apresentada ao formulário não seja a via que o elimina. `keepIfStillPresentable`
+  // devolve o valor cru porque esses campos têm `options: null`, e o campo não
+  // revisado fica fora de `changedFieldNames`.
+  describe("grupo de subcampos com valor coletado em outra forma (#607)", () => {
+    const grupo = field({
+      name: "q7",
+      type: "text",
+      options: null,
+      hash: "q7-novo",
+      subfields: [
+        { key: "anos", label: "Anos" },
+        { key: "meses", label: "Meses" },
+      ],
+      subfield_rule: "at_least_one",
+    });
+
+    it("o texto legado sobrevive quando o campo não é tocado", () => {
+      const result = buildPersistedResponseSnapshot({
+        fields: [grupo],
+        existing: {
+          answers: { q7: "18 anos e 6 meses" },
+          hashes: { q7: "q7-antigo" },
+        },
+        rawSubmittedAnswers: { q7: "18 anos e 6 meses" },
+        promoteLegacyIfComplete: false,
+      });
+
+      expect(result.persistedAnswers.q7).toBe("18 anos e 6 meses");
+      // Hash da época preservado: o campo não entrou como revisado.
+      expect(result.answerFieldHashes.q7).toBe("q7-antigo");
+    });
+
+    it("mover o texto para um subcampo grava o registro sob o schema de hoje", () => {
+      const result = buildPersistedResponseSnapshot({
+        fields: [grupo],
+        existing: {
+          answers: { q7: "18 anos e 6 meses" },
+          hashes: { q7: "q7-antigo" },
+        },
+        rawSubmittedAnswers: { q7: { anos: "18 anos e 6 meses" } },
+        promoteLegacyIfComplete: false,
+      });
+
+      expect(result.persistedAnswers.q7).toEqual({ anos: "18 anos e 6 meses" });
+      expect(result.answerFieldHashes.q7).toBe("q7-novo");
+      expect(result.stampsCurrentSchema).toBe(true);
+    });
+  });
 });
 
 describe("buildPersistedResponseSnapshot — stampsCurrentSchema (#529/#548)", () => {
