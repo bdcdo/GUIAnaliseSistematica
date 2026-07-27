@@ -26,8 +26,15 @@ INSERT INTO public.documents (id, project_id, external_id, title, text, text_has
   ('22222222-2222-2222-2222-222222222222', '11111111-1111-1111-1111-111111111111', NULL,       'D1 alvo',  'texto d1', 'h-d1'),
   ('33333333-3333-3333-3333-333333333333', '11111111-1111-1111-1111-111111111111', 'EXISTING', 'D2 ativo', 'texto d2', 'h-d2');
 
-INSERT INTO public.responses (id, project_id, document_id, respondent_type, answers) VALUES
-  ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'humano', '{"campo":"x"}');
+-- A resposta humana corrente precisa de autor: responses_human_latest_has_actor_check
+-- (#609) torna irrepresentável a linha humana is_latest sem respondent_id. O que
+-- este teste prova — que replace_and_add_documents apaga a response — não depende
+-- de quem respondeu, então a fixture apenas passa a nomear o respondente.
+INSERT INTO auth.users (id, email) VALUES
+  ('55555555-5555-5555-5555-555555555555', 'atomic-replace-respondent@example.test');
+
+INSERT INTO public.responses (id, project_id, document_id, respondent_id, respondent_type, answers) VALUES
+  ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '55555555-5555-5555-5555-555555555555', 'humano', '{"campo":"x"}');
 
 INSERT INTO public.reviews (id, project_id, document_id, field_name, verdict) VALUES
   ('55555555-5555-5555-5555-555555555555', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', 'campo', 'concordo');
