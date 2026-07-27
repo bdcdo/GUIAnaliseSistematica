@@ -2,13 +2,13 @@
 
 import { Button } from "@/components/ui/button";
 import { DocumentPicker } from "./DocumentPicker";
-import { BrowseDocCoder, type CodingDraft } from "./BrowseDocCoder";
+import { type ForwardedCodingProps, BrowseDocCoder, type CodingDraft } from "./BrowseDocCoder";
 import type { OutOfScopeConfig } from "./QuestionsPanel";
 import type { CodingDocument } from "@/hooks/useDocumentForCoding";
 import type { BrowseDocument } from "@/actions/documents";
 import type { PydanticField } from "@/lib/types";
 
-interface BrowseCodingViewProps {
+interface BrowseCodingViewProps extends ForwardedCodingProps {
   browseLoading: boolean;
   browseError: boolean;
   browseDocId: string | null;
@@ -20,20 +20,7 @@ interface BrowseCodingViewProps {
   onRetry: () => void;
   /** Retry do fetch do doc selecionado (conteúdo falhou ao carregar). */
   onRetryDoc: () => void;
-  fields: PydanticField[];
-  submitting: boolean;
-  readOnly: boolean;
-  isFullscreen: boolean;
-  title: string;
-  responseCount: number;
-  onToggleFullscreen: () => void;
-  onReorder: (newOrder: string[]) => void;
-  onSubmit: (draft: CodingDraft) => void;
-  onDraftChange: (draft: CodingDraft) => void;
-  outOfScope?: OutOfScopeConfig;
-  /** Alterações não enviadas neste documento (#608). */
-  unsent?: boolean;
-  restoredDraft?: CodingDraft | null;
+  /** Nonce que força o remount do coder ao retomar um rascunho local (#608). */
   restoreNonce?: number;
 }
 

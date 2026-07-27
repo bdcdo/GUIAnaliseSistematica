@@ -13,7 +13,7 @@ import type { PydanticField } from "@/lib/types";
 // o I/O vive em `useCodingDrafts`.
 export const CODING_DRAFT_FORMAT_VERSION = 1;
 
-export const CODING_DRAFT_KEY_PREFIX = "dataframeit:coding-draft:";
+const CODING_DRAFT_KEY_PREFIX = "dataframeit:coding-draft:";
 
 // O escopo é recebido inteiro, nunca como `projectId: string` solto — é o que
 // impede, por construção, que se construa uma chave sem usuário. O motivo está

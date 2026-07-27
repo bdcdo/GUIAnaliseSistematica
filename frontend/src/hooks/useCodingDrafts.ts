@@ -176,7 +176,7 @@ interface GcResult {
 // toca em chave de outro usuário (numa máquina compartilhada isso seria apagar
 // trabalho alheio) nem em envelope de formato maior (é de uma aba que sabe
 // mais) nem no documento aberto.
-export function collectCodingDraftGarbage(
+function collectCodingDraftGarbage(
   userId: string,
   now: number,
   keepKey: string | null,
