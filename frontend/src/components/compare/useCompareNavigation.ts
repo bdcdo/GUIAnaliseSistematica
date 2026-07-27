@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { isDocComplete } from "@/lib/compare-assignment-status";
 import { findNextPendingDocIndex } from "@/lib/compare-queue-navigation";
 import { pinnedIndex } from "@/hooks/usePinnedDoc";
+import { queueChangeNotice } from "./compare-queue-change";
 import type { ReviewsByDoc } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
 import type { CompareDocument } from "./compare-types";
@@ -167,60 +168,36 @@ export function useCompareNavigation({
   const currentField = fields.find((f) => f.name === currentFieldName);
   const isCurrentFieldDivergent = divergentSet.has(currentFieldName);
 
-  // Avisa quando a COMPOSIÇÃO da fila de campos muda sob a revisora. Com o pin
-  // por nome ela não é mais deslocada, mas a fila mudar em silêncio (o
-  // denominador de "Campo 2/6" virar 5, ou o campo em que ela estava sumir) é
-  // desorientador — e foi o que tornou a #613 difícil de relatar.
-  //
-  // As três supressões abaixo são o que separa um aviso útil de um toast que se
-  // aprende a ignorar; sem elas ele dispararia a cada confirmação de
-  // equivalência e a cada troca de parecer.
-  const queueSignatureRef = useRef<string | null>(null);
-  const prevQueueDocIdRef = useRef<string | undefined>(undefined);
-  const prevQueueFilterRef = useRef(filter);
-  const prevFieldNameRef = useRef<string | undefined>(undefined);
+  // Avisa quando a COMPOSIÇÃO da fila de campos muda sob a revisora. A decisão
+  // (inclusive as três supressões que impedem o aviso de virar ruído) mora em
+  // `queueChangeNotice`, puro e testado à parte; aqui fica só o rastreio do
+  // render anterior e o efeito colateral.
+  const prevQueueRef = useRef<{
+    fields: readonly string[] | null;
+    fieldName: string | undefined;
+    docId: string | undefined;
+    filter: string;
+  }>({ fields: null, fieldName: undefined, docId: undefined, filter });
   const currentDocId = currentDoc?.id;
   useEffect(() => {
-    const signature = docFields.join("|");
-    const prevSignature = queueSignatureRef.current;
-    const prevDocId = prevQueueDocIdRef.current;
-    const prevFilter = prevQueueFilterRef.current;
-    const prevFieldName = prevFieldNameRef.current;
-    queueSignatureRef.current = signature;
-    prevQueueDocIdRef.current = currentDocId;
-    prevQueueFilterRef.current = filter;
-    prevFieldNameRef.current = currentFieldName;
-
-    if (prevSignature === null) return; // primeira montagem: não há "mudou"
-    if (prevSignature === signature) return;
-    if (prevDocId !== currentDocId) return; // (1) troca de parecer
-    if (prevFilter !== filter) return; // (2) troca de filtro
-
-    const stillPresent = new Set(docFields);
-    const departed = prevSignature
-      .split("|")
-      .filter((fn) => fn.length > 0 && !stillPresent.has(fn));
-    // (3) consequência da própria ação dela: confirmar uma equivalência funde
-    // grupos e tira o campo da fila. Como `recordReview` já gravou o veredito
-    // local, "todo campo que saiu já tem veredito" identifica exatamente esse
-    // caso — e é o mais comum de todos.
-    const docReviews = currentDocId ? localReviews[currentDocId] : undefined;
-    if (departed.length > 0 && departed.every((fn) => !!docReviews?.[fn])) {
-      return;
-    }
-
-    if (prevFieldName && departed.includes(prevFieldName)) {
-      toast.info(
-        "O campo que você estava revisando saiu da fila de divergências — voltando ao primeiro campo pendente.",
-        { id: "compare-field-left-queue" },
-      );
-      return;
-    }
-    // `id` fixo: uma sequência de `revalidatePath` colapsa num aviso só.
-    toast.info(
-      `A fila de divergências deste parecer mudou (${prevSignature.split("|").filter((fn) => fn.length > 0).length} → ${docFields.length} campos). Você continua no campo atual.`,
-      { id: "compare-queue-changed" },
-    );
+    const prev = prevQueueRef.current;
+    prevQueueRef.current = {
+      fields: docFields,
+      fieldName: currentFieldName,
+      docId: currentDocId,
+      filter,
+    };
+    const notice = queueChangeNotice({
+      previousFields: prev.fields,
+      currentFields: docFields,
+      previousFieldName: prev.fieldName,
+      previousDocId: prev.docId,
+      currentDocId,
+      previousFilter: prev.filter,
+      currentFilter: filter,
+      reviewedFields: currentDocId ? localReviews[currentDocId] : undefined,
+    });
+    if (notice) toast.info(notice.message, { id: notice.id });
   }, [docFields, filter, currentDocId, currentFieldName, localReviews]);
 
   const reviewedDocsCount = useMemo(

@@ -90,6 +90,17 @@ interface CompareFieldReviewProps {
  * cabeçalho, os ProgressDots, o rodapé de confirmação e o container de scroll —
  * assim a troca de campo não zera o `scrollTop` nem rouba o foco.
  */
+// Cognitive 22 vs. limiar 15, com cyclomatic 3 (dois ternários): a pontuação
+// vem do encaminhamento de props, que o fallow conta como fiação. É o mesmo
+// débito JSX inerente já rastreado na #580 para ComparePage/CompareMainView.
+//
+// A medição é explícita, não suposta: extrair este componente levou o
+// ComparisonPanel de cognitive 55 para 53, então a extração NÃO reduz a
+// complexidade total — realoca. Ela fica mesmo assim porque a razão de existir é
+// de correção, não de métrica: é a fronteira única de montagem por campo que
+// sustenta o escopo de origem do veredito (#613). Descer a ≤15 exigiria
+// fragmentar o encaminhamento em componentes sem significado próprio.
+// fallow-ignore-next-line complexity
 export function CompareFieldReview({
   readOnly,
   projectId,
@@ -128,44 +139,18 @@ export function CompareFieldReview({
           onSubmit={(verdictJson) => onVerdict(verdictJson)}
         />
       ) : (
-        <AgreementGroup
+        <SingleAnswerGroup
           readOnly={readOnly}
-          responses={responses.map((r) => ({
-            id: r.id,
-            respondent_type: r.respondent_type,
-            respondent_name: r.respondent_name,
-            answer: r.answer,
-            justification: r.justification,
-            is_latest: r.is_latest,
-            isFieldStale: r.isFieldStale,
-            schemaVersion: r.schemaVersion,
-          }))}
+          origin={{ documentId, fieldName }}
+          responses={responses}
           existingVerdict={existingVerdict}
           pendingVerdict={pendingVerdict}
-          onVote={(displayAnswer, chosenResponseId) =>
-            onPrepareVerdict({
-              kind: "response",
-              verdict: displayAnswer,
-              chosenResponseId,
-              // Origem literal das props deste render — e não do container —,
-              // que é o que faz um clique em card fantasma carregar o campo
-              // fantasma em vez de herdar o campo atual (#613).
-              origin: { documentId, fieldName },
-            })
-          }
-          allowEquivalence={equivalence.allow}
+          onPrepareVerdict={onPrepareVerdict}
+          equivalence={equivalence}
           equivalences={equivalences}
-          onConfirmEquivalent={(responseIds, gabaritoId, verdictDisplay) =>
-            onConfirmEquivalent(
-              { documentId, fieldName },
-              responseIds,
-              gabaritoId,
-              verdictDisplay,
-            )
-          }
-          onUnmarkPair={onUnmarkEquivalencePair}
+          onConfirmEquivalent={onConfirmEquivalent}
+          onUnmarkEquivalencePair={onUnmarkEquivalencePair}
           currentUserId={currentUserId}
-          canManageAnyPair={equivalence.canManageAnyPair}
         />
       )}
 
@@ -186,23 +171,103 @@ export function CompareFieldReview({
           onCommentChange={onCommentChange}
         />
       ) : (
-        <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-green-500/20 bg-green-500/5 px-3 py-2 text-xs text-muted-foreground">
-          <div className="flex items-center gap-1.5">
-            <CheckCircle2 className="size-3.5 text-green-600" />
-            Concordante: todos os respondentes concordam.
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-6 text-xs"
-            onClick={onMarkReviewed}
-            disabled={readOnly}
-            title={readOnlyTitle(readOnly)}
-          >
-            Marcar doc como revisado
-          </Button>
-        </div>
+        <ConcordantNotice readOnly={readOnly} onMarkReviewed={onMarkReviewed} />
       )}
     </CompareFieldScope>
+  );
+}
+
+/**
+ * Cards de resposta de um campo NÃO-multi. Separado do `CompareFieldReview`
+ * porque é aqui que mora a adaptação entre a forma das respostas do painel e a
+ * do `AgreementGroup`, e o carimbo de origem nos dois callbacks de escrita.
+ */
+function SingleAnswerGroup({
+  readOnly,
+  origin,
+  responses,
+  existingVerdict,
+  pendingVerdict,
+  onPrepareVerdict,
+  equivalence,
+  equivalences,
+  onConfirmEquivalent,
+  onUnmarkEquivalencePair,
+  currentUserId,
+}: {
+  readOnly: boolean;
+  origin: VerdictOrigin;
+  responses: ComparisonResponse[];
+  existingVerdict: VerdictInfo | null;
+  pendingVerdict: PendingVerdict | null;
+  onPrepareVerdict: (pending: PendingVerdict) => void;
+  equivalence: EquivalenceConfig;
+  equivalences: FieldEquivalencePair[];
+  onConfirmEquivalent: CompareFieldReviewProps["onConfirmEquivalent"];
+  onUnmarkEquivalencePair: (pairId: string) => Promise<void>;
+  currentUserId: string;
+}) {
+  return (
+    <AgreementGroup
+      readOnly={readOnly}
+      responses={responses.map((r) => ({
+        id: r.id,
+        respondent_type: r.respondent_type,
+        respondent_name: r.respondent_name,
+        answer: r.answer,
+        justification: r.justification,
+        is_latest: r.is_latest,
+        isFieldStale: r.isFieldStale,
+        schemaVersion: r.schemaVersion,
+      }))}
+      existingVerdict={existingVerdict}
+      pendingVerdict={pendingVerdict}
+      // `origin` vem das props deste render — e não do container. É o que faz um
+      // clique em card fantasma carregar o campo FANTASMA, que a fronteira de
+      // escrita recusa, em vez de herdar o campo atual e gravar nele (#613).
+      onVote={(displayAnswer, chosenResponseId) =>
+        onPrepareVerdict({
+          kind: "response",
+          verdict: displayAnswer,
+          chosenResponseId,
+          origin,
+        })
+      }
+      allowEquivalence={equivalence.allow}
+      equivalences={equivalences}
+      onConfirmEquivalent={(responseIds, gabaritoId, verdictDisplay) =>
+        onConfirmEquivalent(origin, responseIds, gabaritoId, verdictDisplay)
+      }
+      onUnmarkPair={onUnmarkEquivalencePair}
+      currentUserId={currentUserId}
+      canManageAnyPair={equivalence.canManageAnyPair}
+    />
+  );
+}
+
+function ConcordantNotice({
+  readOnly,
+  onMarkReviewed,
+}: {
+  readOnly: boolean;
+  onMarkReviewed: () => void;
+}) {
+  return (
+    <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-green-500/20 bg-green-500/5 px-3 py-2 text-xs text-muted-foreground">
+      <div className="flex items-center gap-1.5">
+        <CheckCircle2 className="size-3.5 text-green-600" />
+        Concordante: todos os respondentes concordam.
+      </div>
+      <Button
+        variant="ghost"
+        size="sm"
+        className="h-6 text-xs"
+        onClick={onMarkReviewed}
+        disabled={readOnly}
+        title={readOnlyTitle(readOnly)}
+      >
+        Marcar doc como revisado
+      </Button>
+    </div>
   );
 }
