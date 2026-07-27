@@ -31,6 +31,6 @@ A mudança veio de perda silenciosa observada em produção ([#417](https://gith
 ## Onde procurar o que este arquivo não descreve
 
 - **Mapeamento entre tipo de campo e controle de formulário** (incluindo campos de data, grupos de subcampos e a opção "Outro"): `frontend/src/components/coding/FieldRenderer.tsx` — é a fonte única, e reproduzi-lo em prosa apenas criaria uma cópia para divergir.
-- **Atalhos de teclado da Comparação**: `frontend/src/components/compare/KeyboardHints.tsx`, que é ao mesmo tempo a implementação da ajuda exibida ao usuário e a lista canônica.
+- **Atalhos de teclado da Comparação**: implementados em `frontend/src/components/compare/useCompareKeyboard.ts` (o caminho de campo `multi` tem tratamento próprio em `MultiOptionReview.tsx`). `KeyboardHints.tsx` é a ajuda exibida ao usuário; as duas listas não são mantidas em sincronia por nenhum gate, então a implementação é que decide.
 - **Mapa de telas**: a árvore de rotas em `frontend/src/app/(app)/projects/[id]/`, agrupada por área (`analyze/`, `config/`, `llm/`, `reviews/`).
 - **Arquitetura, fluxos de dados e responsabilidades de cada camada**: `CLAUDE.md`.

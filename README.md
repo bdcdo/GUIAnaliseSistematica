@@ -13,7 +13,7 @@ Plataforma web para análise de conteúdo com IA, baseada na lib dataframeit.
 ## Arquitetura
 
 - **Next.js 16** (App Router) — frontend + Server Actions
-- **Supabase** — Postgres + Auth (Row Level Security)
+- **Supabase** — Postgres + Row Level Security (autenticacao via Clerk, nao o Auth nativo)
 - **FastAPI** — backend leve para LLM e validacao Pydantic
 
 ## Instalacao
