@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { requestNavigation } from "@/lib/unsaved-work-guard";
 import { Eye, EyeOff, Users } from "lucide-react";
 import { LlmRunningBadge } from "@/components/llm/LlmRunningBadge";
 
@@ -74,6 +75,13 @@ function ProjectTabsInner({
     (tab) => !tab.coordinatorOnly || effectiveIsCoordinator
   );
 
+  // Toda saída daqui passa pelo guard de trabalho não enviado (#608). Fora da
+  // codificação nenhum guard está registrado e `requestNavigation` devolve
+  // `true` de imediato, então isto é inerte no resto do app.
+  const guardedPush = (url: string) => {
+    requestNavigation(() => push(url));
+  };
+
   const toggleViewAs = () => {
     const params = new URLSearchParams(searchParams.toString());
     if (viewAsResearcher) {
@@ -83,7 +91,7 @@ function ProjectTabsInner({
     }
     params.delete("viewAsUser");
     const qs = params.toString();
-    push(`${pathname}${qs ? `?${qs}` : ""}`);
+    guardedPush(`${pathname}${qs ? `?${qs}` : ""}`);
   };
 
   const selectImpersonation = (userId: string | null) => {
@@ -95,7 +103,7 @@ function ProjectTabsInner({
       params.delete("viewAsUser");
     }
     const qs = params.toString();
-    push(`${pathname}${qs ? `?${qs}` : ""}`);
+    guardedPush(`${pathname}${qs ? `?${qs}` : ""}`);
   };
 
   return (
@@ -136,6 +144,25 @@ function ProjectTabsInner({
             <Link
               key={tab.href}
               href={href}
+              onClick={(event) => {
+                // Clique modificado (Ctrl/Cmd/Shift, ou botão do meio) abre em
+                // outra aba ou janela e NÃO tira a pesquisadora desta tela —
+                // interceptá-lo mostraria um aviso sobre uma saída que não vai
+                // acontecer. `event.button` é 0 aqui porque o React só dispara
+                // `onClick` para o botão principal, mas a checagem fica junto
+                // das outras para o dia em que isto virar `onMouseDown`.
+                if (
+                  event.metaKey ||
+                  event.ctrlKey ||
+                  event.shiftKey ||
+                  event.altKey ||
+                  event.button !== 0
+                ) {
+                  return;
+                }
+                if (requestNavigation(() => push(href))) return;
+                event.preventDefault();
+              }}
               className={cn(
                 "relative px-3 py-1.5 text-sm transition-colors",
                 isActive

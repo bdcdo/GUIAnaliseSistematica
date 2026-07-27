@@ -5,9 +5,10 @@ import { applyFieldOrder } from "@/lib/field-order";
 import { sortByRecent } from "@/lib/coding-sort";
 import { useUrlState } from "@/hooks/useUrlState";
 import { useFieldOrder } from "@/hooks/useFieldOrder";
-import { useAutosaveOnExit } from "@/hooks/useAutosaveOnExit";
 import { useFullscreen } from "@/hooks/useFullscreen";
-import { useDirtyDocs } from "@/hooks/useDirtyDocs";
+import { useDirtyDocs, useDirtyDocsCount } from "@/hooks/useDirtyDocs";
+import { useUnsavedWorkGuard } from "@/hooks/useUnsavedWorkGuard";
+import { UnsavedWorkDialog } from "./UnsavedWorkDialog";
 import { useCodingDrafts } from "@/hooks/useCodingDrafts";
 import { useCodingDraftWiring } from "./useCodingDraftWiring";
 import {
@@ -301,22 +302,16 @@ function CodingPageInner({
     [mode, discardBrowseDraft],
   );
 
-  // --- Auto-save on exit (#14, #28) ---
-  // Instância única; o payload e a sujeira saem do modo ativo. `getIsDirty` é
-  // um getter (lido no unload) para não acessar o ref do dirty no render.
   const activeDocId =
     mode === "assigned" ? assigned.currentDoc?.id ?? null : browse.browseDocId;
-  const getIsDirty = useCallback(
-    () => isDirty(activeDocId),
-    [isDirty, activeDocId],
-  );
-  const getAssignedPayload = assigned.getPayload;
-  const getBrowsePayload = browse.getPayload;
-  const getPayload = useCallback(
-    () => (mode === "assigned" ? getAssignedPayload() : getBrowsePayload()),
-    [mode, getAssignedPayload, getBrowsePayload],
-  );
-  useAutosaveOnExit({ activeDocId, getIsDirty, getPayload });
+
+  // Aviso de saída (#608). Conta DOCUMENTOS com alterações não enviadas, não só
+  // o aberto: quem edita três documentos e clica em "Revisar" precisa saber dos
+  // três. A contagem sai do store de sujeira, nunca do que conseguiu ser
+  // gravado no `localStorage` — ver `useDirtyDocs`.
+  const unsentDocsCount = useDirtyDocsCount(dirtyDocs);
+  const { isPrompting, confirmLeave, cancelLeave } =
+    useUnsavedWorkGuard(unsentDocsCount > 0);
 
   const {
     activeDocUnsent,
@@ -433,6 +428,16 @@ function CodingPageInner({
           onToggleFullscreen={toggleFullscreen}
         />
       )}
+
+      {/* Fora do bloco de fullscreen abaixo de propósito: o aviso de saída vale
+          em qualquer modo de exibição, e esconder-lo em fullscreen deixaria a
+          navegação retida sem nada em cena para resolvê-la. */}
+      <UnsavedWorkDialog
+        open={isPrompting}
+        unsentDocsCount={unsentDocsCount}
+        onLeave={confirmLeave}
+        onStay={cancelLeave}
+      />
 
       {/* Faixas do rascunho local (#608), abaixo do header e acima das duas
           views: a oferta de recuperação e o aviso de que a cópia local não está

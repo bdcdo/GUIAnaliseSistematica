@@ -2,15 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useReducer, useRef } from "react";
 import { sortByRecent } from "@/lib/coding-sort";
-import {
-  autosaveDirtyDoc,
-  saveCodingResponse,
-} from "@/lib/coding-autosave";
+import { saveCodingResponse } from "@/lib/coding-autosave";
 import { clearHiddenConditionalAnswers } from "@/lib/conditional";
 import { notifySaved } from "@/lib/coding-save-feedback";
 import type { CodingSnapshot } from "@/lib/coding-draft";
 import { toast } from "sonner";
-import type { AutosavePayload } from "@/hooks/useAutosaveOnExit";
 import type { CodingSortMode } from "./CodingPage";
 import type { AssignedDoc, PydanticField } from "@/lib/types";
 
@@ -276,17 +272,13 @@ export function useAssignedCoding({
     setSubmitting,
   ]);
 
+  // Trocar de documento apenas troca. Até o #608 isto autosalvava o doc sujo —
+  // uma gravação que ninguém pediu, que não promovia o assignment a `concluido`
+  // e que falhava calada. Agora o conteúdo continua no reducer, o rascunho local
+  // o persiste e o doc segue marcado como não enviado: nada se perde, e o que
+  // vai ao servidor é só o que a pesquisadora mandou.
   const handleDocNavigate = useCallback(
     (newIndex: number) => {
-      if (currentDoc && isDirty(currentDoc.id)) {
-        autosaveDirtyDoc({
-          projectId,
-          docId: currentDoc.id,
-          answers: docAnswers,
-          notes: docNotes,
-          markClean,
-        });
-      }
       const clampedIndex = Math.max(
         0,
         Math.min(newIndex, sortedDocuments.length - 1),
@@ -294,16 +286,7 @@ export function useAssignedCoding({
       dispatch({ type: "index", index: clampedIndex });
       updateDocParam(sortedDocuments[clampedIndex]?.id ?? null);
     },
-    [
-      currentDoc,
-      docAnswers,
-      docNotes,
-      projectId,
-      sortedDocuments,
-      updateDocParam,
-      isDirty,
-      markClean,
-    ],
+    [sortedDocuments, updateDocParam],
   );
 
   // Troca o criterio de ordenacao da navegacao de atribuidos. Ao mudar para
@@ -312,15 +295,6 @@ export function useAssignedCoding({
   // mexeu. Ao voltar para "default", mantem o documento atual selecionado.
   const handleSortChange = useCallback(
     (nextSort: CodingSortMode) => {
-      if (currentDoc && isDirty(currentDoc.id)) {
-        autosaveDirtyDoc({
-          projectId,
-          docId: currentDoc.id,
-          answers: docAnswers,
-          notes: docNotes,
-          markClean,
-        });
-      }
       const nextDocs =
         nextSort === "recent"
           ? sortByRecent(documents, codedAtByDoc)
@@ -337,33 +311,13 @@ export function useAssignedCoding({
       if (targetId) updates.doc = targetId;
       setParams(updates, { scroll: false });
     },
-    [
-      currentDoc,
-      docAnswers,
-      docNotes,
-      projectId,
-      documents,
-      codedAtByDoc,
-      isDirty,
-      markClean,
-      setParams,
-    ],
+    [currentDoc?.id, documents, codedAtByDoc, setParams],
   );
 
   const resetAllDone = useCallback(
     () => dispatch({ type: "allDone", value: false }),
     [],
   );
-
-  const getPayload = useCallback((): AutosavePayload | null => {
-    if (!currentDoc) return null;
-    return {
-      projectId,
-      documentId: currentDoc.id,
-      answers: docAnswers,
-      notes: docNotes,
-    };
-  }, [currentDoc, docAnswers, docNotes, projectId]);
 
   return {
     docIndex,
@@ -378,6 +332,5 @@ export function useAssignedCoding({
     handleDocNavigate,
     handleSortChange,
     resetAllDone,
-    getPayload,
   };
 }

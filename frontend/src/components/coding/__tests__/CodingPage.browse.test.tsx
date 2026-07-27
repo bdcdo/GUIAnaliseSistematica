@@ -6,23 +6,22 @@ import type { ReactNode } from "react";
 import type { PydanticField, Document } from "@/lib/types";
 
 // Spies/estado controláveis. `urlParams` é o backing store do useUrlState mockado
-// (stateful: `set` muta e força re-render, como o router faria); `autosaveProps`
-// captura o que o container passa ao useAutosaveOnExit, para checar o payload.
+// (stateful: `set` muta e força re-render, como o router faria).
+//
+// Até o #608 havia aqui uma sonda que capturava as props passadas ao
+// `useAutosaveOnExit` e servia de proxy para "o que seria salvo ao sair". Com o
+// autosave removido não há mais o que salvar ao sair, e as asserções passaram a
+// observar o que a pesquisadora de fato vê: o formulário, o indicador de
+// alterações não enviadas e a ausência de chamadas a `saveResponse`.
 const {
   saveResponse,
   getDocumentsForBrowse,
   getDocumentForCoding,
-  autosaveProps,
   urlParams,
 } = vi.hoisted(() => ({
   saveResponse: vi.fn(),
   getDocumentsForBrowse: vi.fn(),
   getDocumentForCoding: vi.fn(),
-  autosaveProps: { current: null as unknown as {
-    activeDocId: string | null;
-    getIsDirty: () => boolean;
-    getPayload: () => unknown;
-  } },
   urlParams: { current: {} as Record<string, string | null> },
 }));
 
@@ -48,12 +47,6 @@ vi.mock("@/hooks/useUrlState", async () => {
 vi.mock("@/hooks/useFieldOrder", () => ({
   useFieldOrder: () => ({ fieldOrder: [], handleReorder: vi.fn() }),
 }));
-vi.mock("@/hooks/useAutosaveOnExit", () => ({
-  useAutosaveOnExit: (props: typeof autosaveProps.current) => {
-    autosaveProps.current = props;
-  },
-}));
-
 vi.mock("@/components/ui/resizable", () => ({
   ResizablePanelGroup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ResizablePanel: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -253,24 +246,19 @@ describe("CodingPage — modo Explorar (integração)", () => {
     );
     await userEvent.click(screen.getByText("qp-set")); // edita d1 → rascunho sujo
 
-    expect(autosaveProps.current.activeDocId).toBe("d1");
-    expect(autosaveProps.current.getIsDirty()).toBe(true);
-    expect(autosaveProps.current.getPayload()).toEqual({
-      projectId: "p1",
-      documentId: "d1",
-      answers: { q1: "sim" },
-      notes: "",
-    });
+    // A edição acende o indicador de não enviado.
+    expect(screen.getByText("Alterações não enviadas")).toBeTruthy();
 
-    // Random troca para d2 (único não respondido != atual) e reseta o rascunho.
+    // Random troca para d2 (único não respondido != atual).
     await userEvent.click(screen.getByText("hdr-random"));
     await waitFor(() =>
       expect(screen.getByTestId("doc-reader").textContent).toBe("texto-d2"),
     );
 
-    // O payload de autosave agora é de d2 e NÃO carrega o rascunho de d1.
-    expect(autosaveProps.current.activeDocId).toBe("d2");
-    expect(autosaveProps.current.getPayload()).toBeNull();
+    // O formulário de d2 abre vazio: o rascunho de d1 não vaza para outro doc.
+    expect(screen.getByTestId("qp-answers").textContent).toBe("{}");
+    // E nada disso passou pelo servidor — trocar de doc não grava.
+    expect(saveResponse).not.toHaveBeenCalled();
   });
 
   it("I3: ?doc= de um documento atribuído abre no modo Atribuídos (não busca via browse)", async () => {
@@ -309,14 +297,8 @@ describe("CodingPage — modo Explorar (integração)", () => {
     );
     await userEvent.click(screen.getByText("qp-set")); // edita d1 → rascunho sujo
 
-    // Antes do toggle: rascunho presente e doc sujo.
-    expect(autosaveProps.current.getIsDirty()).toBe(true);
-    expect(autosaveProps.current.getPayload()).toEqual({
-      projectId: "p1",
-      documentId: "d1",
-      answers: { q1: "sim" },
-      notes: "",
-    });
+    // Antes do toggle: o indicador de não enviado está aceso.
+    expect(screen.getByText("Alterações não enviadas")).toBeTruthy();
 
     // Sai do Explorar e volta (filho keyed desmonta e re-semeia do cache).
     await userEvent.click(screen.getByText("to-assigned"));
@@ -326,15 +308,20 @@ describe("CodingPage — modo Explorar (integração)", () => {
     await waitFor(() =>
       expect(screen.getByTestId("qp-answers").textContent).toBe("{}"),
     );
-    // ...e o estado salvável concorda: nada de ghost-save no exit/Voltar.
-    expect(autosaveProps.current.activeDocId).toBe("d1");
-    expect(autosaveProps.current.getIsDirty()).toBe(false);
-    expect(autosaveProps.current.getPayload()).toBeNull();
+    // ...sem que nada tenha ido ao servidor. Este teste nasceu para provar a
+    // ausência de "ghost save" — uma gravação disparada pelo autosave sobre uma
+    // edição que a tela já tinha descartado. Sem autosave, a ausência é
+    // estrutural, e a asserção fica como guarda de que ela continua assim.
+    expect(saveResponse).not.toHaveBeenCalled();
     // O doc não foi re-buscado no retorno (cache não invalidado).
     expect(getDocumentForCoding).toHaveBeenCalledTimes(1);
   });
 
-  it("nº5: trocar de doc limpa o dirty do anterior (sem vazamento)", async () => {
+  // Semântica invertida no #608. Era "trocar de doc limpa o dirty do anterior":
+  // fazia sentido enquanto trocar de doc realmente descartava a edição, porque
+  // então não havia mais nada pendente. Agora o rascunho local a preserva, e
+  // apagar o sinal afirmaria "enviado" sobre trabalho que segue pendente.
+  it("nº5: voltar ao doc editado mantém o sinal de não enviado", async () => {
     getDocumentsForBrowse.mockResolvedValue([browseDoc("d1"), browseDoc("d2")]);
     getDocumentForCoding.mockImplementation(async (_p: string, id: string) =>
       codingResult(id, null),
@@ -349,9 +336,9 @@ describe("CodingPage — modo Explorar (integração)", () => {
       expect(screen.getByTestId("qp-answers").textContent).toBe("{}"),
     );
     await userEvent.click(screen.getByText("qp-set")); // edita d1 → sujo
-    expect(autosaveProps.current.getIsDirty()).toBe(true);
+    expect(screen.getByText("Alterações não enviadas")).toBeTruthy();
 
-    // Random: d1 → d2 (markClean d1). Depois d2 → d1 (volta ao d1).
+    // Random: d1 → d2. Depois d2 → d1 (volta ao d1).
     await userEvent.click(screen.getByText("hdr-random"));
     await waitFor(() =>
       expect(screen.getByTestId("doc-reader").textContent).toBe("texto-d2"),
@@ -361,9 +348,10 @@ describe("CodingPage — modo Explorar (integração)", () => {
       expect(screen.getByTestId("doc-reader").textContent).toBe("texto-d1"),
     );
 
-    // De volta a d1: não está mais sujo (sem prompt espúrio) e sem rascunho.
-    expect(autosaveProps.current.activeDocId).toBe("d1");
-    expect(autosaveProps.current.getIsDirty()).toBe(false);
-    expect(autosaveProps.current.getPayload()).toBeNull();
+    // De volta a d1: o formulário re-semeia do cache (o rascunho não é aplicado
+    // sozinho — quem aplica é a faixa, por ação explícita), mas o indicador
+    // continua aceso, porque a edição de d1 nunca foi enviada.
+    expect(screen.getByText("Alterações não enviadas")).toBeTruthy();
+    expect(saveResponse).not.toHaveBeenCalled();
   });
 });
