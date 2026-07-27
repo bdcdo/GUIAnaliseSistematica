@@ -12,7 +12,7 @@ Plataforma web para análise de conteúdo com IA, baseada na lib dataframeit.
 
 ## Arquitetura
 
-- **Next.js 15** (App Router) — frontend + Server Actions
+- **Next.js 16** (App Router) — frontend + Server Actions
 - **Supabase** — Postgres + Auth (Row Level Security)
 - **FastAPI** — backend leve para LLM e validacao Pydantic
 
@@ -164,7 +164,7 @@ Mudanças que dependem de RPCs, constraints ou colunas novas seguem ordem estrit
 ## Estrutura do Projeto
 
 ```
-frontend/     # Next.js 15 + shadcn/ui + Tailwind v4
+frontend/     # Next.js 16 + shadcn/ui + Tailwind v4
 backend/      # FastAPI + dataframeit
 docs/         # Especificacoes tecnicas
 ```

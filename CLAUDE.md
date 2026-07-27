@@ -39,6 +39,7 @@ Browser  →  Next.js 16 (Vercel)  ←→  Supabase (Postgres + RLS)
 - **Portugues** para UI (labels, mensagens), **ingles** para codigo (vars, funcs, types)
 - **Alvo e desktop/mouse, nao toque**: a plataforma e acessada via computador. Otimizar densidade e alvos de clique para mouse — nao aplicar o minimo de 44px de toque. Em caso de tradeoff, priorizar densidade de informacao.
 - **shadcn/ui** para todos os componentes de UI
+- **Decisoes de UI e seus porques** (codificacao em lista e deliberada, codigo Pydantic somente-leitura, veredito em dois passos): **`docs/UI.md`**. Antes de propor mudanca de interface que pareca "corrigir uma regressao", conferir la se a forma atual nao e escolha registrada. O arquivo so guarda intencao — descricao de tela e medida em pixel vivem no codigo, deliberadamente (ver #611).
 - **Server Actions** para mutations, **RSC** para reads
 - Auth: Clerk (`lib/auth.ts` para `getAuthUser()`, `lib/clerk-sync.ts` para sync Clerk↔Supabase)
 - Supabase client: `lib/supabase/server.ts` (server, autenticado via Clerk JWT) e `lib/supabase/admin.ts` (service key)
