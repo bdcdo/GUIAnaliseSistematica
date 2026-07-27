@@ -54,9 +54,16 @@ interface DocDraftState {
 }
 
 export interface CodingDraftsApi {
-  // Registra a edição corrente. Idempotente: chamar com conteúdo igual ao
-  // baseline limpa o slot em vez de gravar rascunho vazio.
-  recordDraft(docId: string, draft: CodingSnapshot, base: CodingSnapshot): void;
+  // Registra a edição corrente. Idempotente: conteúdo igual ao baseline limpa o
+  // slot em vez de gravar rascunho vazio.
+  //
+  // O baseline NÃO é parâmetro. Ele é estabelecido na abertura do documento (a
+  // partir do que o servidor entregou) e rebaseado por `submitConfirmed`, e o
+  // hook é seu dono único. Quando o consumidor também o passava a cada tecla,
+  // havia duas fontes para o mesmo fato e a do consumidor sempre vencia — o que
+  // tornava o rebase pós-envio inobservável e deixava um `base` stale entrar no
+  // envelope. Sem o parâmetro, esse estado não é construível.
+  recordDraft(docId: string, draft: CodingSnapshot): void;
   // Devolve o conteúdo a aplicar e marca a oferta como resolvida. NÃO apaga o
   // envelope: retomar não é enviar, e o trabalho segue não-enviado.
   restoreDraft(docId: string): CodingSnapshot | null;
@@ -343,24 +350,24 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
   }, []);
 
   const recordDraft = useCallback(
-    (docId: string, draft: CodingSnapshot, base: CodingSnapshot) => {
+    (docId: string, draft: CodingSnapshot) => {
       if (!keyPartsRef.current.enabled) return;
+      const previous = stateRef.current.get(docId);
+      // Sem baseline registrado não há como decidir o que é edição. Isso só
+      // ocorre para um documento que nunca foi aberto — não há caminho de UI que
+      // edite um documento fechado —, e inventar um baseline vazio gravaria o
+      // formulário inteiro como se fosse rascunho.
+      if (!previous) return;
+
       // Voltar ao baseline não é "rascunho vazio", é ausência de rascunho: manter
       // o envelope faria a faixa oferecer, na próxima abertura, um rascunho
-      // idêntico ao servidor.
-      if (sameCodingSnapshot(draft, base, fieldsRef.current)) {
-        dropSlot(docId, base);
+      // idêntico ao que o servidor já tem.
+      if (sameCodingSnapshot(draft, previous.base, fieldsRef.current)) {
+        dropSlot(docId, previous.base);
         return;
       }
-      const previous = stateRef.current.get(docId);
       const token = makeId("cdraft");
-      stateRef.current.set(docId, {
-        base,
-        draft,
-        writeToken: token,
-        persistedToken: previous?.persistedToken ?? null,
-        blocked: previous?.blocked ?? false,
-      });
+      stateRef.current.set(docId, { ...previous, draft, writeToken: token });
       scheduleWrite(docId, token);
     },
     [dropSlot, scheduleWrite],
@@ -424,11 +431,24 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
     if (slot.staleFormat) setStaleDiscardedCount((n) => n + 1);
 
     const remote = remoteRef.current ?? { answers: {}, notes: "" };
+
+    // Abrir estabelece o baseline do documento — o hook é dono único dele a
+    // partir daqui. Preserva `persistedToken` de uma edição anterior nesta mesma
+    // sessão (ir e voltar entre documentos não pode fazer a aba perder a posse
+    // do próprio slot).
+    const previous = stateRef.current.get(openDocId);
+    stateRef.current.set(openDocId, {
+      base: remote,
+      draft: previous?.draft ?? null,
+      writeToken: previous?.writeToken ?? null,
+      persistedToken: previous?.persistedToken ?? null,
+      blocked: previous?.blocked ?? false,
+    });
+
     const classified = classifyCodingDraft(slot.envelope, remote, fieldsRef.current);
     if (classified.kind === "redundant" && slot.envelope) {
       // Repete o servidor: some do caminho em vez de virar ruído recorrente.
       deleteSlotIfTokenMatches(scope, slot.envelope.writeToken);
-      stateRef.current.delete(openDocId);
       setRecovery({ kind: "none" });
       return;
     }

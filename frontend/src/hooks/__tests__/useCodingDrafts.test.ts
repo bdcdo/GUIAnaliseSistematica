@@ -105,7 +105,7 @@ function plant(
 describe("gravação e debounce", () => {
   it("não grava antes do debounce e grava depois", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     expect(stored()).toBeNull();
     flushDebounce();
     expect(stored()?.draft.answers).toEqual({ q1: "a" });
@@ -116,8 +116,8 @@ describe("gravação e debounce", () => {
   // velho por cima do novo.
   it("edições sucessivas deixam um único envelope, com o conteúdo mais recente", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
-    act(() => result.current.recordDraft(DOC, snap({ q1: "ab" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "ab" })));
     flushDebounce();
     expect(stored()?.draft.answers).toEqual({ q1: "ab" });
     expect(window.localStorage.length).toBe(1);
@@ -125,7 +125,7 @@ describe("gravação e debounce", () => {
 
   it("grava as notas junto das respostas", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({}, "minha nota"), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({}, "minha nota")));
     flushDebounce();
     expect(stored()?.draft.notes).toBe("minha nota");
   });
@@ -135,17 +135,17 @@ describe("gravação e debounce", () => {
   // um rascunho idêntico ao que o servidor já tem.
   it("desfazer até o baseline apaga o slot", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     expect(stored()).not.toBeNull();
-    act(() => result.current.recordDraft(DOC, EMPTY, EMPTY));
+    act(() => result.current.recordDraft(DOC, EMPTY));
     flushDebounce();
     expect(stored()).toBeNull();
   });
 
   it("o envelope carrega a identidade do escopo", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     expect(stored()).toMatchObject({ userId: USER, projectId: PROJECT, documentId: DOC });
   });
@@ -154,7 +154,7 @@ describe("gravação e debounce", () => {
   // slot que ninguém vai enviar. Mutação vermelha: ignorar `enabled`.
   it("com `enabled: false` não escreve nada", () => {
     const { result } = render({ enabled: false });
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     expect(window.localStorage.length).toBe(0);
   });
@@ -166,7 +166,7 @@ describe("flush — os gatilhos de que depende 'fechar a aba não perde trabalho
     ["beforeunload", () => window.dispatchEvent(new Event("beforeunload"))],
   ])("%s persiste antes do debounce", (_label, fire) => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     expect(stored()).toBeNull();
     act(() => {
       fire();
@@ -176,7 +176,7 @@ describe("flush — os gatilhos de que depende 'fechar a aba não perde trabalho
 
   it("visibilitychange com a aba oculta persiste; visível não", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
 
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     act(() => {
@@ -193,7 +193,7 @@ describe("flush — os gatilhos de que depende 'fechar a aba não perde trabalho
 
   it("unmount antes do debounce persiste", () => {
     const { result, unmount } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     act(() => {
       unmount();
     });
@@ -274,7 +274,7 @@ describe("envio confirmado", () => {
   // "não enviado" ficaria aceso sobre trabalho que FOI enviado.
   it("descarta o rascunho mesmo quando o documento segue pendente", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     expect(stored()).not.toBeNull();
 
@@ -288,17 +288,17 @@ describe("envio confirmado", () => {
   // escrita nossa.
   it("rebaseia o baseline no que foi gravado", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     act(() => result.current.submitConfirmed(DOC, snap({ q1: "a" })));
 
     // Continuar digitando depois do envio: o novo rascunho parte do que foi
     // gravado, então voltar ao valor enviado limpa o slot em vez de virar diff.
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), snap({ q1: "a" })));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     expect(stored()).toBeNull();
 
-    act(() => result.current.recordDraft(DOC, snap({ q1: "ab" }), snap({ q1: "a" })));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "ab" })));
     flushDebounce();
     expect(stored()?.base.answers).toEqual({ q1: "a" });
   });
@@ -312,8 +312,8 @@ describe("compare-and-swap entre abas", () => {
     const a = render({ openDocId: "doc-a", remote: EMPTY });
     const b = render({ openDocId: "doc-b", remote: EMPTY });
 
-    act(() => a.result.current.recordDraft("doc-a", snap({ q1: "de A" }), EMPTY));
-    act(() => b.result.current.recordDraft("doc-b", snap({ q1: "de B" }), EMPTY));
+    act(() => a.result.current.recordDraft("doc-a", snap({ q1: "de A" })));
+    act(() => b.result.current.recordDraft("doc-b", snap({ q1: "de B" })));
     flushDebounce();
 
     const keyA = codingDraftStorageKey({ userId: USER, projectId: PROJECT, documentId: "doc-a" });
@@ -327,7 +327,7 @@ describe("compare-and-swap entre abas", () => {
   it("envelope de formato maior não é sobrescrito", () => {
     plant({ formatVersion: CODING_DRAFT_FORMAT_VERSION + 1 });
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "meu" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "meu" })));
     flushDebounce();
     const rawStored = JSON.parse(window.localStorage.getItem(KEY) ?? "{}");
     expect(rawStored.formatVersion).toBe(CODING_DRAFT_FORMAT_VERSION + 1);
@@ -335,11 +335,11 @@ describe("compare-and-swap entre abas", () => {
 
   it("slot tomado por outro token não é sobrescrito", () => {
     const { result } = render();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "meu" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "meu" })));
     flushDebounce();
     // Outra aba assume o slot entre duas escritas nossas.
     plant({ writeToken: "de-outra-aba", draft: snap({ q1: "da outra aba" }) });
-    act(() => result.current.recordDraft(DOC, snap({ q1: "meu 2" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "meu 2" })));
     flushDebounce();
     expect(stored()?.draft.answers).toEqual({ q1: "da outra aba" });
   });
@@ -419,7 +419,7 @@ describe("indisponibilidade do storage", () => {
     vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
       throw new DOMException("cheio", "QuotaExceededError");
     });
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     expect(result.current.storageAvailable).toBe(false);
   });
@@ -431,12 +431,12 @@ describe("indisponibilidade do storage", () => {
     const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementationOnce(() => {
       throw new DOMException("cheio", "QuotaExceededError");
     });
-    act(() => result.current.recordDraft(DOC, snap({ q1: "a" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     flushDebounce();
     expect(stored()).toBeNull();
 
     setItem.mockRestore();
-    act(() => result.current.recordDraft(DOC, snap({ q1: "ab" }), EMPTY));
+    act(() => result.current.recordDraft(DOC, snap({ q1: "ab" })));
     flushDebounce();
     expect(stored()?.draft.answers).toEqual({ q1: "ab" });
     expect(result.current.storageAvailable).toBe(true);
