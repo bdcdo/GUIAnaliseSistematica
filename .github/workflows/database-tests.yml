@@ -57,8 +57,12 @@ jobs:
         run: npm run test:db:member-permissions
       - name: Column guard de project_members
         run: npm run test:db:column-guard
+      - name: Unicidade da resposta humana corrente
+        run: npm run test:db:responses-human-latest
 
-      # As fixtures deste precisam estar commitadas (duas conexões dblink veem
-      # o mesmo estado), então ele suja o banco e fica por último.
+      # As fixtures destes precisam estar commitadas (duas conexões dblink veem
+      # o mesmo estado), então eles sujam o banco e ficam por último.
       - name: Concorrência da auto-revisão
         run: npm run test:db:auto-review-concurrency
+      - name: Concorrência do save humano
+        run: npm run test:db:responses-human-concurrency

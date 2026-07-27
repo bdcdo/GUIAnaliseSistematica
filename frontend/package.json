@@ -28,6 +28,8 @@
     "test:db:llm-rate-limit": "npm run test:db:psql -- supabase/tests/llm_rate_limit.test.sql",
     "test:db:member-permissions": "npm run test:db:psql -- supabase/tests/member_permission_rpcs.test.sql",
     "test:db:column-guard": "npm run test:db:psql -- supabase/tests/project_members_column_guard.test.sql",
+    "test:db:responses-human-latest": "npm run test:db:psql -- supabase/tests/responses_one_latest_human.test.sql",
+    "test:db:responses-human-concurrency": "npm run test:db:psql -- supabase/tests/responses_latest_human_concurrency.test.sql",
     "test:db:remove-member": "npm run test:db:psql -- supabase/tests/remove_project_member_self_identity.test.sql",
     "test:db:unmark-equivalence": "npm run test:db:psql -- supabase/tests/unmark_equivalence_atomic.test.sql",
     "test:db:arbitration-reopen": "npm run test:db:psql -- supabase/tests/arbitration_reopen.test.sql",
