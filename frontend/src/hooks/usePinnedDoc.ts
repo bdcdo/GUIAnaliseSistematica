@@ -68,12 +68,17 @@ function usePinnedDoc(
 }
 
 /**
- * Índice do doc fixado numa lista de ids, com fallback ao topo: quando o pin
- * é `null` ou não está na lista (inclui lista vazia), retorna 0 — a posição
- * exibida por padrão. Derivação compartilhada pelos consumidores de seleção
- * fixada (Comparação, Auto-revisão, Arbitragem) para não triplicar o memo.
+ * Índice do item fixado numa lista de identificadores, com fallback ao topo:
+ * quando o pin é `null` ou não está na lista (inclui lista vazia), retorna 0 —
+ * a posição exibida por padrão. Derivação compartilhada por todos os
+ * consumidores de seleção fixada (Comparação, Auto-revisão, Arbitragem) para
+ * não triplicar o memo.
+ *
+ * Genérica quanto ao que é fixado: os identificadores são ids de documento na
+ * maioria dos casos e NOMES DE CAMPO na navegação de campos da Comparação
+ * (#613) — daí o nome não mencionar documento.
  */
-export function pinnedDocIndex(
+export function pinnedIndex(
   ids: readonly string[],
   pinnedId: string | null,
 ): number {
@@ -97,7 +102,7 @@ export function usePinnedDocNavigation(
   const [pinnedDocId, setPinnedDocId] = usePinnedDoc(storageKey, {
     validIds: validDocIds,
   });
-  const docIndex = pinnedDocIndex(validDocIds, pinnedDocId);
+  const docIndex = pinnedIndex(validDocIds, pinnedDocId);
   const navigateToIndex = useCallback(
     (requestedIndex: number) => {
       const lastIndex = validDocIds.length - 1;

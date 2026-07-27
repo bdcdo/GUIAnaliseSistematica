@@ -25,6 +25,10 @@ import {
   type PersistedLogEntryRow,
 } from "@/lib/schema-backfill";
 import { computeFieldHash } from "@/lib/schema-utils";
+// Mesma primitiva de igualdade que o produto usa para decidir divergência
+// (`lib/compare-divergence.ts`, `lib/equivalence.ts`): se as duas réguas
+// divergirem, é bug de contrato e a invariante deve enxergar.
+import { normalizeForComparison } from "@/lib/utils";
 import type { AnswerFieldHashes, PydanticField } from "@/lib/types";
 import { loadEnv } from "../comentarios-relatorio/load-env";
 
@@ -88,6 +92,35 @@ async function fetchAll<T>(
     rows.push(...((data ?? []) as T[]));
     if (!data || data.length < PAGE) return rows;
   }
+}
+
+/**
+ * Busca linhas por um conjunto conhecido de ids, em lotes. Existe para as
+ * colunas JSONB volumosas (`answers`, `response_snapshot`), em que varrer a
+ * tabela inteira com `fetchAll` traria megabytes que a invariante descarta.
+ *
+ * O lote é de 100 e não maior porque o `.in()` do PostgREST vai na URL: ~500
+ * UUIDs estouram o limite e a query volta como erro de request, não de dados.
+ */
+async function fetchByIds<T>(
+  table: string,
+  columns: string,
+  ids: readonly string[],
+): Promise<T[]> {
+  const CHUNK = 100;
+  const rows: T[] = [];
+  for (let i = 0; i < ids.length; i += CHUNK) {
+    const batch = ids.slice(i, i + CHUNK);
+    const { data, error } = await supabase
+      .from(table)
+      .select(columns)
+      .in("id", batch);
+    if (error) {
+      throw new Error(`${table} por id (lote de ${batch.length}): ${error.message}`);
+    }
+    rows.push(...((data ?? []) as T[]));
+  }
+  return rows;
 }
 
 // Documentos soft-deletados ficam fora das invariantes de fila/status: o dedup
@@ -660,7 +693,155 @@ const invariants: Invariant[] = [
         .map((r) => ({ key: r.id, detail: "final_verdict=llm sem question_improvement_suggestion" }));
     },
   },
+  {
+    name: "review-verdict-do-campo-declarado",
+    motivation:
+      "#613: card do campo ANTERIOR sobrevivia à troca de campo e o clique gravava aquele valor no campo atual — 2 casos provados em 1.016 reviews com chosen_response_id. A régua é a `response_snapshot`, gravada no MESMO closure que decide `field_name`: se o veredito não bate com o que a tela mostrava para a resposta escolhida, e o valor pertence a outro campo dela, a decisão foi tomada num campo e gravada em outro. As violações conhecidas em 2026-07-27 estão rastreadas na #623; elas NÃO são resíduo antigo — foram gravadas no mesmo dia, com o defeito ainda ativo em produção, então uma contagem que SOBE aqui é sinal de que a causa voltou",
+    run: async () => {
+      const [reviews, projects] = await Promise.all([
+        fetchAll<ReviewVerdictRow>(
+          "reviews",
+          "id, project_id, field_name, verdict, chosen_response_id",
+          (q) => q.not("chosen_response_id", "is", null),
+        ),
+        fetchAll<{ id: string; pydantic_fields: PydanticField[] | null }>(
+          "projects",
+          "id, pydantic_fields",
+        ),
+      ]);
+      const fieldsOf = new Map(projects.map((p) => [p.id, p.pydantic_fields ?? []]));
+
+      // `answers` é JSONB da codificação inteira: buscar só as respostas de fato
+      // ESCOLHIDAS por algum veredito faz o custo escalar com `reviews`, não com
+      // o corpus de `responses` (mesmo motivo da fase 2 abaixo).
+      const chosenIds = [
+        ...new Set(reviews.map((rv) => rv.chosen_response_id!)),
+      ];
+      const answersOf = new Map<string, Record<string, unknown>>();
+      for (const row of await fetchByIds<{
+        id: string;
+        answers: Record<string, unknown> | null;
+      }>("responses", "id, answers", chosenIds)) {
+        answersOf.set(row.id, row.answers ?? {});
+      }
+
+      // Fase 1 (metadados): candidato = divergência crua num campo `single` com
+      // opções. O recorte por TIPO é o que exclui as duas famílias de ruído
+      // medidas em 2026-07-27 sobre produção — 196 casos de subcampo (família
+      // #607) e 11 de data/texto reformatados, nenhum deles campo trocado.
+      const candidates = reviews.filter((rv) => {
+        if (rv.verdict === "ambiguo" || rv.verdict === "pular") return false;
+        const t = rv.verdict.trim();
+        if (t.startsWith("[") || t.startsWith("{")) return false;
+        const field = fieldsOf
+          .get(rv.project_id)
+          ?.find((f) => f.name === rv.field_name);
+        if (!field || field.type !== "single" || !field.options?.length) return false;
+        const answers = answersOf.get(rv.chosen_response_id!);
+        if (!answers) return false; // coberto por review-chosen-response-do-mesmo-documento
+        return (
+          normalizeForComparison(rv.verdict) !==
+          normalizeForComparison(answers[rv.field_name])
+        );
+      });
+
+      // Fase 2: `response_snapshot` é JSONB volumoso — só dos candidatos.
+      const snapshotOf = new Map<string, unknown>();
+      for (const row of await fetchByIds<{ id: string; response_snapshot: unknown }>(
+        "reviews",
+        "id, response_snapshot",
+        candidates.map((c) => c.id),
+      )) {
+        snapshotOf.set(row.id, row.response_snapshot);
+      }
+
+      const violations: Violation[] = [];
+      for (const rv of candidates) {
+        const snap = snapshotOf.get(rv.id);
+        // Sem snapshot (review anterior à migration 20260401210000) o caso é
+        // NÃO AVALIÁVEL, não violação: sem a régua do instante do veredito, uma
+        // recodificação posterior é explicação igualmente suficiente. Medido:
+        // os 2 casos de 2026-03-27 que a #613 listava caem aqui, e as respostas
+        // que eles escolheram foram editadas em 2026-06-17 — quase três meses
+        // depois. A cobertura dessa faixa é a invariante inversa abaixo.
+        if (!Array.isArray(snap)) continue;
+        const entry = (snap as { id?: string; answer?: unknown }[]).find(
+          (e) => e?.id === rv.chosen_response_id,
+        );
+        if (!entry) continue;
+        // Bate com o que a tela mostrava: a codificação mudou DEPOIS do
+        // veredito (família #607). O veredito estava certo quando foi dado.
+        if (normalizeForComparison(rv.verdict) === normalizeForComparison(entry.answer)) {
+          continue;
+        }
+        // Discriminador: o valor pertence a OUTRO campo da MESMA resposta.
+        //
+        // NÃO morde hoje — medido por mutação em 2026-07-27: remover esta
+        // conjunção mantém as mesmas 2 violações. A razão é de construção do
+        // produtor: a resposta customizada ("Nenhuma correta" + texto livre)
+        // grava `chosen_response_id = null` (voto sempre carrega o id; custom
+        // nunca), então o filtro `not.is.null` lá em cima já a excluiu.
+        //
+        // Fica assim mesmo, com a condição de ativação nomeada: passa a importar
+        // quando o veredito for um valor de EXIBIÇÃO que não é igual a nenhuma
+        // resposta crua — caso de `confirmEquivalentVerdict`, que grava o
+        // `displayAnswer` formatado do grupo gabarito. Hoje isso não diverge em
+        // campo `single` (formatação é identidade para string), mas passaria a
+        // divergir se a formatação de `single` mudar. Sem esta conjunção, essa
+        // mudança de formatação faria a invariante acusar o projeto inteiro.
+        const answers = answersOf.get(rv.chosen_response_id!) ?? {};
+        const dono = Object.keys(answers).find(
+          (k) =>
+            k !== rv.field_name &&
+            normalizeForComparison(answers[k]) === normalizeForComparison(rv.verdict),
+        );
+        if (!dono) continue;
+        violations.push({
+          key: rv.id,
+          detail: `veredito de '${rv.field_name}' vale ${JSON.stringify(rv.verdict)}, que pertence a '${dono}' na resposta escolhida`,
+        });
+      }
+      return violations;
+    },
+  },
+  {
+    name: "review-com-escolha-tem-snapshot-da-escolhida",
+    motivation:
+      "inversa da anterior: sem uma entry da resposta escolhida em `response_snapshot`, o par (escolha, veredito) é INAUDITÁVEL — a regra acima não tem régua e passa em silêncio. Ausência aqui significa gravação por canal que não passa pelo `submitVerdict` do produto. Medido em 2026-07-27: 0 em 970 reviews posteriores ao corte",
+    run: async () => {
+      // Corte = migration 20260401210000_review_response_snapshot.sql. Reviews
+      // anteriores não têm a coluna preenchida por construção (46 hoje).
+      const CUTOFF = "2026-04-02T00:00:00Z";
+      const rows = await fetchAll<{
+        id: string;
+        created_at: string;
+        chosen_response_id: string | null;
+        response_snapshot: unknown;
+      }>("reviews", "id, created_at, chosen_response_id, response_snapshot", (q) =>
+        q.not("chosen_response_id", "is", null).gte("created_at", CUTOFF),
+      );
+      return rows
+        .filter((rv) => {
+          const snap = rv.response_snapshot;
+          if (!Array.isArray(snap)) return true;
+          return !(snap as { id?: string }[]).some((e) => e?.id === rv.chosen_response_id);
+        })
+        .map((rv) => ({
+          key: rv.id,
+          detail: `review de ${rv.created_at.slice(0, 10)} escolheu ${rv.chosen_response_id} mas o snapshot não tem entry dessa resposta`,
+        }));
+    },
+  },
 ];
+
+/** Linhas de `reviews` usadas pela invariante de coerência veredito×campo. */
+interface ReviewVerdictRow {
+  id: string;
+  project_id: string;
+  field_name: string;
+  verdict: string;
+  chosen_response_id: string | null;
+}
 
 async function main() {
   let failures = 0;

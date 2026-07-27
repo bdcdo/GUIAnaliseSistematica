@@ -17,7 +17,7 @@ const completeRequiredEnv = Object.fromEntries(
 );
 
 describe("assertRequiredPrePushEnv", () => {
-  it("deriva as dez variáveis obrigatórias dos exemplos canônicos", () => {
+  it("deriva as onze variáveis obrigatórias dos exemplos canônicos", () => {
     expect(requiredPrePushEnv).toEqual(
       [
         "NEXT_PUBLIC_SUPABASE_URL",
@@ -31,6 +31,9 @@ describe("assertRequiredPrePushEnv", () => {
         "E2E_LOTTERY_PROJECT_ID",
         // coding-save.smoke.spec.ts — projeto dedicado do smoke de salvamento
         "E2E_CODING_PROJECT_ID",
+        // compare-field-switch.smoke.spec.ts — projeto dedicado do smoke de
+        // troca de campo na Comparação (#613)
+        "E2E_COMPARE_PROJECT_ID",
       ].sort(),
     );
   });

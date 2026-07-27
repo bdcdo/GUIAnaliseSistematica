@@ -4,7 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { isDocComplete } from "@/lib/compare-assignment-status";
 import { findNextPendingDocIndex } from "@/lib/compare-queue-navigation";
-import { pinnedDocIndex } from "@/hooks/usePinnedDoc";
+import { pinnedIndex } from "@/hooks/usePinnedDoc";
+import { useQueueChangeNotice } from "./useQueueChangeNotice";
 import type { ReviewsByDoc } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
 import type { CompareDocument } from "./compare-types";
@@ -61,7 +62,9 @@ export function useCompareNavigation({
   const [pinnedDocId, setPinnedDocId] = useState<string | null>(
     () => documents[0]?.id ?? null,
   );
-  const [fieldIndex, setFieldIndex] = useState(0);
+  // `null` = "nenhum campo escolhido ainda neste recorte"; o guard de render
+  // abaixo resolve para o primeiro campo da lista.
+  const [pinnedFieldName, setPinnedFieldName] = useState<string | null>(null);
   const [filter, setFilter] = useState("all");
 
   // O parecer atual é derivado de `pinnedDocId` (o doc exibido, atualizado a
@@ -72,7 +75,7 @@ export function useCompareNavigation({
   // `documents[0]`.
   const docIndex = useMemo(
     () =>
-      pinnedDocIndex(
+      pinnedIndex(
         documents.map((d) => d.id),
         pinnedDocId,
       ),
@@ -130,19 +133,58 @@ export function useCompareNavigation({
     [allDocDivergent],
   );
 
-  const docFields =
-    filter === "all"
-      ? allDocDivergent
-      : allDocDivergent.filter((fn) => fn === filter);
-  // `fieldIndex` pode ficar fora de range se `docFields` encolher sob o usuário
-  // (ex.: um revalidate reduziu os campos divergentes do doc fixado) sem que o
-  // filtro ou o doc — os únicos pontos que resetam `fieldIndex` — mudem. Clampa
-  // na leitura para `currentFieldName` nunca cair em `undefined` havendo campos.
-  const clampedFieldIndex =
-    docFields.length > 0 ? Math.min(fieldIndex, docFields.length - 1) : 0;
-  const currentFieldName = docFields[clampedFieldIndex];
+  // Memoizado porque alimenta as deps dos callbacks de navegação abaixo: o ramo
+  // filtrado produziria array novo a cada render e tiraria a identidade estável
+  // de que o effect de teclado (`useCompareKeyboard`) depende.
+  const docFields = useMemo(
+    () =>
+      filter === "all"
+        ? allDocDivergent
+        : allDocDivergent.filter((fn) => fn === filter),
+    [allDocDivergent, filter],
+  );
+
+  // O campo atual é derivado do NOME fixado, não de um índice — mesmo motivo do
+  // `pinnedDocId` acima, e mesma primitiva. `allDocDivergent` é recomputado no
+  // servidor a cada `revalidatePath` (`computeDivergentFieldNames`): a lista
+  // encolhe quando uma equivalência funde grupos e cresce quando o snapshot de
+  // um par deixa de casar. Com índice, esse encolhimento deslocava a revisora
+  // para OUTRO campo em silêncio, sem clique e sem passar por `guardNavigation`
+  // — o segundo defeito provado da #613 (caso real: confirmar equivalência em
+  // q4 fez o índice apontar de q8 para q14).
+  const fieldIndex = pinnedIndex(docFields, pinnedFieldName);
+  const currentFieldName = docFields[fieldIndex];
+
+  // Re-pinagem quando o nome fixado não resolve: pin `null` (primeiro render) ou
+  // o campo saiu da lista. Ajuste condicional de estado durante o render (padrão
+  // "adjusting state when a prop changes" dos docs do React), não effect —
+  // `set-state-in-effect` proíbe o setState síncrono em effect, e é o mesmo
+  // idioma já usado para o doc logo acima.
+  //
+  // O que esta linha compra NÃO é o campo exibido: `pinnedIndex` já cai em 0, então
+  // `currentFieldName` seria idêntico sem ela. Ela existe para impedir
+  // RESSURREIÇÃO — a fila também CRESCE (quando o snapshot de um par deixa de
+  // casar), e um pin órfão que voltasse a aparecer teleportaria a revisora para
+  // um campo que ela não escolheu, sem clique. Descartar o pin morto no mesmo
+  // render em que ele deixa de resolver fecha essa janela.
+  if (docFields.length > 0 && docFields[fieldIndex] !== pinnedFieldName) {
+    setPinnedFieldName(docFields[0]);
+  }
+
   const currentField = fields.find((f) => f.name === currentFieldName);
   const isCurrentFieldDivergent = divergentSet.has(currentFieldName);
+
+  // Avisa quando a COMPOSIÇÃO da fila de campos muda sob a revisora. Tanto a
+  // decisão (com as três supressões que impedem o aviso de virar ruído) quanto o
+  // rastreio do render anterior moram em `compare-queue-change`.
+  const currentDocId = currentDoc?.id;
+  useQueueChangeNotice({
+    currentFields: docFields,
+    currentFieldName,
+    currentDocId,
+    currentFilter: filter,
+    reviewedFields: currentDocId ? localReviews[currentDocId] : undefined,
+  });
 
   const reviewedDocsCount = useMemo(
     () =>
@@ -179,10 +221,14 @@ export function useCompareNavigation({
 
   const hasNextDoc = nextPendingDocIndex >= 0;
 
+  // Trocar de parecer começa do primeiro campo do novo doc: `null` é resolvido
+  // pelo guard de render. Explícito (e não deixado para a re-pinagem automática)
+  // porque um doc novo pode ter um campo divergente de MESMO NOME, e herdar a
+  // posição nesse caso seria uma continuidade acidental, não uma decisão.
   const handleNextDoc = useCallback(() => {
     if (nextPendingDocIndex >= 0) {
       setPinnedDocId(documents[nextPendingDocIndex].id);
-      setFieldIndex(0);
+      setPinnedFieldName(null);
     }
   }, [nextPendingDocIndex, documents]);
 
@@ -191,29 +237,44 @@ export function useCompareNavigation({
       if (documents.length === 0) return;
       const clamped = Math.max(0, Math.min(newIndex, documents.length - 1));
       setPinnedDocId(documents[clamped].id);
-      setFieldIndex(0);
+      setPinnedFieldName(null);
     },
     [documents],
   );
 
-  // Parte do índice CLAMPADO (não do `idx` cru do estado): se o estado ficou
-  // fora de range por um encolhimento de `docFields`, navegar a partir do índice
-  // exibido evita ficar preso num índice morto.
-  const docFieldsLength = docFields.length;
-  const goNextField = useCallback(() => {
-    setFieldIndex(
-      clampedFieldIndex < docFieldsLength - 1
-        ? clampedFieldIndex + 1
-        : clampedFieldIndex,
-    );
-  }, [clampedFieldIndex, docFieldsLength]);
-  const goPrevField = useCallback(() => {
-    setFieldIndex(clampedFieldIndex > 0 ? clampedFieldIndex - 1 : clampedFieldIndex);
-  }, [clampedFieldIndex]);
+  // A API de borda continua por ÍNDICE (ProgressDots navega por posição e o
+  // painel exibe "Campo N/M"); a tradução índice → nome vive aqui, para que o
+  // estado interno seja sempre o nome.
+  const setFieldIndex = useCallback(
+    (index: number) => {
+      if (docFields.length === 0) return;
+      const clamped = Math.max(0, Math.min(index, docFields.length - 1));
+      setPinnedFieldName(docFields[clamped]);
+    },
+    [docFields],
+  );
 
+  // Fixa o NOME do vizinho, não a posição dele: é esta linha que fecha o caso
+  // real da #613 — o avanço automático após confirmar uma equivalência
+  // (`handleConfirmEquivalent` → `goNextField`) deixa de deslocar quando o
+  // refresh seguinte chega com a lista já sem o campo fundido.
+  const goNextField = useCallback(() => {
+    if (fieldIndex < docFields.length - 1) {
+      setPinnedFieldName(docFields[fieldIndex + 1]);
+    }
+  }, [docFields, fieldIndex]);
+  const goPrevField = useCallback(() => {
+    if (fieldIndex > 0) setPinnedFieldName(docFields[fieldIndex - 1]);
+  }, [docFields, fieldIndex]);
+
+  // O pin NÃO é resetado aqui: o guard de render já resolve os dois sentidos, e
+  // resolvê-los por omissão dá o comportamento melhor nos dois. Ao filtrar por
+  // um campo único, o nome fixado sai do recorte e a re-pinagem aponta para o
+  // campo filtrado; ao voltar para "all", o nome continua presente na lista
+  // completa e a revisora permanece onde estava — antes, o reset de índice a
+  // jogava de volta no campo 1.
   const changeFilter = useCallback((value: string) => {
     setFilter(value);
-    setFieldIndex(0);
   }, []);
 
   return {
@@ -221,7 +282,7 @@ export function useCompareNavigation({
     currentDoc,
     allDocDivergent,
     docFields,
-    fieldIndex: clampedFieldIndex,
+    fieldIndex,
     setFieldIndex,
     filter,
     changeFilter,

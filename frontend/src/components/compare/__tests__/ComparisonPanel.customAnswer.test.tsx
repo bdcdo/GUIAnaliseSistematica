@@ -19,6 +19,9 @@ import { panelProps, panelResponse } from "./compare-test-helpers";
 
 afterEach(cleanup);
 
+/** Casa com o (documentId, fieldName) do painel montado abaixo. */
+const PANEL_ORIGIN = { documentId: "d1", fieldName: "data_parecer" };
+
 const FIELD: PydanticField = {
   name: "data_parecer",
   type: "date",
@@ -96,6 +99,7 @@ describe("ComparisonPanel — confirmação pendente", () => {
         kind: "response",
         verdict: "2021-05-10",
         chosenResponseId: "r-llm",
+        origin: PANEL_ORIGIN,
       },
       onConfirmPendingVerdict,
     });
@@ -113,6 +117,7 @@ describe("ComparisonPanel — confirmação pendente", () => {
         kind: "response",
         verdict: "2021-05-10",
         chosenResponseId: "r-llm",
+        origin: PANEL_ORIGIN,
       },
     });
 
@@ -133,6 +138,7 @@ describe("ComparisonPanel — confirmação pendente", () => {
         kind: "response",
         verdict: "2021-05-10",
         chosenResponseId: "r-llm",
+        origin: PANEL_ORIGIN,
       },
       isSavingVerdict: true,
     });

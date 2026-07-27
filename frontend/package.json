@@ -39,7 +39,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "invariants": "tsx scripts/invariants/check-invariants.ts",
-    "e2e:fixture:coding": "tsx scripts/e2e-fixtures/create-coding-save-fixture.mts"
+    "e2e:fixture:coding": "tsx scripts/e2e-fixtures/create-coding-save-fixture.mts",
+    "e2e:fixture:compare": "tsx scripts/e2e-fixtures/create-compare-field-switch-fixture.mts"
   },
   "dependencies": {
     "@clerk/localizations": "^4.13.4",

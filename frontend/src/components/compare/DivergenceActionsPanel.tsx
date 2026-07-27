@@ -12,13 +12,12 @@ import { formatVerdictDisplay } from "@/lib/verdict-display";
 import type { VerdictInfo } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
 import { readOnlyTitle, type PendingVerdict } from "./compare-types";
+import { useVerdictOrigin } from "./compare-field-scope";
 
 interface DivergenceActionsPanelProps {
   readOnly: boolean;
   projectId: string;
-  documentId: string;
   documentTitle: string;
-  fieldName: string;
   fieldDescription: string;
   fields: PydanticField[];
   isMulti: boolean;
@@ -35,9 +34,7 @@ interface DivergenceActionsPanelProps {
 export function DivergenceActionsPanel({
   readOnly,
   projectId,
-  documentId,
   documentTitle,
-  fieldName,
   fieldDescription,
   fields,
   isMulti,
@@ -47,6 +44,11 @@ export function DivergenceActionsPanel({
   comment,
   onCommentChange,
 }: DivergenceActionsPanelProps) {
+  // Documento e campo vêm do escopo, não de props: é a MESMA origem que carimba
+  // os rascunhos criados aqui e a que endereça a nota e a sugestão de schema,
+  // então não há como o painel anotar um campo e decidir sobre outro (#613).
+  const origin = useVerdictOrigin();
+  const { documentId, fieldName } = origin;
   const [suggestOpen, setSuggestOpen] = useState(false);
   const writeTitle = readOnlyTitle(readOnly);
   const suggestionTitle = readOnlyTitle(
@@ -68,7 +70,11 @@ export function DivergenceActionsPanel({
                 "border-brand bg-brand/10 text-brand",
             )}
             onClick={() =>
-              onPrepareVerdict({ kind: "ambiguous", verdict: "ambiguo" })
+              onPrepareVerdict({
+                kind: "ambiguous",
+                verdict: "ambiguo",
+                origin,
+              })
             }
             disabled={readOnly}
             title={writeTitle}
@@ -85,7 +91,7 @@ export function DivergenceActionsPanel({
                 "border-brand bg-brand/10 text-brand",
             )}
             onClick={() =>
-              onPrepareVerdict({ kind: "skip", verdict: "pular" })
+              onPrepareVerdict({ kind: "skip", verdict: "pular", origin })
             }
             disabled={readOnly}
             title={writeTitle}
@@ -122,6 +128,7 @@ export function DivergenceActionsPanel({
               onPrepareVerdict({
                 kind: "custom",
                 verdict: value,
+                origin,
               })
             }
           />

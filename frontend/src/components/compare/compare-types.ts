@@ -57,11 +57,59 @@ export function readOnlyTitle(
   return readOnly ? COMPARE_READ_ONLY_REASON : activeTitle;
 }
 
-export type PendingVerdict =
+/**
+ * Documento/campo em que uma decisão foi TOMADA — que não é necessariamente o
+ * campo em que ela seria gravada. Os dois divergem quando a tela exibe conteúdo
+ * de um campo que o React já deveria ter desmontado (issue #613: o DOM do
+ * `AgreementGroup` do campo anterior sobrevivia à troca de campo, e clicar num
+ * card fantasma gravava o valor dele no campo atual).
+ *
+ * A origem é lida do `CompareFieldScope` (`compare-field-scope.tsx`), montado
+ * junto com os cards: uma subárvore fantasma nunca re-renderiza, logo o valor
+ * de contexto que ela enxerga é, por construção, o do campo em que foi montada.
+ * É isso — e não um guard adicional — que impede a escrita cruzada.
+ */
+export interface VerdictOrigin {
+  documentId: string;
+  fieldName: string;
+}
+
+/**
+ * Interseção (e não uma propriedade opcional em cada variante) para que o
+ * compilador enumere todos os sítios que constroem um rascunho: adicionar uma
+ * variante nova sem origem passa a não compilar.
+ */
+export type PendingVerdict = (
   | { kind: "response"; verdict: string; chosenResponseId: string }
   | { kind: "ambiguous"; verdict: "ambiguo" }
   | { kind: "skip"; verdict: "pular" }
-  | { kind: "custom"; verdict: string };
+  | { kind: "custom"; verdict: string }
+) & { origin: VerdictOrigin };
+
+/**
+ * Origem e destino descrevem o mesmo par (documento, campo)?
+ *
+ * Os dois lados são `VerdictOrigin` — e não um struct contra `(documentId,
+ * fieldName)` soltos — porque a assinatura assimétrica convidava a trocar a
+ * ordem das duas strings sem o compilador reclamar, exatamente no ponto que
+ * decide se uma escrita cruzada é aceita.
+ */
+export function verdictOriginMatches(
+  a: VerdictOrigin,
+  b: VerdictOrigin,
+): boolean {
+  return a.documentId === b.documentId && a.fieldName === b.fieldName;
+}
+
+/**
+ * Texto único da recusa por origem divergente. Vive aqui, ao lado de
+ * `verdictOriginMatches`, porque as duas camadas que recusam (a primária no
+ * clique, em `ComparePage`, e o backstop de escrita em `useCompareVerdicts`)
+ * são defesa em profundidade deliberada: duas cópias da mesma frase divergiriam
+ * na primeira vez que alguém reescrevesse uma delas.
+ */
+export const COMPARE_ORIGIN_MISMATCH_MESSAGE =
+  "Essa resposta pertence a outro campo e não pode ser registrada aqui. Recarregue a página — a tela está exibindo conteúdo desatualizado.";
 
 export function pendingVerdictLabel(pending: PendingVerdict): string {
   switch (pending.kind) {

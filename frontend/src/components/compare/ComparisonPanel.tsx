@@ -2,10 +2,12 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import { ProgressDots } from "../coding/ProgressDots";
-import { AgreementGroup, type FieldEquivalencePair } from "./AgreementGroup";
-import { MultiOptionReview } from "./MultiOptionReview";
-import { DivergenceActionsPanel } from "./DivergenceActionsPanel";
-import { UnansweredNotice } from "./UnansweredNotice";
+import type { FieldEquivalencePair } from "./AgreementGroup";
+import {
+  CompareFieldReview,
+  type ComparisonResponse,
+  type EquivalenceConfig,
+} from "./CompareFieldReview";
 import { KeyboardHints } from "./KeyboardHints";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,22 +24,10 @@ import { FieldHeaderLabel } from "@/components/shared/FieldHeaderLabel";
 import type { VerdictInfo } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
 import {
-  readOnlyTitle,
   pendingVerdictLabel,
   type PendingVerdict,
+  type VerdictOrigin,
 } from "./compare-types";
-
-interface ComparisonResponse {
-  id: string;
-  respondent_type: "humano" | "llm";
-  respondent_name: string;
-  respondent_id: string | null;
-  answer: unknown;
-  justification?: string;
-  is_latest: boolean;
-  isFieldStale: boolean;
-  schemaVersion?: string | null;
-}
 
 // Conclusão do documento + navegação da fila. Discriminated union: `hasNextDoc`
 // e `onNextDoc` só fazem sentido depois que a revisão do documento terminou, então
@@ -48,14 +38,6 @@ interface ComparisonResponse {
 type DocStatus =
   | { complete: false }
   | { complete: true; hasNextDoc: boolean; onNextDoc: () => void };
-
-// Affordances de equivalência agrupadas: o painel carrega uma config estruturada
-// em vez de dois booleanos soltos (`allowEquivalence`, `canManageAnyPair`) e os
-// repassa ao AgreementGroup.
-interface EquivalenceConfig {
-  allow: boolean;
-  canManageAnyPair: boolean;
-}
 
 interface ComparisonPanelProps {
   readOnly: boolean;
@@ -90,6 +72,7 @@ interface ComparisonPanelProps {
   equivalence: EquivalenceConfig;
   equivalences: FieldEquivalencePair[];
   onConfirmEquivalent: (
+    origin: VerdictOrigin,
     responseIds: string[],
     gabaritoId: string,
     verdictDisplay: string,
@@ -231,86 +214,41 @@ export function ComparisonPanel({
         </div>
       </div>
 
+      {/*
+        O container de scroll NÃO é keyado: preservá-lo entre campos é o que
+        mantém o `scrollTop` da lista. Quem carrega a identidade do campo é o
+        `CompareFieldReview` abaixo — fronteira ÚNICA de montagem, em vez das
+        três keys irmãs coincidentes que existiam aqui (uma por slot). Ver o
+        cabeçalho de CompareFieldReview para o porquê (#613).
+      */}
       <div className="flex-1 overflow-y-auto px-4 py-2">
-        {isMulti ? (
-          <MultiOptionReview
-            key={`${documentId}|${fieldName}|${readOnly}`}
-            readOnly={readOnly}
-            options={displayOptions}
-            responses={responses}
-            existingVerdict={existingVerdict}
-            isSubmitting={isSavingVerdict}
-            onSubmit={(verdictJson) => onVerdict(verdictJson)}
-          />
-        ) : (
-          <AgreementGroup
-            key={`${documentId}|${fieldName}|${readOnly}`}
-            readOnly={readOnly}
-            responses={responses.map((r) => ({
-              id: r.id,
-              respondent_type: r.respondent_type,
-              respondent_name: r.respondent_name,
-              answer: r.answer,
-              justification: r.justification,
-              is_latest: r.is_latest,
-              isFieldStale: r.isFieldStale,
-              schemaVersion: r.schemaVersion,
-            }))}
-            existingVerdict={existingVerdict}
-            pendingVerdict={pendingVerdict}
-            onVote={(displayAnswer, chosenResponseId) =>
-              onPrepareVerdict({
-                kind: "response",
-                verdict: displayAnswer,
-                chosenResponseId,
-              })
-            }
-            allowEquivalence={equivalence.allow}
-            equivalences={equivalences}
-            onConfirmEquivalent={onConfirmEquivalent}
-            onUnmarkPair={onUnmarkEquivalencePair}
-            currentUserId={currentUserId}
-            canManageAnyPair={equivalence.canManageAnyPair}
-          />
-        )}
-
-        <UnansweredNotice responses={responses} />
-
-        {isDivergent ? (
-          <DivergenceActionsPanel
-            key={`${documentId}|${fieldName}|${readOnly}`}
-            readOnly={readOnly}
-            projectId={projectId}
-            documentId={documentId}
-            documentTitle={documentTitle}
-            fieldName={fieldName}
-            fieldDescription={fieldDescription}
-            fields={fields}
-            isMulti={isMulti}
-            existingVerdict={existingVerdict}
-            pendingVerdict={pendingVerdict}
-            onPrepareVerdict={onPrepareVerdict}
-            comment={comment}
-            onCommentChange={onCommentChange}
-          />
-        ) : (
-          <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-green-500/20 bg-green-500/5 px-3 py-2 text-xs text-muted-foreground">
-            <div className="flex items-center gap-1.5">
-              <CheckCircle2 className="size-3.5 text-green-600" />
-              Concordante: todos os respondentes concordam.
-            </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-6 text-xs"
-              onClick={onMarkReviewed}
-              disabled={readOnly}
-              title={readOnlyTitle(readOnly)}
-            >
-              Marcar doc como revisado
-            </Button>
-          </div>
-        )}
+        <CompareFieldReview
+          key={`${documentId}|${fieldName}|${readOnly}`}
+          readOnly={readOnly}
+          projectId={projectId}
+          documentId={documentId}
+          documentTitle={documentTitle}
+          fieldName={fieldName}
+          fieldDescription={fieldDescription}
+          fields={fields}
+          isMulti={isMulti}
+          displayOptions={displayOptions}
+          responses={responses}
+          existingVerdict={existingVerdict}
+          pendingVerdict={pendingVerdict}
+          isDivergent={isDivergent}
+          isSavingVerdict={isSavingVerdict}
+          onVerdict={onVerdict}
+          onPrepareVerdict={onPrepareVerdict}
+          onMarkReviewed={onMarkReviewed}
+          comment={comment}
+          onCommentChange={onCommentChange}
+          equivalence={equivalence}
+          equivalences={equivalences}
+          onConfirmEquivalent={onConfirmEquivalent}
+          onUnmarkEquivalencePair={onUnmarkEquivalencePair}
+          currentUserId={currentUserId}
+        />
       </div>
 
       {isDivergent && !isMulti && (!docStatus.complete || pendingVerdict) && (
