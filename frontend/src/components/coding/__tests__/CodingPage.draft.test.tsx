@@ -49,10 +49,6 @@ vi.mock("@/hooks/useUrlState", async () => {
 vi.mock("@/hooks/useFieldOrder", () => ({
   useFieldOrder: () => ({ fieldOrder: [], handleReorder: vi.fn() }),
 }));
-// O auto-save de servidor segue existindo nesta etapa (ele sai no PR seguinte);
-// aqui é neutralizado para que o que se observa seja só a rede local.
-vi.mock("@/hooks/useAutosaveOnExit", () => ({ useAutosaveOnExit: () => {} }));
-
 vi.mock("@/components/ui/resizable", () => ({
   ResizablePanelGroup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ResizablePanel: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
