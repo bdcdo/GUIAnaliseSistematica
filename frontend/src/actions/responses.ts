@@ -38,15 +38,27 @@ interface ExistingResponseRow {
 // Fetch profile, existing response, and project config in parallel.
 // O lookup de existing filtra is_latest: após uma unificação de membros o
 // conjunto fundido pode ter respostas antigas (is_latest=false) no mesmo
-// documento — .single() sem o filtro erraria com múltiplas linhas.
+// documento — .single() sem o filtro erraria com múltiplas linhas. Desde a
+// migration 20260727120000 quem garante a linha única é o índice
+// responses_one_latest_human_per_document, não este filtro.
+//
+// O erro DESTA leitura é propagado (existingErr), e não descartado como era
+// até a #609: `existing` ausente por falha de rede/RLS levava o save a
+// construir o snapshot com storedAnswers indefinido, apagando os valores
+// brutos que buildPersistedResponseSnapshot preserva (#484) — e, antes do
+// índice, a criar uma linha duplicada por cima.
 async function fetchSaveContext(
   supabase: SupabaseServerClient,
   projectId: string,
   documentId: string,
   effectiveId: string,
 ) {
-  const [{ data: profile }, { data: existing }, { data: project, error: projErr }, { data: doc }] =
-    await Promise.all([
+  const [
+    { data: profile },
+    { data: existing, error: existingErr },
+    { data: project, error: projErr },
+    { data: doc },
+  ] = await Promise.all([
       supabase
         .from("profiles")
         .select("first_name, last_name")
@@ -75,7 +87,7 @@ async function fetchSaveContext(
         .eq("project_id", projectId)
         .maybeSingle(),
     ]);
-  return { profile, existing, project, projErr, doc };
+  return { profile, existing, existingErr, project, projErr, doc };
 }
 
 interface SaveResponseProjectFields {
@@ -211,9 +223,8 @@ function buildResponsePayload({
   return payload;
 }
 
-interface UpsertResponseRowParams {
+interface PersistResponseRowParams {
   supabase: SupabaseServerClient;
-  existing: { id: string } | null | undefined;
   projectId: string;
   documentId: string;
   effectiveId: string;
@@ -221,21 +232,53 @@ interface UpsertResponseRowParams {
   payload: Record<string, unknown>;
 }
 
-async function upsertResponseRow({
+// "conflict" = outra sessão criou a resposta corrente entre o UPDATE e o
+// INSERT desta. Não é erro do usuário: o save precisa reler e repetir.
+type PersistOutcome = { status: "ok" } | { status: "conflict" } | { status: "error"; error: string };
+
+// O índice único parcial que sustenta o ramo de conflito abaixo. Conferir o
+// nome é o que separa "perdi a corrida, releia" de qualquer outra violação de
+// unicidade que a tabela venha a ter.
+const HUMAN_LATEST_UNIQUE_INDEX = "responses_one_latest_human_per_document";
+
+// Escrita idempotente sobre a CHAVE LÓGICA (#609). O UPDATE filtra pela chave
+// — não por `id` — e o rowcount que ele devolve é quem decide se havia linha
+// corrente; a leitura de `existing` deixou de ser o árbitro dessa decisão e
+// serve só como insumo do snapshot. A diferença importa porque a leitura
+// acontece em outra transação: entre ela e a escrita, a linha pode ter nascido
+// ou sido demovida.
+//
+// Não dá para usar `.upsert({ onConflict })`: o Postgres exige que a
+// inferência do arbiter reproduza o predicado do índice parcial
+// (`ON CONFLICT (...) WHERE ...`), e o `on_conflict` do PostgREST só transporta
+// a lista de colunas. `ON CONFLICT ON CONSTRAINT` também está fora — índice
+// parcial não é constraint. Verificado por EXPLAIN contra o índice parcial do
+// lado LLM: sem o predicado o Postgres responde "there is no unique or
+// exclusion constraint matching the ON CONFLICT specification".
+async function persistResponseRow({
   supabase,
-  existing,
   projectId,
   documentId,
   effectiveId,
   respondentName,
   payload,
-}: UpsertResponseRowParams): Promise<{ error?: string }> {
-  if (existing) {
-    const { error } = await supabase.from("responses").update(payload).eq("id", existing.id);
-    if (error) return { error: error.message };
-    return {};
-  }
-  const { error } = await supabase.from("responses").insert({
+}: PersistResponseRowParams): Promise<PersistOutcome> {
+  // O payload não toca coluna-chave, então este UPDATE não dispara
+  // enforce_comparison_response_actor_trigger, que só observa project_id,
+  // document_id, respondent_id, respondent_type e is_latest.
+  const { data: updated, error: updErr } = await supabase
+    .from("responses")
+    .update(payload)
+    .eq("project_id", projectId)
+    .eq("document_id", documentId)
+    .eq("respondent_id", effectiveId)
+    .eq("respondent_type", "humano")
+    .eq("is_latest", true)
+    .select("id");
+  if (updErr) return { status: "error", error: updErr.message };
+  if (updated && updated.length > 0) return { status: "ok" };
+
+  const { error: insErr } = await supabase.from("responses").insert({
     project_id: projectId,
     document_id: documentId,
     respondent_id: effectiveId,
@@ -244,8 +287,11 @@ async function upsertResponseRow({
     is_latest: true,
     ...payload,
   });
-  if (error) return { error: error.message };
-  return {};
+  if (!insErr) return { status: "ok" };
+  if (insErr.code === "23505" && insErr.message.includes(HUMAN_LATEST_UNIQUE_INDEX)) {
+    return { status: "conflict" };
+  }
+  return { status: "error", error: insErr.message };
 }
 
 // Auto-save nao revalida o RSC tree — evita re-fetch do servidor a cada
@@ -262,6 +308,139 @@ function revalidateAfterSave(projectId: string, isAutoSave: boolean): void {
   revalidateTag(`project-${projectId}-progress`, { expire: 60 });
 }
 
+interface SaveAttemptParams {
+  supabase: SupabaseServerClient;
+  projectId: string;
+  documentId: string;
+  effectiveId: string;
+  userEmail: string;
+  answers: Record<string, unknown>;
+  notes?: string;
+  isAutoSave: boolean;
+}
+
+// Uma tentativa completa de gravação: lê o contexto, monta o snapshot a partir
+// do que está gravado AGORA e persiste. Devolve "conflict" quando outra sessão
+// criou a resposta corrente no meio do caminho.
+//
+// A releitura do contexto faz parte da tentativa de propósito. No retry, o
+// payload da tentativa anterior foi montado com `existing` ausente (foi por
+// isso que ela caiu no INSERT); reaplicá-lo sobrescreveria os `answers` e
+// `answer_field_hashes` que a linha vencedora acabou de gravar — exatamente a
+// proveniência bruta que buildPersistedResponseSnapshot existe para preservar
+// (#484). `is_partial` e `hadCompletedResponse` também dependem do que foi
+// lido, e mudam junto.
+async function runSaveAttempt({
+  supabase,
+  projectId,
+  documentId,
+  effectiveId,
+  userEmail,
+  answers,
+  notes,
+  isAutoSave,
+}: SaveAttemptParams): Promise<SaveResponseResult | { conflict: true }> {
+  const { profile, existing, existingErr, project, projErr, doc } = await fetchSaveContext(
+    supabase,
+    projectId,
+    documentId,
+    effectiveId,
+  );
+
+  if (projErr) return { success: false, error: projErr.message };
+
+  // Falha ao LER a resposta corrente aborta o save. Seguir como se não
+  // existisse gravaria por cima dela um snapshot construído sem os valores
+  // preservados (#484) — perda silenciosa, sem rastro. Falhar fechado aqui é
+  // o que a #609 corrige junto com o índice.
+  if (existingErr) return { success: false, error: existingErr.message };
+
+  // Doc já excluído (soft delete) não aceita mais respostas. Pedido de
+  // exclusão apenas PENDENTE não bloqueia: é reversível e o dado humano
+  // digitado é preservado.
+  if (doc?.excluded_at) {
+    return {
+      success: false,
+      error: "Documento removido do escopo do projeto",
+    };
+  }
+
+  const respondentName =
+    [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || userEmail;
+
+  const fields = (project?.pydantic_fields as PydanticField[]) || [];
+
+  // O formulário devolve um snapshot sanitizado, não um patch. A reconciliação
+  // compara esse snapshot com a projeção que foi apresentada e preserva o
+  // valor bruto + sua proveniência quando o campo não mudou (#484).
+  const snapshot = buildPersistedResponseSnapshot({
+    fields,
+    existing: existing ? { answers: existing.answers, hashes: existing.answer_field_hashes } : null,
+    rawSubmittedAnswers: answers,
+    // Só um submit explícito atesta a codificação inteira; auto-save não pode
+    // promover uma response legacy à versão corrente (#548).
+    promoteLegacyIfComplete: !isAutoSave,
+  });
+
+  // Régua de completude aplicada UMA vez, ao conjunto que vai ser gravado
+  // (`snapshot.persistedAnswers`) e com o carimbo per-campo da própria escrita —
+  // não ao que a tela mostrava. Dela saem os dois consumidores: o `is_partial`
+  // gravado e o `missingRequired` devolvido ao cliente. Se o schema mudou desde
+  // o carregamento do formulário, é esta contagem que impede o feedback de
+  // sucesso de anunciar uma conclusão que não houve (#519).
+  const missingRequired = missingRequiredHumanFields(
+    fields,
+    snapshot.persistedAnswers,
+    snapshot.answerFieldHashes,
+  ).length;
+
+  const payload = buildResponsePayload({
+    codingIsComplete: missingRequired === 0,
+    answersToPersist: snapshot.persistedAnswers,
+    answerFieldHashes: snapshot.answerFieldHashes,
+    stampsCurrentSchema: snapshot.stampsCurrentSchema,
+    project,
+    existing,
+    isAutoSave,
+    notes,
+  });
+
+  const outcome = await persistResponseRow({
+    supabase,
+    projectId,
+    documentId,
+    effectiveId,
+    respondentName,
+    payload,
+  });
+  if (outcome.status === "error") return { success: false, error: outcome.error };
+  if (outcome.status === "conflict") return { conflict: true };
+
+  if (fields.length > 0) {
+    const { error: syncErr } = await syncCodingAssignmentStatus(supabase, {
+      projectId,
+      documentId,
+      userId: effectiveId,
+      fields,
+      sanitizedAnswers: snapshot.submittedAnswers,
+      isAutoSave,
+      automationMode: project?.automation_mode,
+      hadCompletedResponse: existing?.is_partial === false,
+    });
+    if (syncErr) return { success: false, error: syncErr };
+  }
+
+  revalidateAfterSave(projectId, isAutoSave);
+  return { success: true, missingRequired };
+}
+
+// Duas tentativas, não mais: o conflito só acontece quando outra sessão criou
+// a resposta corrente entre a leitura e a escrita desta, e a segunda tentativa
+// já enxerga essa linha e cai no ramo de UPDATE. Um terceiro conflito seguido
+// indicaria algo além de corrida — girar em cima disso esconderia o problema
+// em vez de reportá-lo.
+const SAVE_ATTEMPTS = 2;
+
 export async function saveResponse(
   projectId: string,
   documentId: string,
@@ -277,94 +456,32 @@ export async function saveResponse(
 
     const supabase = await createSupabaseServer();
 
-    const { profile, existing, project, projErr, doc } = await fetchSaveContext(
-      supabase,
-      projectId,
-      documentId,
-      effectiveId,
-    );
-
-    if (projErr) return { success: false, error: projErr.message };
-
-    // Doc já excluído (soft delete) não aceita mais respostas. Pedido de
-    // exclusão apenas PENDENTE não bloqueia: é reversível e o dado humano
-    // digitado é preservado.
-    if (doc?.excluded_at) {
-      return {
-        success: false,
-        error: "Documento removido do escopo do projeto",
-      };
-    }
-
-    const respondentName =
-      [profile?.first_name, profile?.last_name].filter(Boolean).join(" ") || user.email;
-
-    const fields = (project?.pydantic_fields as PydanticField[]) || [];
-
-    // O formulário devolve um snapshot sanitizado, não um patch. A reconciliação
-    // compara esse snapshot com a projeção que foi apresentada e preserva o
-    // valor bruto + sua proveniência quando o campo não mudou (#484).
-    const snapshot = buildPersistedResponseSnapshot({
-      fields,
-      existing: existing
-        ? { answers: existing.answers, hashes: existing.answer_field_hashes }
-        : null,
-      rawSubmittedAnswers: answers,
-      // Só um submit explícito atesta a codificação inteira; auto-save não pode
-      // promover uma response legacy à versão corrente (#548).
-      promoteLegacyIfComplete: !isAutoSave,
-    });
-
-    // Régua de completude aplicada UMA vez, ao conjunto que vai ser gravado
-    // (`snapshot.persistedAnswers`) e com o carimbo per-campo da própria escrita —
-    // não ao que a tela mostrava. Dela saem os dois consumidores: o `is_partial`
-    // gravado e o `missingRequired` devolvido ao cliente. Se o schema mudou desde
-    // o carregamento do formulário, é esta contagem que impede o feedback de
-    // sucesso de anunciar uma conclusão que não houve (#519).
-    const missingRequired = missingRequiredHumanFields(
-      fields,
-      snapshot.persistedAnswers,
-      snapshot.answerFieldHashes,
-    ).length;
-
-    const payload = buildResponsePayload({
-      codingIsComplete: missingRequired === 0,
-      answersToPersist: snapshot.persistedAnswers,
-      answerFieldHashes: snapshot.answerFieldHashes,
-      stampsCurrentSchema: snapshot.stampsCurrentSchema,
-      project,
-      existing,
-      isAutoSave,
-      notes,
-    });
-
-    const { error: upsertErr } = await upsertResponseRow({
-      supabase,
-      existing,
-      projectId,
-      documentId,
-      effectiveId,
-      respondentName,
-      payload,
-    });
-    if (upsertErr) return { success: false, error: upsertErr };
-
-    if (fields.length > 0) {
-      const { error: syncErr } = await syncCodingAssignmentStatus(supabase, {
+    for (let attempt = 1; attempt <= SAVE_ATTEMPTS; attempt++) {
+      const result = await runSaveAttempt({
+        supabase,
         projectId,
         documentId,
-        userId: effectiveId,
-        fields,
-        sanitizedAnswers: snapshot.submittedAnswers,
+        effectiveId,
+        userEmail: user.email,
+        answers,
+        notes,
         isAutoSave,
-        automationMode: project?.automation_mode,
-        hadCompletedResponse: existing?.is_partial === false,
       });
-      if (syncErr) return { success: false, error: syncErr };
+      if (!("conflict" in result)) return result;
+
+      // Sinal de frequência: se isto aparecer com regularidade nos logs, a
+      // corrida deixou de ser rara e o caso passa a justificar uma RPC
+      // transacional no lugar do par UPDATE/INSERT.
+      console.warn(
+        `[saveResponse] conflito de resposta corrente (tentativa ${attempt}/${SAVE_ATTEMPTS})`,
+        { projectId, documentId, respondentId: effectiveId },
+      );
     }
 
-    revalidateAfterSave(projectId, isAutoSave);
-    return { success: true, missingRequired };
+    return {
+      success: false,
+      error: "Outra gravação desta mesma codificação chegou primeiro; tente novamente",
+    };
   } catch (e) {
     return {
       success: false,

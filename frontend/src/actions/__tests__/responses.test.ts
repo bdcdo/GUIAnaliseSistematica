@@ -40,6 +40,17 @@ interface State {
     answers?: Record<string, unknown>;
     answer_field_hashes?: Record<string, string | null> | null;
   } | null;
+  existingResponseError: { message: string; code?: string } | null;
+  // Respostas sucessivas do lookup de `existing`, na ordem das leituras.
+  // Vazia = todas as leituras devolvem `existingResponse`.
+  existingResponseQueue: Array<State["existingResponse"]>;
+  existingReadCount: number;
+  responseUpdateFilters: Array<{ column: string; value: unknown }>;
+  // Quantas linhas o UPDATE por chave lógica afeta. Default: 1 quando há
+  // resposta corrente, 0 quando não há — o que o banco faria.
+  responseUpdateMatchedRows: () => boolean;
+  // Erros devolvidos pelo INSERT, na ordem das tentativas.
+  responseInsertErrorQueue: Array<{ message: string; code?: string }>;
   currentAssignmentStatus: string | null;
   pydanticFields: Array<{
     name: string;
@@ -62,6 +73,12 @@ beforeEach(() => {
     responseUpdatePayload: null,
     assignmentUpdatePayload: null,
     existingResponse: null,
+    existingResponseError: null,
+    existingResponseQueue: [],
+    existingReadCount: 0,
+    responseUpdateFilters: [],
+    responseUpdateMatchedRows: () => state.existingResponse !== null,
+    responseInsertErrorQueue: [],
     currentAssignmentStatus: "pendente",
     pydanticFields: [
       { name: "q1", type: "single", required: true, options: ["a", "b"] },
@@ -125,17 +142,44 @@ vi.mock("@/lib/supabase/server", () => ({
           select: () => {
             const c: Record<string, unknown> = {};
             c.eq = () => c;
-            c.single = async () => ({ data: state.existingResponse });
-            c.maybeSingle = async () => ({ data: state.existingResponse });
+            const read = async () => {
+              state.existingReadCount += 1;
+              // Fila opcional: permite que a releitura do retry veja um estado
+              // diferente do da primeira tentativa, que é o cenário real de
+              // conflito (outra sessão criou a linha no meio).
+              const queued = state.existingResponseQueue?.shift();
+              if (queued !== undefined) return { data: queued, error: null };
+              return { data: state.existingResponse, error: state.existingResponseError };
+            };
+            c.single = read;
+            c.maybeSingle = read;
             return c;
           },
           insert: async (payload: Record<string, unknown>) => {
             state.responseInsertPayload = payload;
-            return { error: null };
+            const err = state.responseInsertErrorQueue?.shift() ?? null;
+            return { error: err };
           },
+          // O canal de escrita passou a ser UPDATE-por-chave-lógica +
+          // .select("id"): o rowcount devolvido aqui é o que decide se o save
+          // cai no INSERT. Registrar os filtros é o que permite provar que a
+          // chave lógica — e não `id` — é quem endereça a linha (#609).
           update: (payload: Record<string, unknown>) => {
             state.responseUpdatePayload = payload;
-            return thenableOk();
+            state.responseUpdateFilters = [];
+            const c: Record<string, unknown> = {};
+            c.eq = (column: string, value: unknown) => {
+              state.responseUpdateFilters.push({ column, value });
+              return c;
+            };
+            c.select = () => ({
+              then: (resolve: (v: { data: unknown; error: null }) => unknown) =>
+                resolve({
+                  data: state.responseUpdateMatchedRows() ? [{ id: "resp-1" }] : [],
+                  error: null,
+                }),
+            });
+            return c;
           },
         };
       }
@@ -654,5 +698,145 @@ describe("saveResponse — documento excluído (fora do escopo aprovado)", () =>
     const saveResponse = await loadSaveResponse();
     const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
     expect(r.success).toBe(true);
+  });
+});
+
+describe("saveResponse — unicidade da resposta corrente (#609)", () => {
+  it("UPDATE endereça a linha pela CHAVE LÓGICA, nunca por id", async () => {
+    // Este é o guard que impede a volta ao read-then-write: se o UPDATE
+    // voltasse a filtrar por `existing.id`, quem decidiria INSERT vs UPDATE
+    // seria de novo a leitura, feita em outra transação.
+    state.existingResponse = { id: "resp-1", is_partial: true };
+    const saveResponse = await loadSaveResponse();
+    await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    const columns = state.responseUpdateFilters.map((f) => f.column);
+    expect(columns).toEqual([
+      "project_id",
+      "document_id",
+      "respondent_id",
+      "respondent_type",
+      "is_latest",
+    ]);
+    expect(state.responseUpdateFilters).toContainEqual({
+      column: "respondent_id",
+      value: "user-1",
+    });
+    expect(columns).not.toContain("id");
+    expect(state.responseInsertPayload).toBeNull();
+  });
+
+  it("UPDATE que não afeta linha nenhuma cai para INSERT, mesmo com existing lido", async () => {
+    // A linha foi demovida entre a leitura e a escrita (unificação de membros,
+    // por exemplo). O rowcount é a autoridade, não o `existing`.
+    state.existingResponse = { id: "resp-1", is_partial: true };
+    state.responseUpdateMatchedRows = () => false;
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    expect(r.success).toBe(true);
+    expect(state.responseInsertPayload).not.toBeNull();
+    expect(state.responseInsertPayload?.is_latest).toBe(true);
+    expect(state.responseInsertPayload?.respondent_type).toBe("humano");
+  });
+
+  it("23505 do índice humano relê o estado e o segundo payload preserva o que a vencedora gravou", async () => {
+    // Primeira leitura não vê linha -> INSERT -> perde a corrida. A releitura
+    // enxerga a linha da vencedora, e é dela que sai o snapshot preservado
+    // (#484): reaplicar o payload da primeira tentativa apagaria esse valor.
+    //
+    // `q2` guarda um valor que o schema atual não sabe exibir (fora das
+    // opções). É exatamente o caso que o #484 protege: o formulário nunca o
+    // apresentou, então o submit sem ele não significa apagar — e só se
+    // preserva quem leu a linha da vencedora.
+    state.existingResponse = null;
+    state.existingResponseQueue = [
+      null,
+      {
+        id: "resp-vencedora",
+        is_partial: false,
+        answers: { q1: "a", q2: "valor-da-vencedora" },
+        answer_field_hashes: null,
+      },
+    ];
+    state.responseInsertErrorQueue = [
+      {
+        code: "23505",
+        message:
+          'duplicate key value violates unique constraint "responses_one_latest_human_per_document"',
+      },
+    ];
+    // Na segunda volta existe linha corrente, então o UPDATE afeta 1.
+    let attempt = 0;
+    state.responseUpdateMatchedRows = () => {
+      attempt += 1;
+      return attempt > 1;
+    };
+    state.pydanticFields = [
+      { name: "q1", type: "single", required: true, options: ["a", "b"] },
+      { name: "q2", type: "single", options: ["x", "y"] },
+    ];
+
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    expect(r.success).toBe(true);
+    expect(state.existingReadCount).toBe(2);
+    const answers = state.responseUpdatePayload?.answers as Record<string, unknown>;
+    expect(answers.q2).toBe("valor-da-vencedora");
+  });
+
+  it("23505 de OUTRA constraint não vira retry — propaga o erro", async () => {
+    state.existingResponse = null;
+    state.responseInsertErrorQueue = [
+      { code: "23505", message: 'duplicate key value violates unique constraint "outra_coisa"' },
+    ];
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    expect(r.success).toBe(false);
+    expect(state.existingReadCount).toBe(1);
+  });
+
+  it("erro do trigger (23514) propaga sem retry", async () => {
+    state.existingResponse = null;
+    state.responseInsertErrorQueue = [
+      { code: "23514", message: "codificador não pode responder documento em comparação" },
+    ];
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    expect(r).toEqual({
+      success: false,
+      error: "codificador não pode responder documento em comparação",
+    });
+    expect(state.existingReadCount).toBe(1);
+  });
+
+  it("conflito nas DUAS tentativas devolve erro explícito, sem girar", async () => {
+    state.existingResponse = null;
+    const conflict = {
+      code: "23505",
+      message:
+        'duplicate key value violates unique constraint "responses_one_latest_human_per_document"',
+    };
+    state.responseInsertErrorQueue = [conflict, conflict];
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    expect(r.success).toBe(false);
+    expect(state.existingReadCount).toBe(2);
+  });
+
+  it("falha ao LER a resposta corrente aborta o save — não cria linha nova", async () => {
+    // O bug que transformava uma duplicata em série: o erro do SELECT era
+    // descartado, `existing` vinha nulo e o save seguia para o INSERT.
+    state.existingResponseError = { message: "timeout ao ler responses" };
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    expect(r).toEqual({ success: false, error: "timeout ao ler responses" });
+    expect(state.responseInsertPayload).toBeNull();
+    expect(state.responseUpdatePayload).toBeNull();
   });
 });
