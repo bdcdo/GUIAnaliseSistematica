@@ -273,8 +273,10 @@ describe("saveResponse — gravação pelo envio explícito", () => {
     const saveResponse = await loadSaveResponse();
     const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
     expect(state.responseInsertPayload?.is_partial).toBe(true);
-    // E o cliente recebe a contagem para diferenciar o feedback.
-    expect(r.success && r.missingRequired).toBe(1);
+    // E o cliente recebe os NOMES, não uma contagem: é deles que sai o enunciado
+    // no toast e o campo até o qual a tela rola (#608). Uma contagem ao lado da
+    // lista permitiria representar as duas em desacordo.
+    expect(r.success && r.missingRequiredFields).toEqual(["q2"]);
   });
 
   it("envio que ENCOLHE uma response submetida devolve is_partial=true", async () => {

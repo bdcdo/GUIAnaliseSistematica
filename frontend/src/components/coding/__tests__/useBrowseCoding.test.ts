@@ -67,6 +67,7 @@ function setup(docParam: string | null, dirty = new Set<string>()) {
   const params = {
     projectId: "p1",
     documents: [], // nenhum atribuído → docParam vira browseDocId
+    fields: [],
     mode: "browse" as const,
     docParam,
     setSubmitting: vi.fn(),
@@ -87,7 +88,7 @@ afterEach(() => {
 beforeEach(() => {
   setBrowseDocs();
   setDoc();
-  mockSave.mockResolvedValue({ success: true });
+  mockSave.mockResolvedValue({ success: true, missingRequiredFields: [] });
 });
 
 describe("useBrowseCoding", () => {
@@ -117,7 +118,7 @@ describe("useBrowseCoding", () => {
     // completá-lo (#519). A invalidação vem SEM o `updateDocParam(null)` que a
     // precede no caminho normal — aqui o refetch é desejado, para reassentar o
     // formulário no que acabou de ser gravado.
-    mockSave.mockResolvedValue({ success: true, missingRequired: 2 });
+    mockSave.mockResolvedValue({ success: true, missingRequiredFields: ["q1", "q2"] });
     const { view, params } = setup("b1");
 
     await act(async () => {
@@ -150,7 +151,7 @@ describe("useBrowseCoding", () => {
     expect(params.setSubmitting).toHaveBeenLastCalledWith(false);
     expect(toast.error).toHaveBeenCalledWith(CODING_SAVE_TRANSPORT_ERROR);
 
-    mockSave.mockResolvedValue({ success: true });
+    mockSave.mockResolvedValue({ success: true, missingRequiredFields: [] });
     await act(async () => {
       await view.result.current.handleBrowseSubmit(draft);
     });
@@ -159,9 +160,9 @@ describe("useBrowseCoding", () => {
   });
 
   it("nº3: duplo-clique em Enviar não duplica saveResponse (guarda de reentrância)", async () => {
-    let resolveSave: (v: { success: true }) => void = () => {};
+    let resolveSave: (v: { success: true, missingRequiredFields: [] }) => void = () => {};
     mockSave.mockReturnValue(
-      new Promise<{ success: true }>((r) => {
+      new Promise<{ success: true, missingRequiredFields: [] }>((r) => {
         resolveSave = r;
       }),
     );
@@ -180,7 +181,7 @@ describe("useBrowseCoding", () => {
     expect(mockSave).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      resolveSave({ success: true });
+      resolveSave({ success: true, missingRequiredFields: [] });
       await Promise.all([p1, p2]);
     });
     expect(mockSave).toHaveBeenCalledTimes(1);

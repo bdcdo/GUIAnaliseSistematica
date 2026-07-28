@@ -8,6 +8,7 @@ import { requirePageAuthUser } from "@/lib/page-auth";
 import { requireResolvedProjectAccess } from "@/lib/project-access";
 import { CodingPage } from "@/components/coding/CodingPage";
 import { sanitizeStoredAnswers } from "@/lib/response-snapshot";
+import { sortByAssignmentStatus } from "@/lib/coding-sort";
 import type {
   Document,
   Assignment,
@@ -25,6 +26,7 @@ import {
   type RoundContext,
   type ResponseRoundFields,
   type SchemaVersion,
+  type DocRoundStatus,
 } from "@/lib/rounds";
 
 export default async function CodePage({
@@ -75,8 +77,7 @@ export default async function CodePage({
       .eq("project_id", id)
       .eq("user_id", queueUserId)
       .eq("type", "codificacao")
-      .is("documents.excluded_at", null)
-      .order("status", { ascending: true }),
+      .is("documents.excluded_at", null),
     supabase
       .from("rounds")
       .select("id, project_id, label, created_at")
@@ -111,16 +112,22 @@ export default async function CodePage({
     }
   }
 
-  const allDocuments = (assignments || [])
-    .map((a) => ({
-      ...(a.documents as unknown as Document),
-      assignment: { id: a.id, status: a.status } as Pick<Assignment, "id" | "status">,
-    }))
-    // Doc em revisão de escopo por OUTRO pesquisador sai da fila; com pedido
-    // do próprio usuário permanece (o formulário fica bloqueado).
-    .filter(
-      (d) => !pendingByOthers.has(d.id) || pendingExclusionByDoc[d.id] !== undefined,
-    );
+  // A ordem da fila é decidida aqui, não no `ORDER BY`: ver
+  // `sortByAssignmentStatus`. Esta é a ordem que o modo "Ordem de atribuição"
+  // preserva (`?sort=default`) e a base sobre a qual "Codificados recentemente"
+  // reordena no cliente.
+  const allDocuments = sortByAssignmentStatus(
+    (assignments || [])
+      .map((a) => ({
+        ...(a.documents as unknown as Document),
+        assignment: { id: a.id, status: a.status } as Pick<Assignment, "id" | "status">,
+      }))
+      // Doc em revisão de escopo por OUTRO pesquisador sai da fila; com pedido
+      // do próprio usuário permanece (o formulário fica bloqueado).
+      .filter(
+        (d) => !pendingByOthers.has(d.id) || pendingExclusionByDoc[d.id] !== undefined,
+      ),
+  );
 
   // Responses incluem agora round_id e schema_version para classificacao por rodada.
   // Filtra respondent_type=humano: respostas LLM usam respondent_id NULL, mas o
@@ -211,10 +218,22 @@ export default async function CodePage({
     previousVersions,
   );
 
+  // Estado por documento, capturado do MESMO `classifyDocStatus` que decide o
+  // filtro: a tela precisa dizer à pesquisadora por que o documento à sua frente
+  // está na fila (parcial dela × resposta de rodada anterior), e classificar de
+  // novo no cliente abriria espaço para o rótulo discordar do filtro que pôs o
+  // documento ali (#608).
+  //
+  // Guarda o status INTEIRO, não só o `kind`: o membro `previous` carrega o
+  // `label` da rodada — o rótulo do coordenador na estratégia manual, o semver na
+  // `schema_version` — e é ele que torna o texto na tela verdadeiro nas duas.
+  const statusByDoc: Record<string, DocRoundStatus> = {};
+
   // Filtro server-side conforme effectiveRound
   const filteredDocuments = allDocuments.filter((d) => {
     const resp = responseByDoc.get(d.id);
     const status = classifyDocStatus(ctx, resp ?? null, roundsById);
+    statusByDoc[d.id] = status;
 
     if (effectiveRound === "all") return true;
     if (effectiveRound === CURRENT_FILTER_VALUE) {
@@ -261,6 +280,7 @@ export default async function CodePage({
         userId={ownMemberUserId}
         documents={filteredDocuments}
         codedAtByDoc={codedAtByDoc}
+        statusByDoc={statusByDoc}
         fields={fields}
         existingAnswers={existingAnswers}
         existingJustifications={existingJustifications}
