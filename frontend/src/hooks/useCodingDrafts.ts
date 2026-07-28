@@ -68,6 +68,11 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
       session.openDocument(docId, remote),
     [session],
   );
+  const flushAll = useCallback(() => session.flushAll(), [session]);
+  const hasStoredDraft = useCallback(
+    (docId: string) => session.hasStoredDraft(docId),
+    [session],
+  );
 
   // Flush nos dois gatilhos de saída que o navegador oferece, mais o unmount.
   //
@@ -97,6 +102,8 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
     restoreDraft,
     discardDraft,
     submitConfirmed,
+    flushAll,
+    hasStoredDraft,
     recovery,
     storageAvailable,
   };

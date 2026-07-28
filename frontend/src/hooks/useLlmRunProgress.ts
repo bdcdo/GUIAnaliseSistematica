@@ -135,7 +135,9 @@ export function useLlmRunProgress(
 
   // Lidos sempre atualizados dentro do loop de polling sem re-disparar o effect
   // (o effect só deve reiniciar quando `activeJobId` muda). Atualizados num
-  // effect (após cada render), não durante o render — ver useAutosaveOnExit.
+  // effect (após cada render), não durante o render — escrever em ref
+  // no corpo do componente quebra o modelo concorrente do React e é erro de
+  // `react-hooks/refs`.
   // `getToken` também via ref: cada tick busca um token fresco (o do template
   // expira em ~60s e o polling dura minutos) sem religar o effect.
   const refreshRef = useRef(refresh);

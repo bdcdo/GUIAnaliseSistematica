@@ -15,7 +15,8 @@ import type { PydanticField } from "@/lib/types";
 
 /**
  * Rascunho editável de codificação (respostas + nota), reportado pelo
- * `BrowseDocCoder` para cima e lido pelo autosave-on-exit do container.
+ * `BrowseDocCoder` para cima e usado pelo container para o envio explícito e
+ * para o rascunho local (#608).
  */
 export interface CodingDraft {
   answers: Record<string, unknown>;
@@ -38,7 +39,7 @@ export interface ForwardedCodingProps {
   onReorder: (newOrder: string[]) => void;
   /** Dispara o envio; o container faz o `saveResponse` + coordenação. */
   onSubmit: (draft: CodingDraft) => void;
-  /** Reporta o rascunho atual para cima (autosave-on-exit + dirty tracking). */
+  /** Reporta o rascunho atual para cima (rascunho local + dirty tracking). */
   onDraftChange: (draft: CodingDraft) => void;
   outOfScope?: OutOfScopeConfig;
 }
@@ -56,8 +57,8 @@ interface BrowseDocCoderProps extends ForwardedCodingProps {
  * Não guarda o doc selecionado em estado no container nem usa effect de
  * deep-link — é o que mantém o `CodingPage` sem estado derivado nem `setState`
  * em effect (o débito de react-doctor que o refactor zera). O rascunho é
- * reportado para cima (`onDraftChange`) para o autosave-on-exit centralizado
- * (#28) ler via ref.
+ * reportado para cima (`onDraftChange`) para o container registrá-lo no
+ * rascunho local e marcar o documento como não enviado.
  */
 export function BrowseDocCoder({
   doc,

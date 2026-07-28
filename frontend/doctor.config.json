@@ -109,14 +109,6 @@
       },
       {
         "files": [
-          "src/hooks/useAutosaveOnExit.ts"
-        ],
-        "rules": [
-          "react-doctor/no-fetch-in-effect"
-        ]
-      },
-      {
-        "files": [
           "src/hooks/useDocumentText.ts"
         ],
         "rules": [

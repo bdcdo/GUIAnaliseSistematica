@@ -11,7 +11,7 @@
 // mockado por um stub mínimo: o indicador de "não enviado" mora nele, e um stub
 // tornaria vácua justamente a asserção do critério 4.
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, act, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import type { PydanticField, Document } from "@/lib/types";
@@ -49,10 +49,6 @@ vi.mock("@/hooks/useUrlState", async () => {
 vi.mock("@/hooks/useFieldOrder", () => ({
   useFieldOrder: () => ({ fieldOrder: [], handleReorder: vi.fn() }),
 }));
-// O auto-save de servidor segue existindo nesta etapa (ele sai no PR seguinte);
-// aqui é neutralizado para que o que se observa seja só a rede local.
-vi.mock("@/hooks/useAutosaveOnExit", () => ({ useAutosaveOnExit: () => {} }));
-
 vi.mock("@/components/ui/resizable", () => ({
   ResizablePanelGroup: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
   ResizablePanel: ({ children }: { children?: ReactNode }) => <div>{children}</div>,
@@ -92,6 +88,7 @@ vi.mock("@/components/coding/FullscreenNav", () => ({
 
 import { CodingPage } from "@/components/coding/CodingPage";
 import { codingDraftStorageKey, parseCodingDraft } from "@/lib/coding-draft";
+import { requestNavigation } from "@/lib/unsaved-work-guard";
 
 const USER = "user-teste";
 const PROJECT = "p1";
@@ -345,54 +342,113 @@ describe("envio confirmado", () => {
   });
 });
 
-// O autosave de navegação é uma escrita CONFIRMADA como qualquer outra: a
-// resposta foi ao servidor. Enquanto ele existir (sai no PR seguinte), tem de
-// produzir os mesmos dois efeitos do Enviar — limpar a sujeira e reassentar o
-// baseline do rascunho local. Sem o segundo, o envelope sobrevivia à navegação
-// e a volta ao documento oferecia "alterações não enviadas" sobre trabalho já
-// enviado; pior, o `base` stale fazia a oferta seguinte se anunciar como
-// `diverged`, acusando "salvo depois" contra a nossa própria escrita.
-describe("autosave de navegação — escrita confirmada também rebaseia", () => {
-  const OUTRO = "d2";
-  const twoDocs = () => [assignedDoc(DOC), assignedDoc(OUTRO)];
-
-  // Mutação vermelha: passar só `markClean` no `onSaved` do `autosaveDirtyDoc`
-  // (isto é, salvar sem `submitConfirmed`) — a faixa reaparece ao voltar.
-  it("navegar para outro documento e voltar não oferece o que já foi salvo", async () => {
+// A ponta do aviso de saída ligada à rede local: o que a pesquisadora lê no
+// diálogo tem de ser verdade sobre o navegador dela. `requestNavigation` é o
+// mesmo ponto de entrada que `ProjectTabs` e o logo do `Header` usam no clique,
+// então o teste exercita o caminho real, sem simular o diálogo.
+describe("aviso de saída — a frase precisa ser verdadeira", () => {
+  it("com a cópia local gravada, afirma que as alterações ficam no navegador", async () => {
     const user = userEvent.setup();
-    renderPage({}, twoDocs());
-
+    renderPage();
     await typeAnswer(user, "Zolgensma");
-    await waitFor(() => expect(storedDraft()).not.toBeNull());
+    // A gravação é o que dá à frase o direito de existir.
+    await waitFor(() => expect(storedDraft()?.draft.answers).toEqual({ q1: "Zolgensma" }));
 
-    await user.click(screen.getByRole("button", { name: "ir-proximo" }));
-    // O autosave salvou de verdade: é isso que torna a oferta uma mentira.
-    await waitFor(() => expect(saveResponse).toHaveBeenCalled());
-    // E o slot foi liberado junto, em vez de sobreviver à navegação.
-    await waitFor(() => expect(storedDraft()).toBeNull());
+    let allowed = true;
+    act(() => {
+      allowed = requestNavigation(() => {});
+    });
 
-    await user.click(screen.getByRole("button", { name: "ir-anterior" }));
-
-    // As props do RSC não revalidaram (`existingAnswers` segue vazio): é
-    // justamente por isso que a classificação não pode depender delas contra um
-    // envelope que devia ter sido descartado no autosave.
-    expect(screen.queryByText(/alterações não enviadas neste documento/i)).toBeNull();
-    expect(screen.queryByText(/foi salvo depois/i)).toBeNull();
+    expect(allowed).toBe(false);
+    const dialog = within(await screen.findByRole("alertdialog"));
+    expect(
+      dialog.getByText(/elas ficam salvas neste navegador/i),
+    ).toBeTruthy();
   });
 
-  // O outro lado da mesma regra: autosave que FALHA não é escrita confirmada, e
-  // aí o rascunho tem de sobreviver — é o único registro do trabalho.
-  it("autosave que falha preserva o rascunho para a volta", async () => {
-    saveResponse.mockResolvedValue({ success: false, error: "falhou" });
+  it("com o navegador recusando gravar, avisa que sair perde o trabalho", async () => {
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("cheio", "QuotaExceededError");
+    });
     const user = userEvent.setup();
-    renderPage({}, twoDocs());
-
+    renderPage();
     await typeAnswer(user, "Zolgensma");
-    await waitFor(() => expect(storedDraft()).not.toBeNull());
+    expect(await screen.findByText(/alterações não enviadas/i)).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "ir-proximo" }));
-    await waitFor(() => expect(saveResponse).toHaveBeenCalled());
+    act(() => {
+      requestNavigation(() => {});
+    });
 
-    expect(storedDraft()?.draft.answers).toEqual({ q1: "Zolgensma" });
+    // Mutação vermelha: fixar a frase da cópia local no diálogo. A pesquisadora
+    // sairia acreditando que o trabalho está guardado, e ele não está em lugar
+    // nenhum — nem no servidor, nem no navegador.
+    const dialog = within(await screen.findByRole("alertdialog"));
+    expect(
+      dialog.getByText(/não foi possível guardar uma cópia neste navegador/i),
+    ).toBeTruthy();
+    expect(dialog.queryByText(/ficam salvas neste navegador/i)).toBeNull();
+  });
+
+  it("a saída retida acontece de fato quando a pesquisadora confirma", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await typeAnswer(user, "Zolgensma");
+
+    const proceed = vi.fn();
+    act(() => {
+      requestNavigation(proceed);
+    });
+    expect(proceed).not.toHaveBeenCalled();
+
+    const dialog = within(await screen.findByRole("alertdialog"));
+    await user.click(dialog.getByRole("button", { name: "Sair sem enviar" }));
+
+    expect(proceed).toHaveBeenCalledTimes(1);
+    // Sair não envia: o servidor segue intocado.
+    expect(saveResponse).not.toHaveBeenCalled();
+  });
+
+  it("sem alterações pendentes, sair não pede confirmação nenhuma", async () => {
+    renderPage();
+    await screen.findByText(/qual o medicamento/i);
+
+    let allowed = false;
+    act(() => {
+      allowed = requestNavigation(() => {});
+    });
+
+    expect(allowed).toBe(true);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+  });
+});
+
+// Este caso isola o elo que os demais não conseguem discriminar: sair pela
+// navegação SPA não dispara `beforeunload`/`pagehide`/`visibilitychange`, então
+// é o próprio aviso que precisa gravar o que o debounce ainda devia — antes de
+// medir se há cópia. Timers falsos e `fireEvent` (não `userEvent`) para poder
+// parar DENTRO da janela do debounce de forma determinística.
+describe("aviso de saída — grava o pendente antes de afirmar qualquer coisa", () => {
+  it("dentro da janela do debounce, a saída grava a cópia e a frase fica verdadeira", async () => {
+    vi.useFakeTimers();
+    try {
+      renderPage();
+      fireEvent.change(answerInput(), { target: { value: "Zolgensma" } });
+
+      // Pré-condição do teste: o debounce ainda não gravou nada.
+      expect(storedDraft()).toBeNull();
+
+      act(() => {
+        requestNavigation(() => {});
+      });
+
+      // Mutação vermelha: tirar o `drafts.flushAll()` de `describeUnsentWork`.
+      // Sem ele, a última coisa digitada não está no navegador no momento em que
+      // a tela promete que está — e o diálogo passa a dizer o contrário.
+      expect(storedDraft()?.draft.answers).toEqual({ q1: "Zolgensma" });
+      const dialog = within(screen.getByRole("alertdialog"));
+      expect(dialog.getByText(/elas ficam salvas neste navegador/i)).toBeTruthy();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

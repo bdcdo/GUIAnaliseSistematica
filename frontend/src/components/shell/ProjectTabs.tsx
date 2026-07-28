@@ -4,6 +4,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { guardedLinkClick, navigateGuarded } from "@/lib/unsaved-work-guard";
 import { Eye, EyeOff, Users } from "lucide-react";
 import { LlmRunningBadge } from "@/components/llm/LlmRunningBadge";
 
@@ -74,6 +75,17 @@ function ProjectTabsInner({
     (tab) => !tab.coordinatorOnly || effectiveIsCoordinator
   );
 
+  // Toda saída daqui passa pelo guard de trabalho não enviado (#608). Fora da
+  // codificação nenhum guard está registrado e a navegação segue de imediato,
+  // então isto é inerte no resto do app.
+  //
+  // `navigateGuarded` (e não `requestNavigation` cru) porque estes dois callers
+  // são botões: sem navegação nativa a que recorrer, quem não for interceptado
+  // precisa ser empurrado pelo `proceed`.
+  const guardedPush = (url: string) => {
+    navigateGuarded(() => push(url));
+  };
+
   const toggleViewAs = () => {
     const params = new URLSearchParams(searchParams.toString());
     if (viewAsResearcher) {
@@ -83,7 +95,7 @@ function ProjectTabsInner({
     }
     params.delete("viewAsUser");
     const qs = params.toString();
-    push(`${pathname}${qs ? `?${qs}` : ""}`);
+    guardedPush(`${pathname}${qs ? `?${qs}` : ""}`);
   };
 
   const selectImpersonation = (userId: string | null) => {
@@ -95,7 +107,7 @@ function ProjectTabsInner({
       params.delete("viewAsUser");
     }
     const qs = params.toString();
-    push(`${pathname}${qs ? `?${qs}` : ""}`);
+    guardedPush(`${pathname}${qs ? `?${qs}` : ""}`);
   };
 
   return (
@@ -136,6 +148,7 @@ function ProjectTabsInner({
             <Link
               key={tab.href}
               href={href}
+              onClick={(event) => guardedLinkClick(event, () => push(href))}
               className={cn(
                 "relative px-3 py-1.5 text-sm transition-colors",
                 isActive

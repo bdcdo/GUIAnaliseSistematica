@@ -4,11 +4,10 @@ import { useCallback, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import { useBrowseDocuments } from "@/hooks/useBrowseDocuments";
 import { useDocumentForCoding } from "@/hooks/useDocumentForCoding";
-import { saveCodingResponse } from "@/lib/coding-autosave";
+import { saveCodingResponse } from "@/lib/coding-save";
 import { notifySaved } from "@/lib/coding-save-feedback";
 import { type CodingDraft } from "./BrowseDocCoder";
 import type { CodingSnapshot } from "@/lib/coding-draft";
-import type { AutosavePayload } from "@/hooks/useAutosaveOnExit";
 import type { AssignedDoc } from "@/lib/types";
 
 interface UseBrowseCodingParams {
@@ -22,7 +21,6 @@ interface UseBrowseCodingParams {
   markClean: (docId: string) => void;
   recordDraft: (docId: string, draft: CodingSnapshot) => void;
   submitConfirmed: (docId: string, saved: CodingSnapshot) => void;
-  isDirty: (docId: string | null | undefined) => boolean;
   updateDocParam: (docId: string | null) => void;
 }
 
@@ -31,8 +29,8 @@ interface UseBrowseCodingParams {
  * seleção é derivada do `?doc=` da URL e o conteúdo do doc de
  * `useDocumentForCoding` — nada em `useState`/effect aqui, o que mantém os
  * diagnósticos de browse zerados (PR #257). O estado editável vive no filho
- * keyed `BrowseDocCoder`; este hook só guarda o rascunho num ref para o
- * autosave-on-exit centralizado (#28).
+ * keyed `BrowseDocCoder`; este hook só guarda o rascunho num ref, que o envio
+ * explícito consome.
  *
  * Cumpre os contratos da #257: `markResponded(id)` (update otimista do contador
  * pós-save), `invalidate(id)` após salvar (anti-staleness do cache de doc) e
@@ -48,7 +46,6 @@ export function useBrowseCoding({
   markClean,
   recordDraft,
   submitConfirmed,
-  isDirty,
   updateDocParam,
 }: UseBrowseCodingParams) {
   const {
@@ -71,8 +68,8 @@ export function useBrowseCoding({
     invalidate: invalidateBrowseDoc,
   } = useDocumentForCoding(projectId, browseDocId);
 
-  // Rascunho atual reportado pelo BrowseDocCoder; lido pelo autosave-on-exit.
-  // Ref (não estado) para não entrar no render.
+  // Rascunho atual reportado pelo BrowseDocCoder. Ref (não estado) para não
+  // entrar no render.
   const browseDraftRef = useRef<CodingDraft | null>(null);
   // Guarda de reentrância dos saves de browse: impede que um duplo-clique em
   // "Enviar"/"Voltar" dispare save/markResponded duas vezes antes do
@@ -83,29 +80,32 @@ export function useBrowseCoding({
     ? browseDocuments?.find((d) => d.id === browseDocId) ?? null
     : null;
 
-  // Seleção = escrever o ?doc= (os hooks buscam a lista e o doc). Trocar de doc
-  // descarta o rascunho do anterior — comportamento atual do Explorar — e limpa
-  // o dirty do doc deixado (senão o id ficaria "sujo" para sempre, disparando o
-  // prompt nativo de "alterações não salvas" que nenhum caminho de saída
-  // consegue mais persistir).
+  // Seleção = escrever o ?doc= (os hooks buscam a lista e o doc). Esquece o
+  // rascunho EM MEMÓRIA do doc deixado; o keyed `BrowseDocCoder` desmonta e, ao
+  // voltar, re-semeia do cache.
+  //
+  // Até o #608 isto também chamava `markClean`, e era honesto: o Explorar
+  // realmente descartava a edição ao trocar de doc, então apagar o sinal dizia a
+  // verdade. Com o rascunho local a edição deixou de se perder — ela está no
+  // `localStorage` e a faixa a oferece de volta —, e limpar o dirty passaria a
+  // afirmar "tudo enviado" sobre trabalho que ninguém enviou. Desde o #608 o
+  // dirty é limpo por UM caminho só: escrita confirmada pelo servidor.
   const handleBrowseSelect = useCallback(
     (docId: string) => {
-      if (browseDocId) markClean(browseDocId);
       browseDraftRef.current = null;
       updateDocParam(docId);
     },
-    [browseDocId, markClean, updateDocParam],
+    [updateDocParam],
   );
 
-  // Descarta o rascunho atual e limpa o dirty do doc selecionado (usado ao SAIR
-  // do modo Explorar: o BrowseDocCoder keyed desmonta e re-semeia do cache).
+  // Esquece o rascunho em memória ao SAIR do modo Explorar. Pelo mesmo motivo
+  // acima, não limpa o dirty: sair do modo não envia nada.
   const discardDraft = useCallback(() => {
-    if (browseDocId) markClean(browseDocId);
     browseDraftRef.current = null;
-  }, [browseDocId, markClean]);
+  }, []);
 
-  // Reportado pelo BrowseDocCoder a cada edição: alimenta o autosave (via ref)
-  // e marca o doc como sujo.
+  // Reportado pelo BrowseDocCoder a cada edição: guarda o rascunho no ref,
+  // registra-o na rede local e marca o doc como não enviado.
   const handleDraftChange = useCallback(
     (draft: CodingDraft) => {
       browseDraftRef.current = draft;
@@ -173,59 +173,21 @@ export function useBrowseCoding({
     ],
   );
 
-  const handleBrowseBack = useCallback(async () => {
-    // Guarda de reentrância no topo: cobre tanto o caminho com autosave quanto o
-    // caminho limpo (sem rascunho sujo). Sem ela, um "Voltar" durante um submit
-    // em voo zeraria a URL/rascunho no meio do save.
+  // "Voltar" apenas volta. Até o #608 este caminho autosalvava o rascunho sujo
+  // antes de navegar; a gravação sumia junto com o resto do autosave, e com ela
+  // saíram `markResponded` e `invalidateBrowseDoc` — ambos existiam só para
+  // reagir a essa escrita. Manter qualquer um dos dois aqui seria mentir sobre o
+  // servidor: o doc NÃO foi respondido e o cache NÃO ficou stale, porque nada
+  // foi gravado. O conteúdo continua no rascunho local e o doc segue marcado
+  // como não enviado.
+  //
+  // A guarda de reentrância permanece: um "Voltar" durante um submit em voo
+  // ainda zeraria a URL e o rascunho no meio do save.
+  const handleBrowseBack = useCallback(() => {
     if (browseSavingRef.current) return;
-    const docId = browseDocId;
-    let saved = false;
-    // Com rascunho sujo, aguarda o autosave ANTES de navegar: se falhar, mantém
-    // o doc aberto e o rascunho intacto (em vez de descartá-lo otimisticamente).
-    if (docId && isDirty(docId) && browseDraftRef.current) {
-      browseSavingRef.current = true;
-      const { answers, notes } = browseDraftRef.current;
-      setSubmitting(true);
-      try {
-        const result = await saveCodingResponse(projectId, docId, answers, {
-          notes,
-          isAutoSave: true,
-        });
-        if (!result.success) {
-          toast.error(result.error);
-          return;
-        }
-        markClean(docId);
-        // Mesma regra do autosave de navegação em Atribuídos: a escrita
-        // aconteceu, então o baseline do rascunho local passa a ser o que foi
-        // gravado. Aqui o `invalidateBrowseDoc` abaixo tornaria o slot
-        // `redundant` na reabertura de qualquer forma — mas depender do refetch
-        // para não mentir seria acidente, e o caminho de erro (save falho, que
-        // retorna antes) não teria essa rede.
-        submitConfirmed(docId, { answers, notes });
-        markResponded(docId);
-        saved = true;
-      } finally {
-        setSubmitting(false);
-        browseSavingRef.current = false;
-      }
-    }
     browseDraftRef.current = null;
-    // Zera o ?doc= ANTES de invalidar (mesmo motivo do submit: evita
-    // refetch/flicker do doc que estamos deixando).
     updateDocParam(null);
-    if (saved && docId) invalidateBrowseDoc(docId);
-  }, [
-    browseDocId,
-    projectId,
-    updateDocParam,
-    isDirty,
-    markClean,
-    submitConfirmed,
-    markResponded,
-    invalidateBrowseDoc,
-    setSubmitting,
-  ]);
+  }, [updateDocParam]);
 
   const handleBrowseRandom = useCallback(() => {
     if (!browseDocuments || browseDocuments.length === 0) return;
@@ -246,18 +208,6 @@ export function useBrowseCoding({
     if (browseDocId) invalidateBrowseDoc(browseDocId);
   }, [browseDocId, invalidateBrowseDoc]);
 
-  const getPayload = useCallback((): AutosavePayload | null => {
-    if (browseDocId && browseDraftRef.current) {
-      return {
-        projectId,
-        documentId: browseDocId,
-        answers: browseDraftRef.current.answers,
-        notes: browseDraftRef.current.notes,
-      };
-    }
-    return null;
-  }, [browseDocId, projectId]);
-
   return {
     browseDocuments,
     browseLoading,
@@ -274,6 +224,5 @@ export function useBrowseCoding({
     handleDraftChange,
     discardDraft,
     retryBrowseDoc,
-    getPayload,
   };
 }

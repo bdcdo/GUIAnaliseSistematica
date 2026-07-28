@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
 import { saveResponse } from "@/actions/responses";
 import { toast } from "sonner";
-import { CODING_SAVE_TRANSPORT_ERROR } from "@/lib/coding-autosave";
+import { CODING_SAVE_TRANSPORT_ERROR } from "@/lib/coding-save";
 import { useBrowseDocuments } from "@/hooks/useBrowseDocuments";
 import { useDocumentForCoding } from "@/hooks/useDocumentForCoding";
 import type { BrowseDocument } from "@/actions/documents";
@@ -141,12 +141,9 @@ describe("useBrowseCoding", () => {
       await view.result.current.handleBrowseSubmit(draft);
     });
 
-    expect(view.result.current.getPayload()).toEqual({
-      projectId: "p1",
-      documentId: "b1",
-      answers: { q: "sim" },
-      notes: "n",
-    });
+    // Falhou: nada foi confirmado como enviado, então o rascunho segue de pé.
+    expect(params.submitConfirmed).not.toHaveBeenCalled();
+    expect(params.markClean).not.toHaveBeenCalled();
     expect(markResponded).not.toHaveBeenCalled();
     expect(invalidate).not.toHaveBeenCalled();
     expect(params.updateDocParam).not.toHaveBeenCalled();
@@ -189,80 +186,49 @@ describe("useBrowseCoding", () => {
     expect(mockSave).toHaveBeenCalledTimes(1);
   });
 
-  it("getPayload reflete o rascunho reportado", () => {
-    const { view } = setup("b1");
-    act(() => view.result.current.handleDraftChange({ answers: { q: "x" }, notes: "nota" }));
-    expect(view.result.current.getPayload()).toEqual({
-      projectId: "p1",
-      documentId: "b1",
-      answers: { q: "x" },
-      notes: "nota",
-    });
-  });
-
-  it("back autosalva o doc sujo, marca respondido, invalida e limpa", async () => {
+  // Invertido no #608, não apagado: eram três testes provando que "Voltar"
+  // autosalvava (e como ele se comportava quando esse save falhava). O ponto do
+  // código continua guardado — agora pela ausência da escrita. Os dois testes de
+  // falha perderam o objeto junto com o save: não há mais o que falhar aqui.
+  it("Voltar com o doc sujo NÃO grava no servidor e apenas navega", async () => {
     const dirty = new Set<string>();
     const { view, params } = setup("b1", dirty);
-    act(() => view.result.current.handleDraftChange({ answers: { q: "x" }, notes: "nota" })); // marca sujo
-    await act(async () => {
-      await view.result.current.handleBrowseBack();
-    });
-    expect(mockSave).toHaveBeenCalledWith(
-      "p1",
-      "b1",
-      { q: "x" },
-      { notes: "nota", isAutoSave: true },
+    act(() =>
+      view.result.current.handleDraftChange({ answers: { q: "x" }, notes: "nota" }),
     );
-    expect(markResponded).toHaveBeenCalledWith("b1");
-    expect(invalidate).toHaveBeenCalledWith("b1");
-    expect(params.updateDocParam).toHaveBeenCalledWith(null);
-  });
-
-  it("back que falha mantém o doc aberto e não descarta o rascunho (#257)", async () => {
-    mockSave.mockResolvedValue({ success: false, error: "falha" });
-    const dirty = new Set<string>();
-    const { view, params } = setup("b1", dirty);
-    act(() => view.result.current.handleDraftChange({ answers: { q: "x" }, notes: "nota" }));
     await act(async () => {
       await view.result.current.handleBrowseBack();
     });
-    // não navega (mantém o doc aberto) e o rascunho continua disponível
-    expect(params.updateDocParam).not.toHaveBeenCalled();
-    expect(view.result.current.getPayload()).toEqual({
-      projectId: "p1",
-      documentId: "b1",
-      answers: { q: "x" },
-      notes: "nota",
-    });
+
+    expect(mockSave).not.toHaveBeenCalled();
+    // `markResponded` e `invalidate` existiam para reagir àquela escrita.
+    // Mantê-los agora afirmaria ao resto da tela que o documento foi respondido
+    // e que o cache ficou stale — duas coisas que não aconteceram.
+    expect(markResponded).not.toHaveBeenCalled();
     expect(invalidate).not.toHaveBeenCalled();
-  });
-
-  it("back mantém o doc aberto e permite retry quando o transporte rejeita o autosave", async () => {
-    mockSave.mockRejectedValue(new Error("Failed to find Server Action"));
-    const dirty = new Set<string>();
-    const { view, params } = setup("b1", dirty);
-    act(() => view.result.current.handleDraftChange({ answers: { q: "x" }, notes: "nota" }));
-
-    await act(async () => {
-      await view.result.current.handleBrowseBack();
-    });
-
-    expect(view.result.current.getPayload()).toEqual({
-      projectId: "p1",
-      documentId: "b1",
+    // O doc continua marcado como não enviado, e o conteúdo já foi ao rascunho
+    // local quando a edição chegou.
+    expect(params.markClean).not.toHaveBeenCalled();
+    expect(params.recordDraft).toHaveBeenCalledWith("b1", {
       answers: { q: "x" },
       notes: "nota",
     });
-    expect(params.updateDocParam).not.toHaveBeenCalled();
-    expect(params.setSubmitting).toHaveBeenLastCalledWith(false);
-    expect(toast.error).toHaveBeenCalledWith(CODING_SAVE_TRANSPORT_ERROR);
-
-    mockSave.mockResolvedValue({ success: true });
-    await act(async () => {
-      await view.result.current.handleBrowseBack();
-    });
-    expect(mockSave).toHaveBeenCalledTimes(2);
     expect(params.updateDocParam).toHaveBeenCalledWith(null);
+  });
+
+  it("trocar de doc no Explorar não limpa o sinal de não enviado", () => {
+    const dirty = new Set<string>();
+    const { view, params } = setup("b1", dirty);
+    act(() =>
+      view.result.current.handleDraftChange({ answers: { q: "x" }, notes: "n" }),
+    );
+    act(() => view.result.current.handleBrowseSelect("b2"));
+
+    // Antes do #608 isto chamava `markClean`, e era honesto: o Explorar
+    // descartava mesmo a edição ao trocar de doc. Com o rascunho local ela
+    // sobrevive, então limpar diria "enviado" sobre trabalho pendente.
+    expect(params.markClean).not.toHaveBeenCalled();
+    expect(params.updateDocParam).toHaveBeenCalledWith("b2");
   });
 
   it("expõe error/retry da lista", () => {
