@@ -2,6 +2,7 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { AnswerCard, type EquivalentVariant } from "./AnswerCard";
+import { PendingConfirmBar } from "./PendingConfirmBar";
 import type { PendingVerdict } from "./compare-types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
@@ -67,6 +68,15 @@ interface AgreementGroupProps {
   onUnmarkPair?: (pairId: string) => Promise<void>;
   currentUserId: string;
   canManageAnyPair: boolean;
+  // Confirmação do rascunho, montada DENTRO do card que o produziu (#610).
+  // Obrigatória, não opcional: opcional convida a esquecer a fiação num sítio
+  // novo e falhar em silêncio — sem barra em lugar nenhum, com a navegação
+  // travada pelo rascunho pendente. Erro de compilação é o modo de falha certo.
+  pendingConfirm: {
+    onConfirm: () => void;
+    onDiscard: () => void;
+    isSaving: boolean;
+  };
 }
 
 function formatAnswer(answer: unknown): string {
@@ -103,6 +113,7 @@ export function AgreementGroup({
   onUnmarkPair,
   currentUserId,
   canManageAnyPair,
+  pendingConfirm,
 }: AgreementGroupProps) {
   // Track selection order so the first selected card is the default gabarito.
   const [selectionOrder, setSelectionOrder] = useState<string[]>([]);
@@ -328,6 +339,15 @@ export function AgreementGroup({
               versions={versions}
               readOnly={readOnly}
               onVote={() => onVote(group.displayAnswer, group.responses[0].id)}
+              confirmSlot={
+                <PendingConfirmBar
+                  label={null}
+                  pendingLabel={group.displayAnswer}
+                  isSaving={pendingConfirm.isSaving}
+                  onConfirm={pendingConfirm.onConfirm}
+                  onDiscard={pendingConfirm.onDiscard}
+                />
+              }
               equivalenceMode={
                 !allowEquivalence
                   ? undefined

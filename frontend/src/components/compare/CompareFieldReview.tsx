@@ -65,6 +65,8 @@ interface CompareFieldReviewProps {
   ) => Promise<void>;
   onUnmarkEquivalencePair: (pairId: string) => Promise<void>;
   currentUserId: string;
+  onConfirmPendingVerdict: () => void;
+  onDiscardPendingVerdict: () => void;
 }
 
 /**
@@ -126,7 +128,29 @@ export function CompareFieldReview({
   onConfirmEquivalent,
   onUnmarkEquivalencePair,
   currentUserId,
+  onConfirmPendingVerdict,
+  onDiscardPendingVerdict,
 }: CompareFieldReviewProps) {
+  const pendingConfirm = {
+    onConfirm: onConfirmPendingVerdict,
+    onDiscard: onDiscardPendingVerdict,
+    isSaving: isSavingVerdict,
+  };
+
+  // A barra de confirmação nasce no elemento que PRODUZIU o rascunho. Para
+  // `kind: "response"` esse elemento é um card — mas só se o card existir de
+  // fato na lista renderizada. Um rascunho apontando para resposta que o
+  // `AgreementGroup` não mostra (`answer === undefined` é filtrado lá) não teria
+  // barra em lugar nenhum, e o `guardNavigation` do #434 travaria a navegação
+  // com um rascunho impossível de confirmar ou descartar pelo mouse: um
+  // soft-lock, que é o defeito do #430 com o sinal trocado. Quando a âncora não
+  // existe, o painel de ações assume a barra.
+  const anchoredToCard =
+    pendingVerdict?.kind === "response" &&
+    responses.some(
+      (r) => r.id === pendingVerdict.chosenResponseId && r.answer !== undefined,
+    );
+
   return (
     <CompareFieldScope documentId={documentId} fieldName={fieldName}>
       {isMulti ? (
@@ -151,6 +175,7 @@ export function CompareFieldReview({
           onConfirmEquivalent={onConfirmEquivalent}
           onUnmarkEquivalencePair={onUnmarkEquivalencePair}
           currentUserId={currentUserId}
+          pendingConfirm={pendingConfirm}
         />
       )}
 
@@ -169,6 +194,7 @@ export function CompareFieldReview({
           onPrepareVerdict={onPrepareVerdict}
           comment={comment}
           onCommentChange={onCommentChange}
+          pendingConfirm={anchoredToCard ? null : pendingConfirm}
         />
       ) : (
         <ConcordantNotice readOnly={readOnly} onMarkReviewed={onMarkReviewed} />
@@ -194,6 +220,7 @@ function SingleAnswerGroup({
   onConfirmEquivalent,
   onUnmarkEquivalencePair,
   currentUserId,
+  pendingConfirm,
 }: {
   readOnly: boolean;
   origin: VerdictOrigin;
@@ -206,6 +233,11 @@ function SingleAnswerGroup({
   onConfirmEquivalent: CompareFieldReviewProps["onConfirmEquivalent"];
   onUnmarkEquivalencePair: (pairId: string) => Promise<void>;
   currentUserId: string;
+  pendingConfirm: {
+    onConfirm: () => void;
+    onDiscard: () => void;
+    isSaving: boolean;
+  };
 }) {
   return (
     <AgreementGroup
@@ -241,6 +273,7 @@ function SingleAnswerGroup({
       onUnmarkPair={onUnmarkEquivalencePair}
       currentUserId={currentUserId}
       canManageAnyPair={equivalence.canManageAnyPair}
+      pendingConfirm={pendingConfirm}
     />
   );
 }

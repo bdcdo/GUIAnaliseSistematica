@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import {
   Bot,
@@ -63,6 +63,11 @@ interface AnswerCardProps {
   versions: string[];
   onVote: () => void;
 
+  // Confirmação do rascunho, renderizada DENTRO do card quando ele é o que
+  // produziu o rascunho — o segundo passo nasce junto do primeiro em vez de no
+  // rodapé do painel (#610). Só é consumida quando `isPending`.
+  confirmSlot?: ReactNode;
+
   // Selection / equivalence affordances (only present when allowEquivalence).
   // Discriminated union: `gabarito` is only reachable on the selected branch.
   equivalenceMode?: EquivalenceMode;
@@ -86,6 +91,7 @@ export function AnswerCard({
   isPending,
   versions,
   onVote,
+  confirmSlot,
   equivalenceMode,
   equivalentVariants,
   onUnmarkPair,
@@ -106,6 +112,11 @@ export function AnswerCard({
 
   return (
     <div
+      data-testid="answer-card"
+      // Contrato de teste para "este é o card preparado". A asserção anterior
+      // lia `parentElement.className` atrás de uma classe de borda — sobrevivia
+      // por acidente da estrutura e quebraria em qualquer wrapper novo.
+      data-pending={isPending || undefined}
       className={cn(
         "relative isolate w-full rounded-lg border p-2.5 text-left transition-colors hover:bg-accent/50",
         "has-[[data-vote-target]:focus-visible]:outline-none has-[[data-vote-target]:focus-visible]:ring-2 has-[[data-vote-target]:focus-visible]:ring-ring has-[[data-vote-target]:focus-visible]:ring-offset-2",
@@ -300,6 +311,16 @@ export function AnswerCard({
           </label>
         )}
       </div>
+
+      {/*
+        `relative z-[2]` pela mesma regra do comentário do overlay acima: filho
+        interativo precisa ficar ACIMA do botão de voto que cobre o card
+        inteiro. Sem isso, clicar em "Confirmar" acertaria o overlay e apenas
+        re-prepararia o rascunho.
+      */}
+      {isPending && confirmSlot && (
+        <div className="relative z-[2]">{confirmSlot}</div>
+      )}
     </div>
   );
 }

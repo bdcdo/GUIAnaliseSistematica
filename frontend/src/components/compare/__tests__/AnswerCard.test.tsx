@@ -99,3 +99,64 @@ describe("AnswerCard — overlay de voto", () => {
     expect(screen.queryByRole("radio")).toBeNull();
   });
 });
+
+// O segundo passo da confirmação passou a viver dentro do card que produziu o
+// rascunho (#610).
+describe("AnswerCard — slot de confirmação", () => {
+  const slot = <button type="button">Confirmar</button>;
+
+  it("renderiza o slot só no card preparado", () => {
+    const { unmount } = render(
+      <TooltipProvider>
+        <AnswerCard
+          readOnly={false}
+          index={0}
+          displayAnswer="Deferido"
+          respondentNames={["Ana"]}
+          respondentCount={1}
+          hasLlm={false}
+          staleCount={0}
+          isChosen={false}
+          isPending={false}
+          versions={["1.0.0"]}
+          onVote={vi.fn()}
+          confirmSlot={slot}
+        />
+      </TooltipProvider>,
+    );
+    expect(screen.queryByRole("button", { name: "Confirmar" })).toBeNull();
+    unmount();
+
+    renderCard({ isPending: true, confirmSlot: slot });
+    expect(screen.getByRole("button", { name: "Confirmar" })).not.toBeNull();
+    expect(screen.getByTestId("answer-card").getAttribute("data-pending")).toBe(
+      "true",
+    );
+  });
+
+  // Guarda-corpo contra a "otimização" tentadora de fazer o segundo clique no
+  // card confirmar: isso transformaria um duplo-clique acidental em escrita,
+  // que é exatamente o que o #417 fechou. Clicar no corpo re-prepara, e só o
+  // controle DISTINTO confirma.
+  it("o clique no corpo do card re-prepara — não confirma", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    const { onVote } = renderCard({
+      isPending: true,
+      confirmSlot: (
+        <button type="button" onClick={onConfirm}>
+          Confirmar
+        </button>
+      ),
+    });
+
+    await user.click(
+      screen.getByRole("button", {
+        name: /selecionar esta resposta para confirmar/i,
+      }),
+    );
+
+    expect(onVote).toHaveBeenCalledTimes(1);
+    expect(onConfirm).not.toHaveBeenCalled();
+  });
+});

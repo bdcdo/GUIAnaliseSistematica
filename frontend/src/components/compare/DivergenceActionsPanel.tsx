@@ -11,7 +11,12 @@ import { SuggestFieldDialog } from "@/components/stats/SuggestFieldDialog";
 import { formatVerdictDisplay } from "@/lib/verdict-display";
 import type { VerdictInfo } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
-import { readOnlyTitle, type PendingVerdict } from "./compare-types";
+import { PendingConfirmBar } from "./PendingConfirmBar";
+import {
+  pendingVerdictLabel,
+  readOnlyTitle,
+  type PendingVerdict,
+} from "./compare-types";
 import { useVerdictOrigin } from "./compare-field-scope";
 
 interface DivergenceActionsPanelProps {
@@ -26,6 +31,18 @@ interface DivergenceActionsPanelProps {
   onPrepareVerdict: (pending: PendingVerdict) => void;
   comment: string;
   onCommentChange: (value: string) => void;
+  /**
+   * Confirmação do rascunho quando ele NÃO nasceu num card — Ambíguo, Pular e
+   * resposta nova são criados aqui, e três das quatro variantes de
+   * `PendingVerdict` passam por este painel. `null` quando a barra já está
+   * ancorada no card, para que exista exatamente um controle de confirmação no
+   * DOM por vez.
+   */
+  pendingConfirm: {
+    onConfirm: () => void;
+    onDiscard: () => void;
+    isSaving: boolean;
+  } | null;
 }
 
 // Ações do campo divergente: marcadores Ambíguo/Pular + resposta nova, veredito
@@ -43,6 +60,7 @@ export function DivergenceActionsPanel({
   onPrepareVerdict,
   comment,
   onCommentChange,
+  pendingConfirm,
 }: DivergenceActionsPanelProps) {
   // Documento e campo vêm do escopo, não de props: é a MESMA origem que carimba
   // os rascunhos criados aqui e a que endereça a nota e a sugestão de schema,
@@ -133,6 +151,16 @@ export function DivergenceActionsPanel({
             }
           />
         </div>
+      )}
+
+      {pendingVerdict && pendingConfirm && (
+        <PendingConfirmBar
+          label={pendingVerdictLabel(pendingVerdict)}
+          pendingLabel={pendingVerdictLabel(pendingVerdict)}
+          isSaving={pendingConfirm.isSaving}
+          onConfirm={pendingConfirm.onConfirm}
+          onDiscard={pendingConfirm.onDiscard}
+        />
       )}
 
       {existingVerdict && (

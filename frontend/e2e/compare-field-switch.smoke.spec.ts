@@ -285,10 +285,27 @@ test("comparação: veredito confirmado após navegar grava no campo exibido", a
 
       await goToField(page, 2);
 
+      // Sem rascunho não existe nenhum controle de confirmação: prova em
+      // navegador real que a barra fixa do rodapé não voltou (#610).
+      await expect(
+        page.getByRole("button", { name: /^Confirmar$/ }),
+      ).toHaveCount(0);
+
       // Clica no PRIMEIRO card na tela: é a posição natural do clique e era
       // exatamente onde ficava o card fantasma do campo anterior.
-      await page.locator("button[data-vote-target]").first().click();
-      await page.getByRole("button", { name: /^Confirmar$/ }).click();
+      const firstCard = page.locator("button[data-vote-target]").first();
+      await firstCard.click();
+
+      // Confirma DENTRO do card. Além de fixar a ancoragem, este clique é a
+      // única prova possível de que a barra fica acima do overlay de voto: em
+      // jsdom não há hit-testing, então remover o `z-[2]` do slot não quebra
+      // nenhum teste unitário — aqui, o Playwright ou acusa interceptação ou
+      // acerta o overlay e nunca chega ao "Veredito salvo!".
+      const card = page
+        .locator('[data-testid="answer-card"][data-pending="true"]')
+        .first();
+      await expect(card).toHaveCount(1);
+      await card.getByRole("button", { name: /^Confirmar$/ }).click();
       await expect(page.getByText("Veredito salvo!")).toBeVisible({
         timeout: 30_000,
       });

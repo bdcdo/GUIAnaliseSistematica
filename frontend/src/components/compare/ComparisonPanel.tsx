@@ -23,11 +23,7 @@ import { ArrowRight, CheckCircle2, MessageSquare, Lightbulb } from "lucide-react
 import { FieldHeaderLabel } from "@/components/shared/FieldHeaderLabel";
 import type { VerdictInfo } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
-import {
-  pendingVerdictLabel,
-  type PendingVerdict,
-  type VerdictOrigin,
-} from "./compare-types";
+import type { PendingVerdict, VerdictOrigin } from "./compare-types";
 
 // Conclusão do documento + navegação da fila. Discriminated union: `hasNextDoc`
 // e `onNextDoc` só fazem sentido depois que a revisão do documento terminou, então
@@ -267,50 +263,10 @@ export function ComparisonPanel({
           onConfirmEquivalent={onConfirmEquivalent}
           onUnmarkEquivalencePair={onUnmarkEquivalencePair}
           currentUserId={currentUserId}
+          onConfirmPendingVerdict={onConfirmPendingVerdict}
+          onDiscardPendingVerdict={onDiscardPendingVerdict}
         />
       </div>
-
-      {isDivergent && !isMulti && (!docStatus.complete || pendingVerdict) && (
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2">
-          <span className="min-w-0 truncate text-xs text-muted-foreground">
-            {readOnly ? (
-              "Decisões desabilitadas no modo somente leitura."
-            ) : pendingVerdict ? (
-              <>
-                Selecionado:{" "}
-                <span className="font-medium text-foreground">
-                  {pendingVerdictLabel(pendingVerdict)}
-                </span>
-              </>
-            ) : (
-              "Escolha uma resposta para confirmar."
-            )}
-          </span>
-          <div className="flex shrink-0 items-center gap-2">
-            {pendingVerdict && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={readOnly || isSavingVerdict}
-                onClick={onDiscardPendingVerdict}
-              >
-                Descartar
-              </Button>
-            )}
-            <Button
-              size="sm"
-              disabled={readOnly || !pendingVerdict || isSavingVerdict}
-              onClick={onConfirmPendingVerdict}
-            >
-              {readOnly
-                ? "Somente leitura"
-                : isSavingVerdict
-                  ? "Salvando..."
-                  : "Confirmar"}
-            </Button>
-          </div>
-        </div>
-      )}
 
       {docStatus.complete && (
         <div className="flex shrink-0 items-center justify-between gap-2 border-t border-green-500/20 bg-green-500/5 px-4 py-2">
