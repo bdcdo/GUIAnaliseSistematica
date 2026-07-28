@@ -73,12 +73,20 @@ vi.mock("@/components/compare/CompareWorkspace", () => ({
   CompareWorkspace: ({
     documentText,
     comparisonPanel,
+    listCollapsed,
+    onToggleList,
   }: {
     documentText: string;
     comparisonPanel: MockComparisonPanel;
+    listCollapsed: boolean;
+    onToggleList: () => void;
   }) => (
     <div>
       <span data-testid="doc-text">{documentText}</span>
+      <span data-testid="list-collapsed">{String(listCollapsed)}</span>
+      <button data-testid="toggle-list" onClick={onToggleList}>
+        toggle list
+      </button>
       <span data-testid="field-name">{comparisonPanel.fieldName}</span>
       <span data-testid="pending-verdict">
         {comparisonPanel.pendingVerdict
@@ -1103,5 +1111,41 @@ describe("ComparePage — toggle de fila (só coordenador)", () => {
     expect(
       screen.getByText("Nenhum documento na fila com os filtros atuais."),
     ).not.toBeNull();
+  });
+});
+
+// A preferência de layout atravessa sessões (#610). O par de casos é o que
+// tira a vacuidade: um prova que o valor gravado é LIDO no mount, o outro que
+// o toggle o ESCREVE. Testar só um dos lados passaria com metade da ligação.
+describe("ComparePage — lista lateral recolhida persiste entre sessões (#610)", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+  afterEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("monta recolhida quando a sessão anterior deixou assim", () => {
+    window.localStorage.setItem("compare:listCollapsed", "1");
+    render(<ComparePage {...makeProps()} />);
+    expect(text("list-collapsed")).toBe("true");
+  });
+
+  it("monta expandida sem preferência gravada", () => {
+    render(<ComparePage {...makeProps()} />);
+    expect(text("list-collapsed")).toBe("false");
+  });
+
+  it("alternar grava a preferência", async () => {
+    const user = userEvent.setup();
+    render(<ComparePage {...makeProps()} />);
+
+    await user.click(screen.getByTestId("toggle-list"));
+    expect(text("list-collapsed")).toBe("true");
+    expect(window.localStorage.getItem("compare:listCollapsed")).toBe("1");
+
+    await user.click(screen.getByTestId("toggle-list"));
+    expect(text("list-collapsed")).toBe("false");
+    expect(window.localStorage.getItem("compare:listCollapsed")).toBe("0");
   });
 });

@@ -5,12 +5,17 @@ import { AnswerCard, type EquivalentVariant } from "./AnswerCard";
 import type { PendingVerdict } from "./compare-types";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { normalizeForComparison } from "@/lib/utils";
 import { formatPartialDate } from "@/lib/date-parts";
 import {
   buildResponseGroupKeys,
 } from "@/lib/equivalence";
-import { Link2 } from "lucide-react";
+import { HelpCircle, Link2 } from "lucide-react";
 
 interface AgreementResponse {
   id: string;
@@ -240,12 +245,33 @@ export function AgreementGroup({
       */}
       <div className="space-y-1.5" data-testid="agreement-group">
         {allowEquivalence && groups.length > 1 && (
-          <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-muted-foreground/20 bg-muted/30 px-2.5 py-1.5 text-[11px] leading-tight text-muted-foreground">
-            <p className="min-w-0 flex-1">
-              <Link2 className="mr-1 inline size-3" />
-              Marque os cards equivalentes (ex.: NI ≡ N/A ≡ &ldquo;não
-              informado&rdquo;) e indique qual fica como{" "}
-              <strong>gabarito</strong> (a resposta que será registrada).
+          // Uma linha, não três: a explicação completa (o exemplo de
+          // equivalência e o que "gabarito" significa) vive no popover ao lado.
+          // O texto curto permanece visível porque é ele que revela a
+          // affordance para quem entra na tela pela primeira vez — o que sai do
+          // fluxo é a prosa, não a descoberta (#610).
+          <div className="flex items-center justify-between gap-2 rounded-md border border-dashed border-muted-foreground/20 bg-muted/30 px-2.5 py-1 text-[11px] leading-tight text-muted-foreground">
+            <p className="flex min-w-0 flex-1 items-center gap-1">
+              <Link2 className="size-3 shrink-0" />
+              <span className="truncate">
+                Marque os equivalentes e escolha o gabarito.
+              </span>
+              <Popover>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label="Como funciona a equivalência entre respostas"
+                    className="shrink-0 cursor-help text-muted-foreground hover:text-foreground"
+                  >
+                    <HelpCircle className="size-3.5" />
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-80 p-3 text-xs">
+                  Marque os cards equivalentes (ex.: NI ≡ N/A ≡ &ldquo;não
+                  informado&rdquo;) e indique qual fica como{" "}
+                  <strong>gabarito</strong> — a resposta que será registrada.
+                </PopoverContent>
+              </Popover>
             </p>
             <Button
               size="sm"

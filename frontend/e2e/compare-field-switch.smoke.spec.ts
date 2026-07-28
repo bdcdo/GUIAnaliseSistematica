@@ -195,6 +195,14 @@ test("comparação: navegar entre campos mostra só os cards do campo atual", as
       // toda a contagem sai deslocada em um campo (medido ao investigar a #613).
       await expect(page.getByTestId("agreement-group")).toHaveCount(1);
 
+      // Posição do topo do primeiro card em cada campo. O critério 1 da #610 é
+      // que ela NÃO se mova ao navegar: o cabeçalho fica acima da área rolável,
+      // então toda variação de altura dele desloca a lista inteira e o revisor
+      // perde a âncora visual a cada `n`. Os campos do fixture variam de
+      // propósito em enunciado e help_text — sem essa variação a asserção
+      // passaria por acidente.
+      const firstCardTops: number[] = [];
+
       for (let i = 0; i < TOTAL_FIELDS; i++) {
         await expect(
           page.getByText(new RegExp(`Campo ${i + 1}/${TOTAL_FIELDS}`)),
@@ -221,8 +229,21 @@ test("comparação: navegar entre campos mostra só os cards do campo atual", as
           ).toBe(true);
         }
 
+        firstCardTops.push(
+          await cards.first().evaluate((el) => el.getBoundingClientRect().top),
+        );
+
         if (i < TOTAL_FIELDS - 1) await page.keyboard.press("n");
       }
+
+      // Tolerância de 1px absorve arredondamento subpixel do layout; qualquer
+      // coisa acima disso é o cabeçalho mudando de altura. Antes do fix o
+      // intervalo media dezenas de pixels.
+      const spread = Math.max(...firstCardTops) - Math.min(...firstCardTops);
+      expect(
+        spread,
+        `posição do primeiro card variou entre campos: ${JSON.stringify(firstCardTops)}`,
+      ).toBeLessThanOrEqual(1);
     },
   });
 });

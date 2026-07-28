@@ -1,9 +1,26 @@
 // @vitest-environment jsdom
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, afterEach, beforeAll } from "vitest";
+import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { AgreementGroup } from "@/components/compare/AgreementGroup";
+
+// Radix (Popover) usa APIs de Pointer/observer que o jsdom não tem.
+beforeAll(() => {
+  const proto = Element.prototype as unknown as Record<string, unknown>;
+  proto.scrollIntoView = () => {};
+  proto.hasPointerCapture = () => false;
+  proto.setPointerCapture = () => {};
+  proto.releasePointerCapture = () => {};
+  vi.stubGlobal(
+    "ResizeObserver",
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    },
+  );
+});
 
 afterEach(cleanup);
 
@@ -182,5 +199,42 @@ describe("AgreementGroup — 'Todas são similares' (issue #247, ponto 5)", () =
     expect(onVote).not.toHaveBeenCalled();
     expect(onConfirmEquivalent).not.toHaveBeenCalled();
     expect(onUnmarkPair).not.toHaveBeenCalled();
+  });
+});
+
+// A prosa que explicava a equivalência saiu do banner permanente (três linhas
+// em todo campo divergente) e foi para um popover, mantendo visíveis a frase
+// curta e o botão — que são a affordance de descoberta (#610).
+//
+// Esta cobertura é nova: o texto explicativo NÃO tinha teste nenhum antes de
+// sair do fluxo. Sem ela, mover a prosa a apagaria do radar.
+describe("AgreementGroup — explicação da equivalência sob demanda (#610)", () => {
+  it("mantém a frase curta e o botão visíveis, com o detalhe no popover", async () => {
+    const user = userEvent.setup();
+    renderGroup();
+
+    expect(
+      screen.getByText(/marque os equivalentes e escolha o gabarito/i),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /todas são similares/i }),
+    ).toBeTruthy();
+    // O detalhe (o exemplo NI ≡ N/A e o que "gabarito" significa) não ocupa
+    // espaço até ser pedido.
+    expect(screen.queryByText(/NI ≡ N\/A/)).toBeNull();
+
+    await user.click(
+      screen.getByRole("button", {
+        name: /como funciona a equivalência entre respostas/i,
+      }),
+    );
+
+    // Escopado ao popover: "gabarito" também aparece na frase curta que ficou
+    // visível, então um getByText solto casaria dois nós e não distinguiria de
+    // onde veio o texto.
+    const detail = (await screen.findByText(/NI ≡ N\/A/)).closest(
+      '[data-slot="popover-content"]',
+    ) as HTMLElement;
+    expect(within(detail).getByText(/gabarito/i)).toBeTruthy();
   });
 });
