@@ -8,6 +8,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useCodingDrafts, type UseCodingDraftsParams } from "../useCodingDrafts";
+import { MAX_DRAFTS_PER_USER } from "@/lib/coding-draft-storage";
 import {
   CODING_DRAFT_FORMAT_VERSION,
   codingDraftStorageKey,
@@ -192,7 +193,7 @@ describe("flush — os gatilhos de que depende 'fechar a aba não perde trabalho
   // `pagehide` dispara em TODO descarregamento da página, inclusive nos que um
   // `beforeunload` pegaria — por isso este hook não registra o segundo: ele não
   // acrescentaria cobertura e tiraria a página do back/forward cache no Firefox
-  // e no Safari. O `beforeunload` de `useAutosaveOnExit` é outro caso: lá ele
+  // e no Safari. O `beforeunload` de `useUnsavedWorkGuard` é outro caso: lá ele
   // serve ao aviso nativo do navegador, que só existe por meio dele.
   it("pagehide persiste antes do debounce", () => {
     const { result } = render();
@@ -453,6 +454,54 @@ describe("GC — a peça que impede a quota de degradar em silêncio", () => {
     plant({ key, documentId: "outro-completamente" });
     render();
     expect(window.localStorage.getItem(key)).toBeNull();
+  });
+
+  // Planta `count` rascunhos válidos de OUTROS documentos, do mais antigo para o
+  // mais novo. Devolve as chaves na mesma ordem, então `keys[0]` é sempre o
+  // primeiro candidato à eviction — é o que os testes de teto observam.
+  const plantOthers = (count: number) =>
+    Array.from({ length: count }, (_, i) => {
+      const documentId = `doc-teto-${i}`;
+      plant({ documentId, updatedAt: Date.now() - (count - i) * 1000 });
+      return otherDocKey(documentId);
+    });
+
+  // Mutação vermelha: voltar `openSlotTaken` para `keepKey ? 1 : 0`. O teto
+  // passa a contar um slot que não existe e evicta o mais antigo dos válidos —
+  // e é o caminho corriqueiro, porque o GC roda na PRIMEIRA abertura, antes de
+  // qualquer tecla, quando o documento na tela ainda não tem envelope.
+  it("no teto, documento aberto SEM rascunho gravado não evicta ninguém", () => {
+    const keys = plantOthers(MAX_DRAFTS_PER_USER);
+    render();
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+    expect(keys.filter((k) => window.localStorage.getItem(k) === null)).toEqual([]);
+  });
+
+  // O outro lado da mesma régua: quando o slot do documento aberto EXISTE, ele
+  // ocupa lugar e o mais antigo dos outros precisa sair. Sem este caso, zerar o
+  // termo (`+ 0` sempre) passaria despercebido.
+  it("no teto, documento aberto COM rascunho gravado evicta o mais antigo dos outros", () => {
+    const keys = plantOthers(MAX_DRAFTS_PER_USER);
+    plant({ documentId: DOC });
+    render();
+    expect(window.localStorage.getItem(KEY)).not.toBeNull();
+    expect(keys.filter((k) => window.localStorage.getItem(k) === null)).toEqual([keys[0]]);
+  });
+
+  // Mutação vermelha: fazer `keep-foreign` entrar em `survivors`. Um envelope de
+  // aba mais nova passaria a empurrar rascunho NOSSO para fora do teto — o GC
+  // apagaria trabalho recuperável para proteger espaço de trabalho que ele nem
+  // sabe ler.
+  it("envelope de formato maior não empurra o teto", () => {
+    const keys = plantOthers(MAX_DRAFTS_PER_USER - 1);
+    plant({ documentId: DOC });
+    plant({
+      documentId: "doc-de-aba-mais-nova",
+      formatVersion: CODING_DRAFT_FORMAT_VERSION + 1,
+    });
+    render();
+    expect(keys.filter((k) => window.localStorage.getItem(k) === null)).toEqual([]);
+    expect(window.localStorage.getItem(otherDocKey("doc-de-aba-mais-nova"))).not.toBeNull();
   });
 });
 

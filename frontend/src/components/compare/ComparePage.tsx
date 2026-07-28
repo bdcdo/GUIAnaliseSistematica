@@ -27,6 +27,8 @@ import {
   type VerdictOrigin,
 } from "./compare-types";
 
+const LIST_COLLAPSED_KEY = "compare:listCollapsed";
+
 interface ComparePageProps {
   projectId: string;
   documents: CompareDocument[];
@@ -339,8 +341,28 @@ export function ComparePage({
     [],
   );
   const exitFullscreen = useCallback(() => setIsFullscreen(false), []);
-  const [listCollapsed, setListCollapsed] = useState(false);
-  const toggleList = useCallback(() => setListCollapsed((v) => !v), []);
+  // Lista lateral recolhida atravessa sessões: quem revisa muito recolhe uma
+  // vez e não quer refazer o gesto todo dia (#610). Mesmo idioma do
+  // `AutoReviewFooter` — lazy initializer no mount, sem flicker — e não o
+  // `usePinnedDoc`: aquele existe para reagir a escrita externa e limpar
+  // órfãos, e um toggle de sidebar não tem escritor concorrente nem domínio de
+  // validade.
+  const [listCollapsed, setListCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem(LIST_COLLAPSED_KEY) === "1";
+  });
+  // `setItem` no handler e NÃO dentro do updater: o React pode reexecutar o
+  // updater e o efeito colateral se repetiria. Ler `listCollapsed` do closure
+  // é seguro porque só o clique altera o valor — e a dependência mantém o
+  // closure fresco, ao custo de trocar a identidade da callback uma vez por
+  // alternância.
+  const toggleList = useCallback(() => {
+    const next = !listCollapsed;
+    setListCollapsed(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(LIST_COLLAPSED_KEY, next ? "1" : "0");
+    }
+  }, [listCollapsed]);
   // Ponto único de gate da navegação MANUAL (sidebar, nav de doc, nav de
   // campo, teclado). Com rascunho não confirmado, navegar descartaria a
   // seleção em silêncio via guard de contexto — a perda de sessão da issue

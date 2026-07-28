@@ -5,7 +5,6 @@ import {
   codingDraftUserPrefix,
   envelopeMatchesScope,
   readCodingDraft,
-  parseCodingDraft,
   sameCodingSnapshot,
   type CodingDraftEnvelope,
   type CodingDraftRecovery,
@@ -31,17 +30,25 @@ const DRAFT_DEBOUNCE_MS = 300;
 // quota estourada degrada em silêncio, que é exatamente o modo de falha que
 // esta issue existe para eliminar.
 //
-// Duas limitações conhecidas e aceitas, registradas aqui para não se perderem
+// Três limitações conhecidas e aceitas, registradas aqui para não se perderem
 // (ver #608). Primeiro, retenção: o envelope guarda RESPOSTAS de codificação em
 // claro no `localStorage` por até 30 dias, e nada o limpa no logout. A chave
 // isola usuários entre si, mas não protege contra quem tenha acesso ao mesmo
 // perfil de navegador — em máquina compartilhada, o isolamento real é o perfil,
 // não esta chave. Segundo, o teto é por USUÁRIO e não por projeto: uma sessão
 // longa num projeto pode evictar o rascunho mais antigo de outro projeto do
-// mesmo usuário. Ambas são aceitáveis enquanto o rascunho for uma rede de
-// segurança de curta duração; deixam de ser se ele virar armazenamento primário.
+// mesmo usuário. Terceiro, envelope de formato maior não tem limite superior
+// nenhum: este build não pode apagá-lo (é de uma aba que sabe mais) e ele
+// tampouco conta para o teto, sob pena de empurrar rascunho nosso para fora —
+// ver `GcVerdict`. Só morde se um formato novo proliferar entre abas, e quem
+// pode limpá-lo é justamente a aba que sabe lê-lo. As três são aceitáveis
+// enquanto o rascunho for uma rede de segurança de curta duração; deixam de ser
+// se ele virar armazenamento primário.
 const DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-const MAX_DRAFTS_PER_USER = 100;
+// Exportado para a suíte: um teste que repetisse o `100` passaria a mentir no
+// dia em que a política mudar, e é justamente o comportamento no teto que ele
+// existe para fixar.
+export const MAX_DRAFTS_PER_USER = 100;
 
 interface DocDraftState {
   // O que estava na tela quando este rascunho nasceu.
@@ -208,22 +215,33 @@ interface GcResult {
   removed: number;
 }
 
-// Varredura escopada ao prefixo do PRÓPRIO usuário, uma vez por mount. Nunca
-// toca em chave de outro usuário (numa máquina compartilhada isso seria apagar
-// trabalho alheio) nem em envelope de formato maior (é de uma aba que sabe
-// mais) nem no documento aberto.
 // Destino de uma chave na varredura do GC. Separado do loop porque é a regra
-// que precisa ser lida com atenção: cada `keep` aqui protege trabalho de alguém.
-type GcVerdict = "keep" | "drop";
+// que precisa ser lida com atenção: cada veredito que preserva protege trabalho
+// de alguém.
+//
+// `keep` carrega o `updatedAt` que a classificação já leu. Sem ele, o loop
+// refazia `getItem` + `JSON.parse` + validação para todo slot sobrevivente: dois
+// parses por chave, até `MAX_DRAFTS_PER_USER` deles na primeira abertura.
+//
+// `keep-foreign` é o envelope de formato maior, e está separado de `keep` porque
+// a diferença entre os dois é política, não detalhe: ele é preservado e NÃO
+// conta para o teto. Contá-lo deixaria uma aba mais nova empurrar rascunhos
+// nossos para fora por eviction. Isso já valia antes — o envelope caía fora dos
+// sobreviventes porque `parseCodingDraft` não sabe lê-lo —, mas valia por
+// acidente do parse; aqui a regra está dita.
+type GcVerdict =
+  | { kind: "drop" }
+  | { kind: "keep"; updatedAt: number }
+  | { kind: "keep-foreign" };
 
 function classifyForGc(key: string, now: number): GcVerdict {
   const read = readCodingDraft(window.localStorage.getItem(key));
   // Envelope de formato maior é de uma aba que sabe mais: apagá-lo destruiria
   // trabalho que não temos como recuperar.
-  if (read.kind === "newer-format") return "keep";
+  if (read.kind === "newer-format") return { kind: "keep-foreign" };
   // Ilegível ou de formato antigo: não há como aplicar o conteúdo, e mantê-lo
   // ocuparia quota para sempre — sai do slot como qualquer outro lixo.
-  if (read.kind !== "draft") return "drop";
+  if (read.kind !== "draft") return { kind: "drop" };
 
   const embedded = codingDraftStorageKey({
     userId: read.draft.userId,
@@ -232,38 +250,64 @@ function classifyForGc(key: string, now: number): GcVerdict {
   });
   // Identidade embutida discorda da chave: não dá para saber a que documento o
   // conteúdo pertence, e aplicar no errado seria pior do que descartar.
-  if (key !== embedded) return "drop";
-  return now - read.draft.updatedAt > DRAFT_TTL_MS ? "drop" : "keep";
+  if (key !== embedded) return { kind: "drop" };
+  if (now - read.draft.updatedAt > DRAFT_TTL_MS) return { kind: "drop" };
+  return { kind: "keep", updatedAt: read.draft.updatedAt };
 }
 
-// Varredura: separa os slots do usuário em sobreviventes e condenados. Fica
-// fora de `collectCodingDraftGarbage` para que a coleta (decidir) e o descarte
-// (agir) sejam legíveis um de cada vez.
+// Varredura escopada ao prefixo do PRÓPRIO usuário, uma vez por mount. Separa
+// os slots em sobreviventes e condenados, e fica fora de
+// `collectCodingDraftGarbage` para que a coleta (decidir) e o descarte (agir)
+// sejam legíveis um de cada vez. Nunca condena chave de outro usuário (numa
+// máquina compartilhada isso seria apagar trabalho de um colega), nem envelope
+// de formato maior (é de uma aba que sabe mais), nem o documento aberto.
 function sweepOwnKeys(
   userId: string,
   now: number,
   keepKey: string | null,
-): { survivors: Array<{ key: string; updatedAt: number }>; doomed: string[] } {
+): {
+  survivors: Array<{ key: string; updatedAt: number }>;
+  doomed: string[];
+  // O slot do documento aberto EXISTE no storage? Sai daqui, e não de uma
+  // suposição de quem faz a conta do teto, porque este loop é o único ponto que
+  // de fato olha as chaves. Enquanto o total era recomposto lá fora como
+  // "sobreviventes + 1 se há documento aberto", o `+1` contava um slot que
+  // muitas vezes não existia — a primeira abertura, antes de qualquer tecla, é
+  // exatamente quando o GC roda — e o teto evictava um rascunho válido a mais.
+  //
+  // Ocupação aqui é de QUOTA, não de envelope legível: o slot do documento
+  // aberto conta mesmo guardando lixo ou formato maior, porque ocupa espaço e
+  // nunca será evictado. É a exceção deliberada à isenção que `keep-foreign`
+  // recebe nos demais documentos — lá o envelope pode sair pela mão da aba que
+  // o escreveu, aqui não sai por mão nenhuma.
+  openSlotTaken: boolean;
+} {
   const prefix = codingDraftUserPrefix(userId);
   const survivors: Array<{ key: string; updatedAt: number }> = [];
   const doomed: string[] = [];
+  let openSlotTaken = false;
 
   for (let i = 0; i < window.localStorage.length; i += 1) {
     const key = window.localStorage.key(i);
     // Fora do prefixo do próprio usuário, o GC não toca: numa máquina
-    // compartilhada isso seria apagar trabalho de um colega. E o documento
-    // aberto na tela nunca é evictado.
-    if (!key || !key.startsWith(prefix) || key === keepKey) continue;
-
-    const verdict = classifyForGc(key, now);
-    if (verdict === "keep") {
-      const envelope = parseCodingDraft(window.localStorage.getItem(key));
-      if (envelope) survivors.push({ key, updatedAt: envelope.updatedAt });
+    // compartilhada isso seria apagar trabalho de um colega.
+    if (!key || !key.startsWith(prefix)) continue;
+    // O documento aberto na tela nunca é evictado, mas ocupa um slot.
+    if (key === keepKey) {
+      openSlotTaken = true;
       continue;
     }
+
+    const verdict = classifyForGc(key, now);
+    if (verdict.kind === "keep") {
+      survivors.push({ key, updatedAt: verdict.updatedAt });
+      continue;
+    }
+    // Formato maior fica onde está e fora da contagem do teto — ver `GcVerdict`.
+    if (verdict.kind === "keep-foreign") continue;
     doomed.push(key);
   }
-  return { survivors, doomed };
+  return { survivors, doomed, openSlotTaken };
 }
 
 function collectCodingDraftGarbage(
@@ -274,10 +318,11 @@ function collectCodingDraftGarbage(
   if (typeof window === "undefined") return { removed: 0 };
   const result: GcResult = { removed: 0 };
   try {
-    const { survivors, doomed } = sweepOwnKeys(userId, now, keepKey);
+    const { survivors, doomed, openSlotTaken } = sweepOwnKeys(userId, now, keepKey);
 
-    // Teto: acima dele, sai o mais antigo primeiro.
-    const overflow = survivors.length + (keepKey ? 1 : 0) - MAX_DRAFTS_PER_USER;
+    // Teto: acima dele, sai o mais antigo primeiro. O documento aberto entra na
+    // conta quando de fato ocupa um slot, nunca por ser o documento aberto.
+    const overflow = survivors.length + (openSlotTaken ? 1 : 0) - MAX_DRAFTS_PER_USER;
     if (overflow > 0) {
       survivors
         .toSorted((a, b) => a.updatedAt - b.updatedAt)
