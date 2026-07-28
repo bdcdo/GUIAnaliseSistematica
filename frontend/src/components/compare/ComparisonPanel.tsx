@@ -178,7 +178,18 @@ export function ComparisonPanel({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="shrink-0 border-b px-4 py-1.5">
+      {/*
+        `data-testid` é contrato de medição, não estilo: a comparação de área
+        antes/depois da #610 mede a altura deste bloco em navegador, e casar por
+        classe Tailwind quebraria no primeiro ajuste de layout — em silêncio e
+        sempre para o lado do verde. Mesma razão do `agreement-group`.
+
+        Este cabeçalho é `shrink-0` ACIMA do único scroller do painel: tudo que
+        cresce aqui empurra os cards sem amortecimento. Daí a densidade `fixed`
+        do FieldHeaderLabel e a caixa de tamanho constante do ProgressDots —
+        juntos, tornam a altura deste bloco invariante entre campos.
+      */}
+      <div className="shrink-0 border-b px-4 py-1.5" data-testid="compare-header">
         <ProgressDots
           total={totalFields}
           currentIndex={fieldIndex}
@@ -189,7 +200,7 @@ export function ComparisonPanel({
           <FieldHeaderLabel
             prefix={`Campo ${fieldIndex + 1}/${totalFields}:`}
             helpText={fieldHelpText}
-            helpTextClassName="max-h-24 overflow-y-auto pr-1"
+            density={{ kind: "fixed", clampLines: 2 }}
           >
             {fieldDescription || fieldName}
           </FieldHeaderLabel>
@@ -209,6 +220,14 @@ export function ComparisonPanel({
                   </>
                 )}
               </Badge>
+            )}
+            {isDivergent && (
+              <KeyboardHints
+                readOnly={readOnly}
+                groupCount={groupCount}
+                isMulti={isMulti}
+                optionCount={isMulti ? displayOptions.length : undefined}
+              />
             )}
           </div>
         </div>
@@ -318,14 +337,6 @@ export function ComparisonPanel({
         </div>
       )}
 
-      {isDivergent && (
-        <KeyboardHints
-          readOnly={readOnly}
-          groupCount={groupCount}
-          isMulti={isMulti}
-          optionCount={isMulti ? displayOptions.length : undefined}
-        />
-      )}
     </div>
   );
 }

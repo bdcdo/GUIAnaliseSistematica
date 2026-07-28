@@ -62,12 +62,42 @@ export const PROJECT_NAME = "Comparação campo-trocado — teste E2E";
 const SCHEMA_HASH = "e2e-campotrocado-schema-hash";
 const LETTERS = ["ALFA", "BETA", "GAMA", "DELTA", "EPSILON", "ZETA"];
 
+// TERCEIRA PROPRIEDADE LOAD-BEARING — os campos variam DELIBERADAMENTE em
+// comprimento de `description` e `help_text`: nenhum, curto e muito longo, mais
+// um enunciado que não cabe em duas linhas. É essa variação que dá mordida à
+// asserção de que a posição do primeiro card não muda ao navegar (#610): com
+// seis campos de texto uniforme e nenhum help_text — como era antes —, o
+// cabeçalho tinha altura constante por acidente do fixture, e o spec ficaria
+// verde mesmo com o defeito presente. Uniformizar estes textos "para limpar"
+// esvazia a asserção sem quebrá-la.
+const HELP_TEXTS = [
+  undefined,
+  "Considere apenas o dispositivo final.",
+  // Acima dos 96px que o bloco antigo reservava: é o caso que mais empurrava
+  // os cards para baixo.
+  "Instrução longa de preenchimento. ".repeat(20),
+  // Casado de propósito com o enunciado longo (LONG_DESCRIPTION_INDEX): é a
+  // combinação em que o gatilho de ajuda ficaria recortado pelo `line-clamp`
+  // se voltasse para dentro do elemento clampado. Separar as duas
+  // propriedades em campos distintos — como estava — deixa o pior caso fora
+  // da tela medida.
+  "Instrução do campo de enunciado longo, para exercitar as duas coisas juntas.",
+  "Verifique a data de assinatura antes de responder.",
+  "Instrução média para conferência do respondente. ".repeat(4),
+];
+
+const LONG_DESCRIPTION_INDEX = 3;
+
 const FIELDS = LETTERS.map((letter, i) => ({
   hash: `e2e-ct-f${i + 1}`,
   name: `q${i + 1}_${letter.toLowerCase()}`,
   type: "single" as const,
   options: [`${letter}-opcao-1`, `${letter}-opcao-2`, `${letter}-opcao-3`],
-  description: `Pergunta ${i + 1} (${letter}) — opções exclusivas deste campo`,
+  description:
+    i === LONG_DESCRIPTION_INDEX
+      ? `Pergunta ${i + 1} (${letter}) — enunciado deliberadamente longo, que não cabe em duas linhas no painel de comparação e por isso exercita o clamp do cabeçalho, incluindo texto suficiente para transbordar em telas estreitas e largas`
+      : `Pergunta ${i + 1} (${letter}) — opções exclusivas deste campo`,
+  help_text: HELP_TEXTS[i],
 }));
 
 const DOC_TITLES = ["Doc campo-trocado 1", "Doc campo-trocado 2"];
@@ -90,7 +120,7 @@ async function main() {
 
   const { data: existing } = await supabase
     .from("projects")
-    .select("id")
+    .select("id, schema_revision")
     .eq("name", PROJECT_NAME)
     .maybeSingle();
 
@@ -102,7 +132,18 @@ async function main() {
   };
   if (existing) {
     projectId = existing.id as string;
-    const { error } = await supabase.from("projects").update(schema).eq("id", projectId);
+    // O banco recusa alteração de `pydantic_fields` sem avanço de
+    // `schema_revision` (exatamente +1). Reexecutar o script com os campos
+    // inalterados também passa por aqui: incrementar sem mudança é inofensivo,
+    // enquanto derivar "mudou?" no cliente duplicaria a regra que a própria
+    // trigger já aplica.
+    const { error } = await supabase
+      .from("projects")
+      .update({
+        ...schema,
+        schema_revision: ((existing.schema_revision as number) ?? 0) + 1,
+      })
+      .eq("id", projectId);
     if (error) throw new Error(`update projects: ${error.message}`);
   } else {
     const { data, error } = await supabase
