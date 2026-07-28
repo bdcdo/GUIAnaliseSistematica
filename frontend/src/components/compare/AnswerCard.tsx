@@ -39,9 +39,11 @@ interface GabaritoAffordance {
 // without selection" in the type. The `gabarito` affordance only exists in the
 // `selected: true` branch, so an impossible state (gabarito on an unselected
 // card) is unrepresentable. `undefined` ⇒ equivalence not allowed (no checkbox).
-// Not exported: the sole consumer (AgreementGroup) builds the object inline and
-// TS checks it structurally against the prop type — exporting would be dead code.
-type EquivalenceMode =
+// Exportado porque o único consumidor (AgreementGroup) monta o objeto numa
+// função fora do JSX: sem o tipo anotado, `selected: true` seria inferido como
+// `boolean` e a união discriminada — que é o que torna o gabarito num card não
+// selecionado irrepresentável — se perderia na inferência.
+export type EquivalenceMode =
   | { selected: false; onToggle: () => void }
   | {
       selected: true;

@@ -1,7 +1,11 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { AnswerCard, type EquivalentVariant } from "./AnswerCard";
+import {
+  AnswerCard,
+  type EquivalenceMode,
+  type EquivalentVariant,
+} from "./AnswerCard";
 import { PendingConfirmBar } from "./PendingConfirmBar";
 import type { PendingVerdict } from "./compare-types";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -99,6 +103,73 @@ interface RenderedGroup {
   displayAnswer: string;
   responses: AgreementResponse[];
   variants: EquivalentVariant[];
+}
+
+/**
+ * Tudo que um card precisa saber sobre o seu grupo e que não é decisão de
+ * interação: quem respondeu, o que está velho, se este é o grupo escolhido no
+ * veredito anterior e se é o do rascunho atual.
+ *
+ * Função pura fora do `.map()` porque o callback do map era o sítio onde essas
+ * seis derivações se somavam aos ternários do JSX — e o `confirmSlot` foi a
+ * gota que o levou acima do limiar de complexidade. Separa também dois assuntos
+ * que só coincidiam por estarem na mesma linha: fatos do grupo aqui,
+ * affordances de seleção em `equivalenceModeFor`.
+ */
+function describeGroup(
+  group: RenderedGroup,
+  existingVerdict: ExistingVerdict | null,
+  pendingVerdict: PendingVerdict | null,
+) {
+  return {
+    hasLlm: group.responses.some((r) => r.respondent_type === "llm"),
+    llmJustification: group.responses.find((r) => r.respondent_type === "llm")
+      ?.justification,
+    staleCount: group.responses.filter((r) => r.isFieldStale).length,
+    isChosen: group.responses.some(
+      (r) => r.id === existingVerdict?.chosenResponseId,
+    ),
+    // O rascunho aponta para UMA resposta, mas o card representa o grupo
+    // inteiro: respostas fundidas por equivalência compartilham o card, então a
+    // pertinência é ao grupo, não à resposta clicada.
+    isPending:
+      pendingVerdict?.kind === "response" &&
+      group.responses.some((r) => r.id === pendingVerdict.chosenResponseId),
+    versions: Array.from(
+      new Set(
+        group.responses
+          .map((r) => r.schemaVersion)
+          .filter((v): v is string => !!v),
+      ),
+    ).toSorted(compareVersionsDesc),
+  };
+}
+
+/**
+ * Affordances de equivalência de um card quando o modo está permitido. O tipo
+ * de retorno é anotado de propósito: sem ele a inferência alarga `selected: true`
+ * para `boolean` e a união discriminada do `AnswerCard` — que torna o gabarito
+ * num card não selecionado irrepresentável — deixa de valer aqui.
+ */
+function equivalenceModeFor({
+  isSelected,
+  showGabarito,
+  isGabarito,
+  onToggle,
+  onSetGabarito,
+}: {
+  isSelected: boolean;
+  showGabarito: boolean;
+  isGabarito: boolean;
+  onToggle: () => void;
+  onSetGabarito: () => void;
+}): EquivalenceMode {
+  if (!isSelected) return { selected: false, onToggle };
+  return {
+    selected: true,
+    onToggle,
+    gabarito: showGabarito ? { isGabarito, onSetGabarito } : null,
+  };
 }
 
 export function AgreementGroup({
@@ -299,31 +370,7 @@ export function AgreementGroup({
         )}
 
         {groups.map((group, i) => {
-          const hasLlm = group.responses.some(
-            (r) => r.respondent_type === "llm",
-          );
-          const llmResponse = group.responses.find(
-            (r) => r.respondent_type === "llm",
-          );
-          const staleCount = group.responses.filter(
-            (r) => r.isFieldStale,
-          ).length;
-          const isChosen = group.responses.some(
-            (r) => r.id === existingVerdict?.chosenResponseId,
-          );
-          const isPending =
-            pendingVerdict?.kind === "response" &&
-            group.responses.some((r) => r.id === pendingVerdict.chosenResponseId);
-          const versions = Array.from(
-            new Set(
-              group.responses
-                .map((r) => r.schemaVersion)
-                .filter((v): v is string => !!v),
-            ),
-          ).toSorted(compareVersionsDesc);
-
-          const isSelected = selectionSet.has(group.groupKey);
-
+          const facts = describeGroup(group, existingVerdict, pendingVerdict);
           return (
             <AnswerCard
               key={group.groupKey}
@@ -331,12 +378,12 @@ export function AgreementGroup({
               displayAnswer={group.displayAnswer}
               respondentNames={group.responses.map((r) => r.respondent_name)}
               respondentCount={group.responses.length}
-              hasLlm={hasLlm}
-              llmJustification={llmResponse?.justification}
-              staleCount={staleCount}
-              isChosen={isChosen}
-              isPending={isPending}
-              versions={versions}
+              hasLlm={facts.hasLlm}
+              llmJustification={facts.llmJustification}
+              staleCount={facts.staleCount}
+              isChosen={facts.isChosen}
+              isPending={facts.isPending}
+              versions={facts.versions}
               readOnly={readOnly}
               onVote={() => onVote(group.displayAnswer, group.responses[0].id)}
               // Montada só no card preparado, e não em todos com o
@@ -345,7 +392,7 @@ export function AgreementGroup({
               // fica visível. O gate lá dentro permanece como defesa em
               // profundidade para quem passar o slot sem esta condição.
               confirmSlot={
-                isPending ? (
+                facts.isPending ? (
                   <PendingConfirmBar
                     label={group.displayAnswer}
                     showLabel={false}
@@ -356,24 +403,15 @@ export function AgreementGroup({
                 ) : undefined
               }
               equivalenceMode={
-                !allowEquivalence
-                  ? undefined
-                  : isSelected
-                    ? {
-                        selected: true,
-                        onToggle: () => toggleSelection(group.groupKey),
-                        gabarito: showGabarito
-                          ? {
-                              isGabarito: effectiveGabarito === group.groupKey,
-                              onSetGabarito: () =>
-                                setGabaritoOverride(group.groupKey),
-                            }
-                          : null,
-                      }
-                    : {
-                        selected: false,
-                        onToggle: () => toggleSelection(group.groupKey),
-                      }
+                allowEquivalence
+                  ? equivalenceModeFor({
+                      isSelected: selectionSet.has(group.groupKey),
+                      showGabarito,
+                      isGabarito: effectiveGabarito === group.groupKey,
+                      onToggle: () => toggleSelection(group.groupKey),
+                      onSetGabarito: () => setGabaritoOverride(group.groupKey),
+                    })
+                  : undefined
               }
               equivalentVariants={
                 group.variants.length > 0 ? group.variants : undefined
