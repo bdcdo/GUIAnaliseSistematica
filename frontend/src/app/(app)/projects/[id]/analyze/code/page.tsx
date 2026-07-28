@@ -224,31 +224,39 @@ export default async function CodePage({
   // novo no cliente abriria espaço para o rótulo discordar do filtro que pôs o
   // documento ali (#608).
   //
+  // A classificação acontece UMA vez, aqui, e os dois consumidores leem dela: o
+  // filtro abaixo e o rótulo na tela. É de propósito que ela não more dentro do
+  // predicado do filtro — um `.filter()` que também escreve num mapa externo
+  // esconde a escrita no lugar onde ninguém a procura, e classificaria um
+  // subconjunto no dia em que outro filtro passasse a rodar antes dele.
+  const classified = allDocuments.map((doc) => {
+    const response = responseByDoc.get(doc.id) ?? null;
+    return { doc, response, status: classifyDocStatus(ctx, response, roundsById) };
+  });
+
   // Guarda o status INTEIRO, não só o `kind`: o membro `previous` carrega o
   // `label` da rodada — o rótulo do coordenador na estratégia manual, o semver na
   // `schema_version` — e é ele que torna o texto na tela verdadeiro nas duas.
-  const statusByDoc: Record<string, DocRoundStatus> = {};
+  const statusByDoc: Record<string, DocRoundStatus> = Object.fromEntries(
+    classified.map(({ doc, status }) => [doc.id, status]),
+  );
 
   // Filtro server-side conforme effectiveRound
-  const filteredDocuments = allDocuments.filter((d) => {
-    const resp = responseByDoc.get(d.id);
-    const status = classifyDocStatus(ctx, resp ?? null, roundsById);
-    statusByDoc[d.id] = status;
-
-    if (effectiveRound === "all") return true;
-    if (effectiveRound === CURRENT_FILTER_VALUE) {
-      // Padrao: mostra docs que ainda precisam ser respondidos na rodada atual
-      // (sem resposta OU resposta de rodada anterior). Concluidos da atual saem.
-      return status.kind !== "current_done";
-    }
-    // Rodada especifica: id (manual) ou label (schema_version)
-    if (strategy === "manual") {
-      return resp?.round_id === effectiveRound;
-    }
-    return (
-      status.kind === "previous" && status.label === effectiveRound
-    );
-  });
+  const filteredDocuments = classified
+    .filter(({ response, status }) => {
+      if (effectiveRound === "all") return true;
+      if (effectiveRound === CURRENT_FILTER_VALUE) {
+        // Padrao: mostra docs que ainda precisam ser respondidos na rodada atual
+        // (sem resposta OU resposta de rodada anterior). Concluidos da atual saem.
+        return status.kind !== "current_done";
+      }
+      // Rodada especifica: id (manual) ou label (schema_version)
+      if (strategy === "manual") {
+        return response?.round_id === effectiveRound;
+      }
+      return status.kind === "previous" && status.label === effectiveRound;
+    })
+    .map(({ doc }) => doc);
 
   const allFields = (project?.pydantic_fields || []) as PydanticField[];
   const fields = allFields.filter(
