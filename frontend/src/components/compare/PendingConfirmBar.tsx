@@ -4,20 +4,24 @@ import { Button } from "@/components/ui/button";
 
 interface PendingConfirmBarProps {
   /**
-   * `null` quando a barra está ancorada num card: o card já exibe a resposta, e
-   * repetir "Selecionado: Deferido" dentro dele é ruído. Não-nulo quando está
-   * ancorada nas ações da divergência (Ambíguo / Pular / resposta nova), onde o
-   * rótulo carrega informação que não está em nenhum outro lugar da tela — o
-   * texto que a revisora digitou, por exemplo.
+   * O rascunho, sempre. Vai para `data-pending-label` em qualquer caso: é o
+   * contrato de teste que substituiu o `getByText("Selecionado:")` como prova de
+   * que existe rascunho. Casar por copy quebrava ao mudar o texto e, pior,
+   * ficava vácuo quando o rótulo simplesmente não era renderizado.
    */
-  label: string | null;
+  label: string;
   /**
-   * Sempre presente, independentemente de `label`: é o contrato de teste
-   * (`data-pending-label`) que substituiu o `getByText("Selecionado:")` como
-   * prova de que existe rascunho. Casar por copy quebrava ao mudar o texto e,
-   * pior, ficava vácuo quando o rótulo simplesmente não era renderizado.
+   * Se o rótulo aparece na tela. Falso quando a barra está ancorada num card: o
+   * card já exibe a resposta, e repetir "Selecionado: Deferido" dentro dele é
+   * ruído. Verdadeiro nas ações da divergência (Ambíguo / Pular / resposta
+   * nova), onde o rótulo carrega informação que não está em nenhum outro lugar
+   * da tela — o texto que a revisora digitou, por exemplo.
+   *
+   * Um booleano derivado do MESMO `label`, e não um segundo rótulo: dois textos
+   * independentes podiam divergir em silêncio, e o que o teste lê deixaria de
+   * ser o que a revisora vê.
    */
-  pendingLabel: string;
+  showLabel: boolean;
   isSaving: boolean;
   onConfirm: () => void;
   onDiscard: () => void;
@@ -48,7 +52,7 @@ interface PendingConfirmBarProps {
  */
 export function PendingConfirmBar({
   label,
-  pendingLabel,
+  showLabel,
   isSaving,
   onConfirm,
   onDiscard,
@@ -56,10 +60,10 @@ export function PendingConfirmBar({
   return (
     <div
       data-testid="pending-confirm"
-      data-pending-label={pendingLabel}
+      data-pending-label={label}
       className="mt-2 flex items-center justify-end gap-2 border-t pt-2"
     >
-      {label && (
+      {showLabel && (
         <span className="mr-auto min-w-0 truncate text-xs text-muted-foreground">
           Selecionado:{" "}
           <span className="font-medium text-foreground">{label}</span>

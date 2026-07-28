@@ -156,7 +156,7 @@ export function DivergenceActionsPanel({
       {pendingVerdict && pendingConfirm && (
         <PendingConfirmBar
           label={pendingVerdictLabel(pendingVerdict)}
-          pendingLabel={pendingVerdictLabel(pendingVerdict)}
+          showLabel
           isSaving={pendingConfirm.isSaving}
           onConfirm={pendingConfirm.onConfirm}
           onDiscard={pendingConfirm.onDiscard}

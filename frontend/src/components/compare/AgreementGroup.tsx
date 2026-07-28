@@ -339,14 +339,21 @@ export function AgreementGroup({
               versions={versions}
               readOnly={readOnly}
               onVote={() => onVote(group.displayAnswer, group.responses[0].id)}
+              // Montada só no card preparado, e não em todos com o
+              // `AnswerCard` decidindo depois: `isPending` é conhecido AQUI, e é
+              // este o sítio onde a invariante "exatamente uma barra no DOM"
+              // fica visível. O gate lá dentro permanece como defesa em
+              // profundidade para quem passar o slot sem esta condição.
               confirmSlot={
-                <PendingConfirmBar
-                  label={null}
-                  pendingLabel={group.displayAnswer}
-                  isSaving={pendingConfirm.isSaving}
-                  onConfirm={pendingConfirm.onConfirm}
-                  onDiscard={pendingConfirm.onDiscard}
-                />
+                isPending ? (
+                  <PendingConfirmBar
+                    label={group.displayAnswer}
+                    showLabel={false}
+                    isSaving={pendingConfirm.isSaving}
+                    onConfirm={pendingConfirm.onConfirm}
+                    onDiscard={pendingConfirm.onDiscard}
+                  />
+                ) : undefined
               }
               equivalenceMode={
                 !allowEquivalence

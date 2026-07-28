@@ -301,9 +301,12 @@ test("comparação: veredito confirmado após navegar grava no campo exibido", a
       // jsdom não há hit-testing, então remover o `z-[2]` do slot não quebra
       // nenhum teste unitário — aqui, o Playwright ou acusa interceptação ou
       // acerta o overlay e nunca chega ao "Veredito salvo!".
-      const card = page
-        .locator('[data-testid="answer-card"][data-pending="true"]')
-        .first();
+      // Sem `.first()`: a contagem é sobre TODOS os cards preparados, senão o
+      // `toHaveCount(1)` só poderia dar 0 ou 1 e a unicidade — que é o que se
+      // quer provar — ficaria fora da asserção.
+      const card = page.locator(
+        '[data-testid="answer-card"][data-pending="true"]',
+      );
       await expect(card).toHaveCount(1);
       await card.getByRole("button", { name: /^Confirmar$/ }).click();
       await expect(page.getByText("Veredito salvo!")).toBeVisible({
