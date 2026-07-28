@@ -70,7 +70,16 @@ export function useCodingDraftWiring({
   // setState: `BrowseDocCoder` é construído sem estado derivado e sem setState em
   // effect, e empurrar valor para dentro dele quebraria essa propriedade.
   const [browseRestoreNonce, setBrowseRestoreNonce] = useState(0);
-  const [browseRestored, setBrowseRestored] = useState<CodingSnapshot | null>(null);
+  // O snapshot retomado carrega o documento de onde veio. Não é metadado
+  // decorativo: sem ele o conteúdo fica solto e é aplicado a qualquer doc que a
+  // seleção seguinte trouxer — `BrowseDocCoder` é keyed por `docId:nonce`, então
+  // remonta semeado pelo que esta fiação entregar. O resultado era a tela do
+  // documento B exibindo as respostas de A, sem sujeira e sem sinal, e o próximo
+  // "Enviar" gravando as respostas de A no documento B.
+  const [browseRestored, setBrowseRestored] = useState<{
+    docId: string;
+    snapshot: CodingSnapshot;
+  } | null>(null);
 
   const restoreDraft = drafts.restoreDraft;
   const handleRestoreDraft = useCallback(() => {
@@ -81,7 +90,7 @@ export function useCodingDraftWiring({
     if (!browseDocId) return;
     const restored = restoreDraft(browseDocId);
     if (!restored) return;
-    setBrowseRestored(restored);
+    setBrowseRestored({ docId: browseDocId, snapshot: restored });
     setBrowseRestoreNonce((n) => n + 1);
     markDirty(browseDocId);
   }, [mode, restoreAssignedDraft, browseDocId, restoreDraft, markDirty]);
@@ -96,11 +105,17 @@ export function useCodingDraftWiring({
   // e sem setState em effect, e o remount por `key` já é o mecanismo de aplicação.
   // Resolver aqui mantém aquele componente sem nenhuma decisão nova.
   const browseDocForCoder = useMemo(() => {
-    if (!browseDoc || !browseRestored) return browseDoc;
+    // A checagem de identidade é o que impede a aplicação cruzada: o rascunho só
+    // semeia o documento de onde foi retomado. Trocar de doc volta a semear do
+    // servidor sem precisar limpar nada — e voltar ao doc de origem reexibe o
+    // rascunho, porque a posse continua registrada.
+    if (!browseDoc || browseRestored?.docId !== browseDoc.document.id) {
+      return browseDoc;
+    }
     return {
       ...browseDoc,
-      initialAnswers: browseRestored.answers,
-      initialNotes: browseRestored.notes,
+      initialAnswers: browseRestored.snapshot.answers,
+      initialNotes: browseRestored.snapshot.notes,
     };
   }, [browseDoc, browseRestored]);
 

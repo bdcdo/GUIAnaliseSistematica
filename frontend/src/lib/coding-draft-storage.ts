@@ -157,6 +157,17 @@ function writeSlotIfTokenMatches(
     // Envelope que este build não sabe ler pertence a uma aba mais nova;
     // sobrescrevê-lo apagaria trabalho irrecuperável.
     if (stored.kind === "newer-format") return "blocked";
+    // Formato antigo, ou identidade embutida que discorda da chave: é lixo NOSSO,
+    // não trabalho de outra aba. Tratá-lo como slot tomado o deixava barrar, por
+    // CAS, toda escrita seguinte daquele documento — o envelope inútil ficava e o
+    // trabalho novo é que não entrava. Sobrescrever é o que o GC já faria, só sem
+    // esperar a próxima sessão.
+    const usable =
+      stored.kind !== "draft" || envelopeMatchesScope(stored.draft, scope);
+    if (!usable) {
+      window.localStorage.setItem(key, JSON.stringify(envelope));
+      return "written";
+    }
     const storedToken = stored.kind === "draft" ? stored.draft.writeToken : null;
     if (storedToken !== expectedToken) return "blocked";
     window.localStorage.setItem(key, JSON.stringify(envelope));
@@ -451,7 +462,12 @@ function emptyDocState(base: CodingSnapshot): DocDraftState {
   return { base, draft: null, writeToken: null, persistedToken: null, blocked: false };
 }
 
-function seedBaseline(st: SessionState, docId: string, baseline: CodingSnapshot): void {
+function seedBaseline(
+  st: SessionState,
+  docId: string,
+  baseline: CodingSnapshot,
+  observedToken: string | null,
+): void {
   // Um único default (`?? emptyDocState`) em vez de um por propriedade: o
   // espalhamento preserva a posse do slot e o rascunho vivo sem repetir a
   // decisão cinco vezes. Só o baseline é condicional — trocá-lo debaixo de um
@@ -460,6 +476,19 @@ function seedBaseline(st: SessionState, docId: string, baseline: CodingSnapshot)
   st.states.set(docId, {
     ...previous,
     base: previous.draft ? previous.base : baseline,
+    // Assume a posse do envelope que ACABAMOS de observar. Sem isto, a abertura
+    // ofertava um rascunho e seguia com `persistedToken: null`, então a primeira
+    // tecla falhava o compare-and-swap contra o próprio envelope ofertado. Como a
+    // faixa OFERECE sem bloquear o formulário, continuar digitando sem decidir
+    // nada sobre a oferta — fluxo corriqueiro — deixava a pessoa sem cópia local
+    // pelo resto da sessão. Sem o salvamento automático (#624), é trabalho
+    // perdido.
+    //
+    // Isto NÃO afrouxa a proteção entre abas: o token adotado é o valor lido, não
+    // um curinga. Se outra aba escrever depois desta leitura, o token deixa de
+    // bater e a escrita volta a ser barrada — o contrato do CAS continua de pé.
+    // Com rascunho vivo na sessão, a posse já é nossa e é ela que vale.
+    persistedToken: previous.draft ? previous.persistedToken : observedToken,
   });
 }
 
@@ -489,7 +518,7 @@ function openDocumentIn(
   cb.onStorageAvailable(slot.available);
 
   const baseline = remote ?? EMPTY_SNAPSHOT;
-  seedBaseline(st, docId, baseline);
+  seedBaseline(st, docId, baseline, slot.envelope?.writeToken ?? null);
 
   offerOrClean(cb, scope, slot.envelope, baseline, st.fields);
 }
