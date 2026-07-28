@@ -76,7 +76,12 @@ const HELP_TEXTS = [
   // Acima dos 96px que o bloco antigo reservava: é o caso que mais empurrava
   // os cards para baixo.
   "Instrução longa de preenchimento. ".repeat(20),
-  undefined,
+  // Casado de propósito com o enunciado longo (LONG_DESCRIPTION_INDEX): é a
+  // combinação em que o gatilho de ajuda ficaria recortado pelo `line-clamp`
+  // se voltasse para dentro do elemento clampado. Separar as duas
+  // propriedades em campos distintos — como estava — deixa o pior caso fora
+  // da tela medida.
+  "Instrução do campo de enunciado longo, para exercitar as duas coisas juntas.",
   "Verifique a data de assinatura antes de responder.",
   "Instrução média para conferência do respondente. ".repeat(4),
 ];

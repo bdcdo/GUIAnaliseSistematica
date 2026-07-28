@@ -16,27 +16,29 @@ import { cn } from "@/lib/utils";
  *   quando o cabeçalho é chrome `shrink-0` ACIMA da área rolável: ali cada
  *   linha a mais empurra o conteúdo, e como a altura variava por campo os
  *   cards saltavam de posição ao navegar com `n`/`p` (#610).
- *
- * `fullText` é obrigatório em `fixed` — não é conveniência. Clampar sem uma via
- * para o texto integral é perda de informação, então o tipo torna esse estado
- * irrepresentável em vez de deixá-lo à disciplina do call site.
  */
-// Não exportado: os call sites passam o literal direto, e um export sem
+// Não exportados: os call sites passam o literal direto, e um export sem
 // consumidor é código morto que o gate de grafo acusa.
-type FieldHeaderDensity =
-  | { kind: "flow" }
-  | { kind: "fixed"; clampLines: 2; fullText: string };
-
-interface FieldHeaderLabelProps {
+interface FieldHeaderLabelBaseProps {
   prefix: ReactNode;
-  children: ReactNode;
   helpText?: string | null;
-  density?: FieldHeaderDensity;
   className?: string;
   labelClassName?: string;
   /** Só tem efeito em `flow`; em `fixed` o help_text não vive no fluxo. */
   helpTextClassName?: string;
 }
+
+// Clampar sem uma via para o texto integral seria perda de informação, e a via
+// é o `title` — atributo, que só aceita texto. Daí a união: em `fixed` o
+// enunciado É uma string, e o próprio `children` vira o texto completo. Uma
+// prop `fullText` separada resolveria o mesmo, mas declararia duas vezes o
+// mesmo fato no call site, livre para divergir; aqui o tipo torna a divergência
+// inexprimível em vez de confiá-la à disciplina de quem chama.
+type FieldHeaderLabelProps = FieldHeaderLabelBaseProps &
+  (
+    | { density?: { kind: "flow" }; children: ReactNode }
+    | { density: { kind: "fixed"; clampLines: 2 }; children: string }
+  );
 
 // Prefixo + descrição de um campo (ex.: "Campo 1/5: Data do parecer"), com o
 // help_text opcional. Compartilhado entre Codificação (SortableQuestion),
@@ -60,34 +62,55 @@ export function FieldHeaderLabel({
   const isFixed = density.kind === "fixed";
   const trimmedHelp = helpText?.trim();
 
+  const label = (
+    <p
+      className={cn(
+        "text-sm font-medium",
+        isFixed
+          ? // `line-clamp-2` corta o excesso; o `min-h-10` (2 × leading-5 do
+            // text-sm) é o que RESERVA as duas linhas mesmo em enunciado
+            // curto. Sem ele o clamp não zera a variação de altura — apenas
+            // limita o teto. `min-w-0 flex-1` porque em `fixed` este parágrafo
+            // é flex-item ao lado do gatilho de ajuda.
+            "line-clamp-2 min-h-10 min-w-0 flex-1"
+          : "flex items-center gap-1.5",
+        labelClassName,
+      )}
+      // Texto integral do enunciado clampado. `title` nativo em vez de
+      // Tooltip do Radix de propósito: o alvo desta tela é mouse/desktop, e
+      // um TooltipTrigger focável acrescentaria uma parada de Tab por campo
+      // numa fila percorrida inteiramente por teclado (`n`/`p`/`Enter`).
+      //
+      // Vai sempre, mesmo em enunciado curto que não trunca — a alternativa
+      // seria medir `scrollHeight` no cliente por campo, reintroduzindo
+      // trabalho de layout justamente no bloco cuja invariância é o objetivo.
+      // O custo é um tooltip nativo redundante ao pousar o mouse.
+      title={isFixed && typeof children === "string" ? children : undefined}
+    >
+      <span className={cn("text-muted-foreground", isFixed && "mr-1.5")}>
+        {prefix}
+      </span>
+      {children}
+    </p>
+  );
+
   return (
     <div className={cn("min-w-0", className)}>
-      <p
-        className={cn(
-          "text-sm font-medium",
-          isFixed
-            ? // `line-clamp-2` corta o excesso; o `min-h-10` (2 × leading-5 do
-              // text-sm) é o que RESERVA as duas linhas mesmo em enunciado
-              // curto. Sem ele o clamp não zera a variação de altura — apenas
-              // limita o teto. Nota: `line-clamp-*` implica
-              // `display:-webkit-box`, que anula qualquer `flex` aqui; por isso
-              // prefixo e ícone são inline dentro da caixa, não flex-items.
-              "line-clamp-2 min-h-10"
-            : "flex items-center gap-1.5",
-          labelClassName,
-        )}
-        // Texto integral do enunciado clampado. `title` nativo em vez de
-        // Tooltip do Radix de propósito: o alvo desta tela é mouse/desktop, e
-        // um TooltipTrigger focável acrescentaria uma parada de Tab por campo
-        // numa fila percorrida inteiramente por teclado (`n`/`p`/`Enter`).
-        title={density.kind === "fixed" ? density.fullText : undefined}
-      >
-        <span className={cn("text-muted-foreground", isFixed && "mr-1.5")}>
-          {prefix}
-        </span>
-        {children}
-        {isFixed && trimmedHelp && <FieldHelpPopover helpText={trimmedHelp} />}
-      </p>
+      {isFixed ? (
+        // O gatilho é IRMÃO do parágrafo clampado, nunca filho: `line-clamp-*`
+        // implica `display:-webkit-box` com `overflow:hidden`, então um botão
+        // inline depois do texto sumiria — recortado e inalcançável por mouse,
+        // ainda que focável por Tab — exatamente nos campos de enunciado longo,
+        // que são os que mais precisam da instrução. `items-start` alinha o
+        // ícone à primeira linha; a altura da faixa continua vindo do `min-h-10`
+        // do parágrafo, logo a presença ou ausência do gatilho não move nada.
+        <div className="flex items-start gap-1">
+          {label}
+          {trimmedHelp && <FieldHelpPopover helpText={trimmedHelp} />}
+        </div>
+      ) : (
+        label
+      )}
 
       {!isFixed && helpText && (
         <p
@@ -107,9 +130,6 @@ export function FieldHeaderLabel({
  * Instrução de preenchimento sob demanda. Popover, e não tooltip, porque o
  * texto chega a ~900 caracteres nos projetos reais: precisa rolar, ser
  * selecionável e fechar por teclado.
- *
- * O gatilho é inline dentro da caixa clampada — logo sua presença ou ausência
- * não move nada, que é a propriedade de que o cabeçalho depende.
  */
 function FieldHelpPopover({ helpText }: { helpText: string }) {
   return (
@@ -118,7 +138,7 @@ function FieldHelpPopover({ helpText }: { helpText: string }) {
         <button
           type="button"
           aria-label="Instruções de preenchimento do campo"
-          className="ml-1 inline-flex translate-y-px cursor-help align-text-bottom text-muted-foreground hover:text-foreground"
+          className="mt-0.5 shrink-0 cursor-pointer text-muted-foreground hover:text-foreground"
         >
           <HelpCircle className="size-3.5" />
         </button>

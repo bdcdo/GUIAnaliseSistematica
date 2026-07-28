@@ -85,11 +85,7 @@ describe("FieldHeaderLabel — densidade", () => {
     const { container } = render(
       <FieldHeaderLabel
         prefix="Campo 1/3:"
-        density={{
-          kind: "fixed",
-          clampLines: 2,
-          fullText: "Data do parecer administrativo",
-        }}
+        density={{ kind: "fixed", clampLines: 2 }}
       >
         Data do parecer administrativo
       </FieldHeaderLabel>,
@@ -99,7 +95,31 @@ describe("FieldHeaderLabel — densidade", () => {
     // O clamp limita o teto; é o min-h que RESERVA as duas linhas e zera a
     // variação de altura entre campos. Sem ele o critério 1 da #610 cai.
     expect(label.className).toContain("min-h-10");
+    // O texto integral sai do PRÓPRIO children, não de uma segunda prop que o
+    // call site teria de manter em sincronia.
     expect(label.getAttribute("title")).toBe("Data do parecer administrativo");
+  });
+
+  // jsdom não faz layout: nenhum teste unitário vê o recorte do `line-clamp`.
+  // A asserção honesta é estrutural — o gatilho tem de estar FORA do elemento
+  // clampado. Dentro dele, `overflow:hidden` do `display:-webkit-box` o apaga
+  // da tela em todo campo cujo enunciado passe de duas linhas, que são
+  // justamente os campos em que a instrução mais faz falta.
+  it("fixed mantém o gatilho de ajuda fora do elemento clampado", () => {
+    const { container } = render(
+      <FieldHeaderLabel
+        prefix="Campo 1/3:"
+        helpText={HELP}
+        density={{ kind: "fixed", clampLines: 2 }}
+      >
+        {"Enunciado deliberadamente longo, ".repeat(12)}
+      </FieldHeaderLabel>,
+    );
+    const clamped = container.querySelector(".line-clamp-2")!;
+    const trigger = screen.getByRole("button", {
+      name: /instruções de preenchimento do campo/i,
+    });
+    expect(clamped.contains(trigger)).toBe(false);
   });
 
   it("fixed tira o help_text do fluxo e o troca por um gatilho", () => {
@@ -107,7 +127,7 @@ describe("FieldHeaderLabel — densidade", () => {
       <FieldHeaderLabel
         prefix="Campo 1/3:"
         helpText={HELP}
-        density={{ kind: "fixed", clampLines: 2, fullText: "Data do parecer" }}
+        density={{ kind: "fixed", clampLines: 2 }}
       >
         Data do parecer
       </FieldHeaderLabel>,
@@ -125,7 +145,7 @@ describe("FieldHeaderLabel — densidade", () => {
     render(
       <FieldHeaderLabel
         prefix="Campo 1/3:"
-        density={{ kind: "fixed", clampLines: 2, fullText: "Data do parecer" }}
+        density={{ kind: "fixed", clampLines: 2 }}
       >
         Data do parecer
       </FieldHeaderLabel>,

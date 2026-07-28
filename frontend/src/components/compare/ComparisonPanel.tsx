@@ -200,11 +200,7 @@ export function ComparisonPanel({
           <FieldHeaderLabel
             prefix={`Campo ${fieldIndex + 1}/${totalFields}:`}
             helpText={fieldHelpText}
-            density={{
-              kind: "fixed",
-              clampLines: 2,
-              fullText: fieldDescription || fieldName,
-            }}
+            density={{ kind: "fixed", clampLines: 2 }}
           >
             {fieldDescription || fieldName}
           </FieldHeaderLabel>

@@ -29,6 +29,12 @@ export function ProgressDots({ total, currentIndex, answered, concordant, incomp
           // fileiras passa a ser função apenas de `total` e da largura
           // disponível. Efeito colateral desejado: o alvo de clique fica
           // constante e maior que os 8px de antes.
+          //
+          // O círculo mantém a aparência de antes, mas o ESPAÇAMENTO entre
+          // pontos aumenta — a caixa dos não-correntes vai de 8px para 12px.
+          // Vale também para o AutoReviewFieldPanel, que consome este
+          // componente com a mesma forma (cabeçalho `shrink-0` acima do
+          // scroller) e herda a invariância de altura sem ter sido medido.
           <button
             type="button"
             key={i}

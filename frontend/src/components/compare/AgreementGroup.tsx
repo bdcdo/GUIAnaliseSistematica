@@ -261,7 +261,7 @@ export function AgreementGroup({
                   <button
                     type="button"
                     aria-label="Como funciona a equivalência entre respostas"
-                    className="shrink-0 cursor-help text-muted-foreground hover:text-foreground"
+                    className="shrink-0 cursor-pointer text-muted-foreground hover:text-foreground"
                   >
                     <HelpCircle className="size-3.5" />
                   </button>

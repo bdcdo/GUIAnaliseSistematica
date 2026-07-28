@@ -3,22 +3,9 @@ import { describe, it, expect, vi, afterEach, beforeAll } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-// Radix (Popover) usa APIs de Pointer/observer que o jsdom não tem.
-beforeAll(() => {
-  const proto = Element.prototype as unknown as Record<string, unknown>;
-  proto.scrollIntoView = () => {};
-  proto.hasPointerCapture = () => false;
-  proto.setPointerCapture = () => {};
-  proto.releasePointerCapture = () => {};
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
-  );
-});
+import { stubRadixJsdomApis } from "@/test-utils/radix-jsdom";
+
+beforeAll(stubRadixJsdomApis);
 
 vi.mock("@/components/shared/AddNoteButton", () => ({
   AddNoteButton: () => <button type="button">Anotar</button>,

@@ -4,23 +4,9 @@ import { render, screen, cleanup, waitFor, within } from "@testing-library/react
 import userEvent from "@testing-library/user-event";
 
 import { AgreementGroup } from "@/components/compare/AgreementGroup";
+import { stubRadixJsdomApis } from "@/test-utils/radix-jsdom";
 
-// Radix (Popover) usa APIs de Pointer/observer que o jsdom não tem.
-beforeAll(() => {
-  const proto = Element.prototype as unknown as Record<string, unknown>;
-  proto.scrollIntoView = () => {};
-  proto.hasPointerCapture = () => false;
-  proto.setPointerCapture = () => {};
-  proto.releasePointerCapture = () => {};
-  vi.stubGlobal(
-    "ResizeObserver",
-    class {
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    },
-  );
-});
+beforeAll(stubRadixJsdomApis);
 
 afterEach(cleanup);
 
