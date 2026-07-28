@@ -30,6 +30,16 @@ const DRAFT_DEBOUNCE_MS = 300;
 // nunca importou. Aqui importa, e as três coisas entram junto com a feature:
 // quota estourada degrada em silêncio, que é exatamente o modo de falha que
 // esta issue existe para eliminar.
+//
+// Duas limitações conhecidas e aceitas, registradas aqui para não se perderem
+// (ver #608). Primeiro, retenção: o envelope guarda RESPOSTAS de codificação em
+// claro no `localStorage` por até 30 dias, e nada o limpa no logout. A chave
+// isola usuários entre si, mas não protege contra quem tenha acesso ao mesmo
+// perfil de navegador — em máquina compartilhada, o isolamento real é o perfil,
+// não esta chave. Segundo, o teto é por USUÁRIO e não por projeto: uma sessão
+// longa num projeto pode evictar o rascunho mais antigo de outro projeto do
+// mesmo usuário. Ambas são aceitáveis enquanto o rascunho for uma rede de
+// segurança de curta duração; deixam de ser se ele virar armazenamento primário.
 const DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_DRAFTS_PER_USER = 100;
 
@@ -47,6 +57,9 @@ interface DocDraftState {
   // envenenando toda escrita seguinte da sessão.
   persistedToken: string | null;
   // Slot tomado por uma aba que sabe mais (formato maior) ou por outro token.
+  // Para a pesquisadora a consequência é idêntica à do storage indisponível — a
+  // cópia local não está sendo mantida por ESTA aba —, então os dois casos
+  // alimentam o mesmo aviso; ver `persist`.
   blocked: boolean;
 }
 
@@ -78,8 +91,11 @@ export interface CodingDraftsApi {
   // flag de hidratação é necessária.
   openDocument(docId: string | null, remote: CodingSnapshot | null): void;
   recovery: CodingDraftRecovery;
+  // `false` quando esta aba não está conseguindo manter a cópia local — seja
+  // porque o storage não responde (janela anônima, quota estourada) ou porque o
+  // slot pertence a outra aba. Um sinal só: a conclusão para a pesquisadora é a
+  // mesma nos dois casos, e é ela que a faixa comunica.
   storageAvailable: boolean;
-  staleDiscardedCount: number;
 }
 
 export interface UseCodingDraftsParams {
@@ -102,28 +118,30 @@ function scopeFor(
   return { userId: params.userId, projectId: params.projectId, documentId };
 }
 
+// Devolve o que há de aplicável no slot. Um envelope ilegível, de formato
+// antigo ou cuja identidade embutida discorde da chave é indistinguível de slot
+// vazio PARA QUEM VAI OFERECER: em todos esses casos não há conteúdo que se
+// possa aplicar com segurança. Quem trata cada caso de forma diferente é o CAS
+// (`writeSlotIfTokenMatches`, que cede o slot ao `newer-format`) e o GC
+// (`classifyForGc`) — ali a distinção muda a decisão, aqui não mudaria.
 function readSlot(scope: CodingDraftScope): {
   available: boolean;
   envelope: CodingDraftEnvelope | null;
-  staleFormat: boolean;
 } {
   if (typeof window === "undefined") {
-    return { available: false, envelope: null, staleFormat: false };
+    return { available: false, envelope: null };
   }
   try {
     const read = readCodingDraft(window.localStorage.getItem(codingDraftStorageKey(scope)));
-    if (read.kind === "draft") {
-      // Segunda barreira: a chave disse que é deste documento, o conteúdo
-      // precisa concordar. Discordância vira "sem rascunho", nunca aplicação
-      // cruzada — ver `envelopeMatchesScope`.
-      if (!envelopeMatchesScope(read.draft, scope)) {
-        return { available: true, envelope: null, staleFormat: true };
-      }
-      return { available: true, envelope: read.draft, staleFormat: false };
+    // Segunda barreira: a chave disse que é deste documento, o conteúdo precisa
+    // concordar. Discordância vira "sem rascunho", nunca aplicação cruzada — ver
+    // `envelopeMatchesScope`.
+    if (read.kind === "draft" && envelopeMatchesScope(read.draft, scope)) {
+      return { available: true, envelope: read.draft };
     }
-    return { available: true, envelope: null, staleFormat: read.kind === "stale-format" };
+    return { available: true, envelope: null };
   } catch {
-    return { available: false, envelope: null, staleFormat: false };
+    return { available: false, envelope: null };
   }
 }
 
@@ -166,7 +184,6 @@ function deleteSlotIfTokenMatches(
 
 interface GcResult {
   removed: number;
-  staleDiscarded: number;
 }
 
 // Varredura escopada ao prefixo do PRÓPRIO usuário, uma vez por mount. Nunca
@@ -175,16 +192,15 @@ interface GcResult {
 // mais) nem no documento aberto.
 // Destino de uma chave na varredura do GC. Separado do loop porque é a regra
 // que precisa ser lida com atenção: cada `keep` aqui protege trabalho de alguém.
-type GcVerdict = "keep" | "drop" | "drop-stale";
+type GcVerdict = "keep" | "drop";
 
 function classifyForGc(key: string, now: number): GcVerdict {
   const read = readCodingDraft(window.localStorage.getItem(key));
   // Envelope de formato maior é de uma aba que sabe mais: apagá-lo destruiria
   // trabalho que não temos como recuperar.
   if (read.kind === "newer-format") return "keep";
-  // "Havia trabalho aqui e não sei ler" é um fato que a pesquisadora precisa
-  // saber; some do slot, não do aviso.
-  if (read.kind === "stale-format") return "drop-stale";
+  // Ilegível ou de formato antigo: não há como aplicar o conteúdo, e mantê-lo
+  // ocuparia quota para sempre — sai do slot como qualquer outro lixo.
   if (read.kind !== "draft") return "drop";
 
   const embedded = codingDraftStorageKey({
@@ -205,11 +221,10 @@ function sweepOwnKeys(
   userId: string,
   now: number,
   keepKey: string | null,
-): { survivors: Array<{ key: string; updatedAt: number }>; doomed: string[]; staleDiscarded: number } {
+): { survivors: Array<{ key: string; updatedAt: number }>; doomed: string[] } {
   const prefix = codingDraftUserPrefix(userId);
   const survivors: Array<{ key: string; updatedAt: number }> = [];
   const doomed: string[] = [];
-  let staleDiscarded = 0;
 
   for (let i = 0; i < window.localStorage.length; i += 1) {
     const key = window.localStorage.key(i);
@@ -224,10 +239,9 @@ function sweepOwnKeys(
       if (envelope) survivors.push({ key, updatedAt: envelope.updatedAt });
       continue;
     }
-    if (verdict === "drop-stale") staleDiscarded += 1;
     doomed.push(key);
   }
-  return { survivors, doomed, staleDiscarded };
+  return { survivors, doomed };
 }
 
 function collectCodingDraftGarbage(
@@ -235,11 +249,10 @@ function collectCodingDraftGarbage(
   now: number,
   keepKey: string | null,
 ): GcResult {
-  if (typeof window === "undefined") return { removed: 0, staleDiscarded: 0 };
-  const result: GcResult = { removed: 0, staleDiscarded: 0 };
+  if (typeof window === "undefined") return { removed: 0 };
+  const result: GcResult = { removed: 0 };
   try {
-    const { survivors, doomed, staleDiscarded } = sweepOwnKeys(userId, now, keepKey);
-    result.staleDiscarded = staleDiscarded;
+    const { survivors, doomed } = sweepOwnKeys(userId, now, keepKey);
 
     // Teto: acima dele, sai o mais antigo primeiro.
     const overflow = survivors.length + (keepKey ? 1 : 0) - MAX_DRAFTS_PER_USER;
@@ -274,7 +287,6 @@ function collectCodingDraftGarbage(
 export interface CodingDraftSessionCallbacks {
   onRecovery(recovery: CodingDraftRecovery): void;
   onStorageAvailable(available: boolean): void;
-  onStaleDiscarded(count: number): void;
 }
 
 export interface CodingDraftSession {
@@ -348,7 +360,12 @@ function persist(
   // Falha NÃO avança `persistedToken`: a próxima edição tenta de novo. Avançá-lo
   // faria a aba colidir com o próprio lixo e nunca mais gravar na sessão.
   st.states.set(docId, { ...state, blocked: outcome === "blocked" });
-  if (outcome === "unavailable") cb.onStorageAvailable(false);
+  // `blocked` avisa junto com `unavailable`, e não em silêncio: o slot pertence
+  // a outra aba (ou a um formato que este build não sabe ler), então ESTA aba
+  // não está mantendo cópia local nenhuma. Reportar só a quota deixaria a
+  // segunda aba aberta no mesmo documento sem rede e sem aviso — a mesma classe
+  // de mentira que o indicador de "não enviado" existe para eliminar.
+  cb.onStorageAvailable(false);
 }
 
 function scheduleWrite(
@@ -419,16 +436,11 @@ function recordDraftIn(
 // ponto que se sabe qual slot preservar: antes disso `keepKey` seria nulo e o
 // rascunho do documento na tela entraria na varredura — expirado ou acima do
 // teto, seria apagado debaixo da pesquisadora.
-function runFirstOpenGc(
-  st: SessionState,
-  cb: CodingDraftSessionCallbacks,
-  docId: string | null,
-): void {
+function runFirstOpenGc(st: SessionState, docId: string | null): void {
   const { projectId, userId, enabled } = st.keyParts;
   if (!enabled) return;
   const keep = docId ? codingDraftStorageKey(scopeFor({ projectId, userId }, docId)) : null;
-  const collected = collectCodingDraftGarbage(userId, Date.now(), keep);
-  if (collected.staleDiscarded > 0) cb.onStaleDiscarded(collected.staleDiscarded);
+  collectCodingDraftGarbage(userId, Date.now(), keep);
 }
 
 // Abrir estabelece o baseline do documento — a sessão é dona única dele a partir
@@ -465,7 +477,7 @@ function openDocumentIn(
   st.openedOnce = true;
   st.openDocId = docId;
 
-  if (firstOpen) runFirstOpenGc(st, cb, docId);
+  if (firstOpen) runFirstOpenGc(st, docId);
 
   if (!enabled || !docId) {
     cb.onRecovery({ kind: "none" });
@@ -475,7 +487,6 @@ function openDocumentIn(
   const scope = scopeFor({ projectId, userId }, docId);
   const slot = readSlot(scope);
   cb.onStorageAvailable(slot.available);
-  if (slot.staleFormat) cb.onStaleDiscarded(1);
 
   const baseline = remote ?? EMPTY_SNAPSHOT;
   seedBaseline(st, docId, baseline);

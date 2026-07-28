@@ -116,7 +116,7 @@ export function useBrowseCoding({
         recordDraft(browseDocId, draft);
       }
     },
-    [browseDocId, markDirty],
+    [browseDocId, markDirty, recordDraft],
   );
 
   const handleBrowseSubmit = useCallback(
@@ -165,6 +165,7 @@ export function useBrowseCoding({
       browseDocId,
       projectId,
       markClean,
+      submitConfirmed,
       markResponded,
       invalidateBrowseDoc,
       updateDocParam,
@@ -195,6 +196,13 @@ export function useBrowseCoding({
           return;
         }
         markClean(docId);
+        // Mesma regra do autosave de navegação em Atribuídos: a escrita
+        // aconteceu, então o baseline do rascunho local passa a ser o que foi
+        // gravado. Aqui o `invalidateBrowseDoc` abaixo tornaria o slot
+        // `redundant` na reabertura de qualquer forma — mas depender do refetch
+        // para não mentir seria acidente, e o caminho de erro (save falho, que
+        // retorna antes) não teria essa rede.
+        submitConfirmed(docId, { answers, notes });
         markResponded(docId);
         saved = true;
       } finally {
@@ -213,6 +221,7 @@ export function useBrowseCoding({
     updateDocParam,
     isDirty,
     markClean,
+    submitConfirmed,
     markResponded,
     invalidateBrowseDoc,
     setSubmitting,

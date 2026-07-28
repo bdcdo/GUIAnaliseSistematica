@@ -64,8 +64,27 @@ vi.mock("@/components/coding/DocumentReader", () => ({
 vi.mock("@/components/coding/DocumentPicker", () => ({
   DocumentPicker: () => <div data-testid="picker" />,
 }));
+// O header é stub, mas expõe a navegação entre documentos atribuídos: é ela que
+// dispara o autosave de navegação, e o efeito desse autosave sobre o rascunho
+// local é o que a suíte "autosave de navegação" abaixo verifica.
 vi.mock("@/components/coding/CodingHeader", () => ({
-  CodingHeader: ({ mode }: { mode: string }) => <div data-testid="hdr-mode">{mode}</div>,
+  CodingHeader: ({
+    mode,
+    doc,
+  }: {
+    mode: string;
+    doc?: { index: number; onNavigate: (index: number) => void };
+  }) => (
+    <div>
+      <div data-testid="hdr-mode">{mode}</div>
+      {doc && (
+        <>
+          <button onClick={() => doc.onNavigate(doc.index + 1)}>ir-proximo</button>
+          <button onClick={() => doc.onNavigate(doc.index - 1)}>ir-anterior</button>
+        </>
+      )}
+    </div>
+  ),
 }));
 vi.mock("@/components/coding/FullscreenNav", () => ({
   FullscreenNav: () => <div data-testid="fsnav" />,
@@ -103,12 +122,15 @@ function assignedDoc(id: string): Document {
   };
 }
 
-function renderPage(existingAnswers: Record<string, Record<string, unknown>> = {}) {
+function renderPage(
+  existingAnswers: Record<string, Record<string, unknown>> = {},
+  documents: Document[] = [assignedDoc(DOC)],
+) {
   return render(
     <CodingPage
       userId={USER}
       projectId={PROJECT}
-      documents={[assignedDoc(DOC)]}
+      documents={documents}
       fields={FIELDS}
       existingAnswers={existingAnswers}
       hasAssignments
@@ -320,5 +342,57 @@ describe("envio confirmado", () => {
     await waitFor(() => expect(saveResponse).toHaveBeenCalled());
     expect(storedDraft()?.draft.answers).toEqual({ q1: "Zolgensma" });
     expect(screen.getByText(/alterações não enviadas/i)).toBeTruthy();
+  });
+});
+
+// O autosave de navegação é uma escrita CONFIRMADA como qualquer outra: a
+// resposta foi ao servidor. Enquanto ele existir (sai no PR seguinte), tem de
+// produzir os mesmos dois efeitos do Enviar — limpar a sujeira e reassentar o
+// baseline do rascunho local. Sem o segundo, o envelope sobrevivia à navegação
+// e a volta ao documento oferecia "alterações não enviadas" sobre trabalho já
+// enviado; pior, o `base` stale fazia a oferta seguinte se anunciar como
+// `diverged`, acusando "salvo depois" contra a nossa própria escrita.
+describe("autosave de navegação — escrita confirmada também rebaseia", () => {
+  const OUTRO = "d2";
+  const twoDocs = () => [assignedDoc(DOC), assignedDoc(OUTRO)];
+
+  // Mutação vermelha: passar só `markClean` no `onSaved` do `autosaveDirtyDoc`
+  // (isto é, salvar sem `submitConfirmed`) — a faixa reaparece ao voltar.
+  it("navegar para outro documento e voltar não oferece o que já foi salvo", async () => {
+    const user = userEvent.setup();
+    renderPage({}, twoDocs());
+
+    await typeAnswer(user, "Zolgensma");
+    await waitFor(() => expect(storedDraft()).not.toBeNull());
+
+    await user.click(screen.getByRole("button", { name: "ir-proximo" }));
+    // O autosave salvou de verdade: é isso que torna a oferta uma mentira.
+    await waitFor(() => expect(saveResponse).toHaveBeenCalled());
+    // E o slot foi liberado junto, em vez de sobreviver à navegação.
+    await waitFor(() => expect(storedDraft()).toBeNull());
+
+    await user.click(screen.getByRole("button", { name: "ir-anterior" }));
+
+    // As props do RSC não revalidaram (`existingAnswers` segue vazio): é
+    // justamente por isso que a classificação não pode depender delas contra um
+    // envelope que devia ter sido descartado no autosave.
+    expect(screen.queryByText(/alterações não enviadas neste documento/i)).toBeNull();
+    expect(screen.queryByText(/foi salvo depois/i)).toBeNull();
+  });
+
+  // O outro lado da mesma regra: autosave que FALHA não é escrita confirmada, e
+  // aí o rascunho tem de sobreviver — é o único registro do trabalho.
+  it("autosave que falha preserva o rascunho para a volta", async () => {
+    saveResponse.mockResolvedValue({ success: false, error: "falhou" });
+    const user = userEvent.setup();
+    renderPage({}, twoDocs());
+
+    await typeAnswer(user, "Zolgensma");
+    await waitFor(() => expect(storedDraft()).not.toBeNull());
+
+    await user.click(screen.getByRole("button", { name: "ir-proximo" }));
+    await waitFor(() => expect(saveResponse).toHaveBeenCalled());
+
+    expect(storedDraft()?.draft.answers).toEqual({ q1: "Zolgensma" });
   });
 });

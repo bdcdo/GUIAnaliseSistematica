@@ -6,7 +6,7 @@
 // por guards e handlers) mude de comportamento.
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { useDirtyDocs, useDirtyDocsCount, useIsDocDirty } from "../useDirtyDocs";
+import { useDirtyDocs, useIsDocDirty } from "../useDirtyDocs";
 
 afterEach(cleanup);
 
@@ -59,22 +59,6 @@ describe("leitura reativa — o indicador de não enviado", () => {
     });
     act(() => result.current.store.markDirty("doc-2"));
     expect(result.current.dirty).toBe(false);
-  });
-
-  // O aviso de saída vale para a fila inteira: navegar para longe com outro
-  // documento pendente também perde trabalho.
-  it("`useDirtyDocsCount` acompanha o total", () => {
-    const { result } = renderHook(() => {
-      const store = useDirtyDocs();
-      return { store, count: useDirtyDocsCount(store) };
-    });
-
-    expect(result.current.count).toBe(0);
-    act(() => result.current.store.markDirty("doc-1"));
-    act(() => result.current.store.markDirty("doc-2"));
-    expect(result.current.count).toBe(2);
-    act(() => result.current.store.markClean("doc-1"));
-    expect(result.current.count).toBe(1);
   });
 
   // Mutação vermelha: notificar incondicionalmente em `markDirty`/`markClean`.

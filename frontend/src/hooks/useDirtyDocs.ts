@@ -31,7 +31,6 @@ export interface DirtyDocsStore {
   isDirty: (docId: string | null | undefined) => boolean;
   subscribe: (listener: () => void) => () => void;
   getVersion: () => number;
-  getDirtyCount: () => number;
 }
 
 export function useDirtyDocs(): DirtyDocsStore {
@@ -79,11 +78,10 @@ export function useDirtyDocs(): DirtyDocsStore {
   }, []);
 
   const getVersion = useCallback(() => versionRef.current, []);
-  const getDirtyCount = useCallback(() => ref.current?.size ?? 0, []);
 
   return useMemo(
-    () => ({ markDirty, markClean, isDirty, subscribe, getVersion, getDirtyCount }),
-    [markDirty, markClean, isDirty, subscribe, getVersion, getDirtyCount],
+    () => ({ markDirty, markClean, isDirty, subscribe, getVersion }),
+    [markDirty, markClean, isDirty, subscribe, getVersion],
   );
 }
 
@@ -102,10 +100,4 @@ export function useIsDocDirty(
     // cliente, senão o React acusa mismatch de hidratação.
     () => false,
   );
-}
-
-// Quantos documentos têm alterações não enviadas — o sinal do aviso de saída,
-// que precisa valer para a fila inteira, não só para o documento aberto.
-export function useDirtyDocsCount(store: DirtyDocsStore): number {
-  return useSyncExternalStore(store.subscribe, store.getDirtyCount, () => 0);
 }

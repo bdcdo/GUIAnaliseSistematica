@@ -27,7 +27,6 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
 
   const [recovery, setRecovery] = useState<CodingDraftRecovery>({ kind: "none" });
   const [storageAvailable, setStorageAvailable] = useState(true);
-  const [staleDiscardedCount, setStaleDiscardedCount] = useState(0);
 
   // Sessão criada uma única vez, por inicializador lazy de `useState`: um
   // `ref.current ??= ...` no corpo do componente seria acesso a ref durante o
@@ -37,7 +36,6 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
     createCodingDraftSession({
       onRecovery: setRecovery,
       onStorageAvailable: setStorageAvailable,
-      onStaleDiscarded: (n) => setStaleDiscardedCount((current) => current + n),
     }),
   );
 
@@ -71,9 +69,14 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
     [session],
   );
 
-  // Flush garantido nos três gatilhos que o navegador oferece, mais o unmount.
-  // O `beforeunload` aqui só persiste; quem avisa a pesquisadora é o guard de
-  // navegação.
+  // Flush nos dois gatilhos de saída que o navegador oferece, mais o unmount.
+  //
+  // Deliberadamente SEM `beforeunload`: ele não acrescenta cobertura nenhuma
+  // aqui (`pagehide` dispara em todo descarregamento, inclusive nos que o
+  // `beforeunload` pega) e registrá-lo tira a página do back/forward cache no
+  // Firefox e no Safari — voltar para a fila deixaria de ser instantâneo em
+  // troca de nada. O `beforeunload` que existe em `useAutosaveOnExit` é outro
+  // caso: lá ele serve ao aviso nativo do navegador, que só existe por meio dele.
   useEffect(() => {
     const flush = () => session.flushAll();
     const onVisibility = () => {
@@ -81,11 +84,9 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
     };
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("pagehide", flush);
-    window.addEventListener("beforeunload", flush);
     return () => {
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("pagehide", flush);
-      window.removeEventListener("beforeunload", flush);
       flush();
     };
   }, [session]);
@@ -98,6 +99,5 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
     submitConfirmed,
     recovery,
     storageAvailable,
-    staleDiscardedCount,
   };
 }

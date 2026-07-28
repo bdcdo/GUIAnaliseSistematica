@@ -189,15 +189,17 @@ describe("gravação e debounce", () => {
 });
 
 describe("flush — os gatilhos de que depende 'fechar a aba não perde trabalho'", () => {
-  it.each([
-    ["pagehide", () => window.dispatchEvent(new Event("pagehide"))],
-    ["beforeunload", () => window.dispatchEvent(new Event("beforeunload"))],
-  ])("%s persiste antes do debounce", (_label, fire) => {
+  // `pagehide` dispara em TODO descarregamento da página, inclusive nos que um
+  // `beforeunload` pegaria — por isso este hook não registra o segundo: ele não
+  // acrescentaria cobertura e tiraria a página do back/forward cache no Firefox
+  // e no Safari. O `beforeunload` de `useAutosaveOnExit` é outro caso: lá ele
+  // serve ao aviso nativo do navegador, que só existe por meio dele.
+  it("pagehide persiste antes do debounce", () => {
     const { result } = render();
     act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
     expect(stored()).toBeNull();
     act(() => {
-      fire();
+      window.dispatchEvent(new Event("pagehide"));
     });
     expect(stored()?.draft.answers).toEqual({ q1: "a" });
   });
@@ -371,6 +373,21 @@ describe("compare-and-swap entre abas", () => {
     flushDebounce();
     expect(stored()?.draft.answers).toEqual({ q1: "da outra aba" });
   });
+
+  // Mutação vermelha: reportar `storageAvailable: false` só no caso
+  // `unavailable`, deixando o `blocked` calado. Esta aba não está mantendo cópia
+  // local nenhuma — não avisar é a mesma mentira que o indicador de "não
+  // enviado" existe para eliminar, só que sobre a outra metade da promessa.
+  it("slot tomado por outra aba avisa que a cópia local não está funcionando", () => {
+    const { result } = render();
+    expect(result.current.storageAvailable).toBe(true);
+
+    plant({ writeToken: "de-outra-aba", draft: snap({ q1: "da outra aba" }) });
+    act(() => result.current.recordDraft(DOC, snap({ q1: "meu" })));
+    act(() => flushDebounce());
+
+    expect(result.current.storageAvailable).toBe(false);
+  });
 });
 
 describe("GC — a peça que impede a quota de degradar em silêncio", () => {
@@ -422,10 +439,12 @@ describe("GC — a peça que impede a quota de degradar em silêncio", () => {
     expect(window.localStorage.getItem(KEY)).not.toBeNull();
   });
 
-  it("conta o envelope ilegível descartado em vez de sumir com ele calado", () => {
+  // Formato antigo não é recuperável por este build: ocupa quota e não pode ser
+  // aplicado. Sai como qualquer outro lixo — o que NÃO pode sair é o de formato
+  // MAIOR, coberto pelo caso acima.
+  it("apaga envelope de formato antigo", () => {
     window.localStorage.setItem(otherDocKey("doc-lixo"), JSON.stringify({ formatVersion: 0 }));
-    const { result } = render();
-    expect(result.current.staleDiscardedCount).toBeGreaterThan(0);
+    render();
     expect(window.localStorage.getItem(otherDocKey("doc-lixo"))).toBeNull();
   });
 

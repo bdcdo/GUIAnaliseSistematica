@@ -276,6 +276,20 @@ export function useAssignedCoding({
     setSubmitting,
   ]);
 
+  // Os dois efeitos de uma escrita confirmada, num lugar só: a sujeira sai e o
+  // baseline do rascunho local passa a ser o que foi gravado. O autosave é tão
+  // "escrita confirmada" quanto o Enviar — sem o rebase aqui, navegar para o
+  // próximo documento e voltar reabria a faixa de recuperação sobre trabalho que
+  // JÁ tinha ido ao servidor, acusando "salvo depois" contra a nossa própria
+  // escrita.
+  const handleAutosaved = useCallback(
+    (docId: string, saved: CodingSnapshot) => {
+      markClean(docId);
+      submitConfirmed(docId, saved);
+    },
+    [markClean, submitConfirmed],
+  );
+
   const handleDocNavigate = useCallback(
     (newIndex: number) => {
       if (currentDoc && isDirty(currentDoc.id)) {
@@ -284,7 +298,7 @@ export function useAssignedCoding({
           docId: currentDoc.id,
           answers: docAnswers,
           notes: docNotes,
-          markClean,
+          onSaved: handleAutosaved,
         });
       }
       const clampedIndex = Math.max(
@@ -302,7 +316,7 @@ export function useAssignedCoding({
       sortedDocuments,
       updateDocParam,
       isDirty,
-      markClean,
+      handleAutosaved,
     ],
   );
 
@@ -318,7 +332,7 @@ export function useAssignedCoding({
           docId: currentDoc.id,
           answers: docAnswers,
           notes: docNotes,
-          markClean,
+          onSaved: handleAutosaved,
         });
       }
       const nextDocs =
@@ -345,7 +359,7 @@ export function useAssignedCoding({
       documents,
       codedAtByDoc,
       isDirty,
-      markClean,
+      handleAutosaved,
       setParams,
     ],
   );

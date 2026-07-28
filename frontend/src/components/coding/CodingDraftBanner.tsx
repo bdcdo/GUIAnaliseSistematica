@@ -108,6 +108,12 @@ export function CodingDraftBanner({
 // funcionando neste navegador. Distinto do indicador de "não enviado", que vem
 // da sujeira em memória — a tela precisa poder dizer "há trabalho pendente" E
 // "não consegui guardá-lo aqui" ao mesmo tempo.
+//
+// Cobre duas causas com a mesma consequência: o storage não responde (janela
+// anônima, quota estourada) ou o slot pertence a outra aba / a um formato que
+// este build não sabe ler. Um texto só porque a ação da pesquisadora é a mesma
+// nos dois casos — enviar antes de fechar; distinguir a causa na tela seria
+// precisão que não muda decisão nenhuma.
 export function CodingDraftUnavailableBanner({ visible }: { visible: boolean }) {
   if (!visible) return null;
   return (
