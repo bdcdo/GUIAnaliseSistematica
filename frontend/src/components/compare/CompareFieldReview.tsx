@@ -65,8 +65,13 @@ interface CompareFieldReviewProps {
   ) => Promise<void>;
   onUnmarkEquivalencePair: (pairId: string) => Promise<void>;
   currentUserId: string;
-  onConfirmPendingVerdict: () => void;
-  onDiscardPendingVerdict: () => void;
+  // Um objeto, e não dois callbacks soltos: é a MESMA forma que o
+  // `AgreementGroup` e o `DivergenceActionsPanel` já recebem, então a
+  // confirmação viaja com um formato só da borda do painel até a folha.
+  pendingConfirm: {
+    onConfirm: () => void;
+    onDiscard: () => void;
+  };
 }
 
 /**
@@ -128,12 +133,10 @@ export function CompareFieldReview({
   onConfirmEquivalent,
   onUnmarkEquivalencePair,
   currentUserId,
-  onConfirmPendingVerdict,
-  onDiscardPendingVerdict,
+  pendingConfirm: pendingConfirmActions,
 }: CompareFieldReviewProps) {
   const pendingConfirm = {
-    onConfirm: onConfirmPendingVerdict,
-    onDiscard: onDiscardPendingVerdict,
+    ...pendingConfirmActions,
     isSaving: isSavingVerdict,
   };
 

@@ -97,7 +97,6 @@ export function AnswerCard({
   onUnmarkPair,
   canUnmarkPair,
 }: AnswerCardProps) {
-  const [showJustification, setShowJustification] = useState(false);
   const allStale = staleCount > 0 && staleCount === respondentCount;
   const fusedCount = equivalentVariants?.length ?? 0;
   const selected = equivalenceMode?.selected === true;
@@ -201,54 +200,13 @@ export function AnswerCard({
             )}
 
             {fusedCount > 0 && (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    className="relative z-[2] inline-flex items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand hover:bg-brand/15"
-                    title="Variantes marcadas como equivalentes"
-                  >
-                    <Link2 className="size-3" />
-                    {fusedCount} variante{fusedCount === 1 ? "" : "s"}
-                  </button>
-                </PopoverTrigger>
-                <PopoverContent align="start" className="w-72 p-2">
-                  <p className="px-1 pb-1.5 text-xs font-medium">
-                    Respostas equivalentes
-                  </p>
-                  <ul className="space-y-1">
-                    {equivalentVariants!.map((v) => {
-                      const showUnmark =
-                        !!onUnmarkPair && (canUnmarkPair?.(v) ?? true);
-                      return (
-                        <li
-                          key={v.pairId}
-                          className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted"
-                        >
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate">{v.answerDisplay}</p>
-                            <p className="truncate text-[10px] text-muted-foreground">
-                              {v.respondentName}
-                            </p>
-                          </div>
-                          {showUnmark && (
-                            <button
-                              type="button"
-                              onClick={() => onUnmarkPair!(v.pairId)}
-                              disabled={readOnly}
-                              className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                              title={unmarkTitle}
-                              aria-label="Desfazer equivalência"
-                            >
-                              <X className="size-3" />
-                            </button>
-                          )}
-                        </li>
-                      );
-                    })}
-                  </ul>
-                </PopoverContent>
-              </Popover>
+              <FusedVariantsPopover
+                variants={equivalentVariants!}
+                readOnly={readOnly}
+                unmarkTitle={unmarkTitle}
+                onUnmarkPair={onUnmarkPair}
+                canUnmarkPair={canUnmarkPair}
+              />
             )}
 
             {versions.length === 1 && (
@@ -276,40 +234,11 @@ export function AnswerCard({
           </div>
 
           {hasLlm && llmJustification && (
-            <div className="mt-1.5">
-              <button
-                type="button"
-                onClick={() => setShowJustification(!showJustification)}
-                className="relative z-[2] text-xs text-muted-foreground hover:text-foreground"
-              >
-                {showJustification ? <ChevronDown className="inline size-3" /> : <ChevronRight className="inline size-3" />}{" "}Justificativa
-              </button>
-              {showJustification && (
-                <p className="mt-1 text-xs text-muted-foreground">
-                  {llmJustification}
-                </p>
-              )}
-            </div>
+            <LlmJustification text={llmJustification} />
           )}
         </div>
 
-        {gabarito && (
-          <label
-            className="relative z-[2] flex shrink-0 cursor-pointer items-center gap-1 rounded border border-brand/30 bg-background px-1.5 py-0.5 text-[10px] hover:bg-brand/5"
-            title="Esta é a resposta que será registrada como gabarito"
-          >
-            <input
-              type="radio"
-              checked={gabarito.isGabarito}
-              onChange={() => gabarito.onSetGabarito()}
-              disabled={readOnly}
-              className="size-3 accent-brand"
-            />
-            <span className={cn(gabarito.isGabarito && "font-medium text-brand")}>
-              Gabarito
-            </span>
-          </label>
-        )}
+        {gabarito && <GabaritoRadio gabarito={gabarito} readOnly={readOnly} />}
       </div>
 
       {/*
@@ -321,6 +250,132 @@ export function AnswerCard({
       {isPending && confirmSlot && (
         <div className="relative z-[2]">{confirmSlot}</div>
       )}
+    </div>
+  );
+}
+
+/**
+ * Marcador do gabarito de um grupo de respostas equivalentes. Extraído do corpo
+ * do card para pagar a complexidade que o `confirmSlot` acrescentou — o
+ * `AnswerCard` já estava acima do limiar, então acrescentar sem devolver
+ * empurraria o débito adiante.
+ */
+function GabaritoRadio({
+  gabarito,
+  readOnly,
+}: {
+  gabarito: GabaritoAffordance;
+  readOnly: boolean;
+}) {
+  return (
+    <label
+      className="relative z-[2] flex shrink-0 cursor-pointer items-center gap-1 rounded border border-brand/30 bg-background px-1.5 py-0.5 text-[10px] hover:bg-brand/5"
+      title="Esta é a resposta que será registrada como gabarito"
+    >
+      <input
+        type="radio"
+        checked={gabarito.isGabarito}
+        onChange={() => gabarito.onSetGabarito()}
+        disabled={readOnly}
+        className="size-3 accent-brand"
+      />
+      <span className={cn(gabarito.isGabarito && "font-medium text-brand")}>
+        Gabarito
+      </span>
+    </label>
+  );
+}
+
+/**
+ * Variantes que foram marcadas como equivalentes e por isso aparecem fundidas
+ * neste card. Extraído junto do `GabaritoRadio` para devolver a complexidade
+ * que o `confirmSlot` acrescentou ao corpo do `AnswerCard` — o componente já
+ * estava acima do limiar antes desta mudança.
+ */
+function FusedVariantsPopover({
+  variants,
+  readOnly,
+  unmarkTitle,
+  onUnmarkPair,
+  canUnmarkPair,
+}: {
+  variants: EquivalentVariant[];
+  readOnly: boolean;
+  unmarkTitle: string | undefined;
+  onUnmarkPair?: (pairId: string) => void;
+  canUnmarkPair?: (variant: EquivalentVariant) => boolean;
+}) {
+  return (
+    <Popover>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          className="relative z-[2] inline-flex items-center gap-1 rounded bg-brand/10 px-1.5 py-0.5 text-[10px] text-brand hover:bg-brand/15"
+          title="Variantes marcadas como equivalentes"
+        >
+          <Link2 className="size-3" />
+          {variants.length} variante{variants.length === 1 ? "" : "s"}
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-72 p-2">
+        <p className="px-1 pb-1.5 text-xs font-medium">Respostas equivalentes</p>
+        <ul className="space-y-1">
+          {variants.map((v) => {
+            const showUnmark = !!onUnmarkPair && (canUnmarkPair?.(v) ?? true);
+            return (
+              <li
+                key={v.pairId}
+                className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted"
+              >
+                <div className="min-w-0 flex-1">
+                  <p className="truncate">{v.answerDisplay}</p>
+                  <p className="truncate text-[10px] text-muted-foreground">
+                    {v.respondentName}
+                  </p>
+                </div>
+                {showUnmark && (
+                  <button
+                    type="button"
+                    onClick={() => onUnmarkPair!(v.pairId)}
+                    disabled={readOnly}
+                    className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    title={unmarkTitle}
+                    aria-label="Desfazer equivalência"
+                  >
+                    <X className="size-3" />
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * Justificativa do LLM, colapsável. Leva junto o único `useState` que existia no
+ * corpo do `AnswerCard`: o estado é local a este trecho e não influencia mais
+ * nada do card.
+ */
+function LlmJustification({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-1.5">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="relative z-[2] text-xs text-muted-foreground hover:text-foreground"
+      >
+        {open ? (
+          <ChevronDown className="inline size-3" />
+        ) : (
+          <ChevronRight className="inline size-3" />
+        )}{" "}
+        Justificativa
+      </button>
+      {open && <p className="mt-1 text-xs text-muted-foreground">{text}</p>}
     </div>
   );
 }

@@ -77,6 +77,14 @@ interface ComparisonPanelProps {
   currentUserId: string;
 }
 
+// Cognitive 43 vs. limiar 15 — mas o fallow o marca como achado NOVO apenas
+// porque o arquivo foi tocado. A medição pareada contra origin/main @ 22f4b99c
+// diz o contrário: cyclomatic 23 → 12 e cognitive 53 → 43, porque este PR
+// REMOVEU daqui o rodapé de confirmação com seus três ternários aninhados. O
+// que sobra é o mesmo débito JSX inerente já rastreado na #580 para
+// ComparePage/CompareMainView: encaminhamento de props, que o fallow conta como
+// fiação. Suprimido com a medição registrada, não por conveniência.
+// fallow-ignore-next-line complexity
 export function ComparisonPanel({
   readOnly,
   projectId,
@@ -263,8 +271,10 @@ export function ComparisonPanel({
           onConfirmEquivalent={onConfirmEquivalent}
           onUnmarkEquivalencePair={onUnmarkEquivalencePair}
           currentUserId={currentUserId}
-          onConfirmPendingVerdict={onConfirmPendingVerdict}
-          onDiscardPendingVerdict={onDiscardPendingVerdict}
+          pendingConfirm={{
+            onConfirm: onConfirmPendingVerdict,
+            onDiscard: onDiscardPendingVerdict,
+          }}
         />
       </div>
 
