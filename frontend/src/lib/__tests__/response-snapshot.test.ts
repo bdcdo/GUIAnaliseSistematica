@@ -132,7 +132,6 @@ describe("buildPersistedResponseSnapshot", () => {
       fields,
       existing: { answers: storedAnswers, hashes: storedHashes },
       rawSubmittedAnswers,
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.persistedAnswers).toEqual({
@@ -172,7 +171,6 @@ describe("buildPersistedResponseSnapshot", () => {
         hashes: { gatilho: "g-old", detalhe: "d-old" },
       },
       rawSubmittedAnswers: { gatilho: "nao" },
-      promoteLegacyIfComplete: false,
     });
 
     // Só o gatilho foi revisado, então só ele ganha a proveniência de hoje. O
@@ -201,7 +199,6 @@ describe("buildPersistedResponseSnapshot", () => {
         hashes: { gatilho: "g-old", detalhe: "d-old" },
       },
       rawSubmittedAnswers: { gatilho: "nao" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.submittedAnswers).toEqual({ gatilho: "nao" });
@@ -233,7 +230,6 @@ describe("buildPersistedResponseSnapshot", () => {
         hashes: { gatilho: "g-old", filho: "f-old", neto: "n-old" },
       },
       rawSubmittedAnswers: { gatilho: "nao" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.persistedAnswers).toEqual({ gatilho: "nao" });
@@ -272,7 +268,6 @@ describe("buildPersistedResponseSnapshot", () => {
         hashes: { gatilho: "g-old", intermediario: "i-old", descendente: "d-old" },
       },
       rawSubmittedAnswers: { gatilho: "B", intermediario: "ocultar" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.persistedAnswers).toEqual({
@@ -301,7 +296,6 @@ describe("buildPersistedResponseSnapshot", () => {
         hashes: { gatilho: "g-old", detalhe: "d-old" },
       },
       rawSubmittedAnswers: { outro: "novo" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.persistedAnswers).toEqual({
@@ -323,17 +317,25 @@ describe("buildPersistedResponseSnapshot", () => {
       // `fieldExistedWhenCoded` os lê como "todos existiam". Estampar chaves aqui
       // inverteria o sentinela em "só os campos que estampei existiam", tornando
       // qualquer codificação antiga trivialmente completa — inclusive as que de
-      // fato ficaram com obrigatórios em branco. Ver #520.
+      // fato ficaram com obrigatórios em branco. Ver #520. As duas formas do
+      // sentinela precisam se comportar igual, daí o `it.each`.
+      //
+      // `em_branco` é o que sustenta a asserção: a via de saída da #548 promove
+      // quando a recodificação fica COMPLETA contra o schema atual, então só um
+      // conjunto incompleto conserva o sentinela. Até o #608 este caso passava
+      // `promoteLegacyIfComplete: false` e ficava completo — provava a supressão
+      // do auto-save, não a regra que o título enuncia; sob envio explícito o
+      // mesmo cenário já promovia desde a #548.
       const fields = [
         field({ name: "stale", type: "single", options: ["X"], hash: "stale-new" }),
         field({ name: "outro", hash: "outro-new" }),
+        field({ name: "em_branco", hash: "branco-new" }),
       ];
 
       const result = buildPersistedResponseSnapshot({
         fields,
         existing: { answers: { stale: "A" }, hashes: storedHashes },
         rawSubmittedAnswers: { outro: "novo" },
-        promoteLegacyIfComplete: false,
       });
 
       expect(result.persistedAnswers).toEqual({ stale: "A", outro: "novo" });
@@ -354,7 +356,6 @@ describe("buildPersistedResponseSnapshot", () => {
       fields,
       existing: { answers: { q1: "a", q2: "velho" }, hashes: null },
       rawSubmittedAnswers: { q1: "b", q2: "novo" },
-      promoteLegacyIfComplete: true,
     });
 
     expect(result.answerFieldHashes).toEqual({ q1: "h1", q2: "h2" });
@@ -375,7 +376,6 @@ describe("buildPersistedResponseSnapshot", () => {
       fields,
       existing: { answers: { q1: "a", q2: "velho" }, hashes: null },
       rawSubmittedAnswers: { q1: "b", q2: "novo" },
-      promoteLegacyIfComplete: true,
     });
 
     const currentFieldHashes = buildFieldHashMap(fields);
@@ -406,24 +406,6 @@ describe("buildPersistedResponseSnapshot", () => {
       fields,
       existing: { answers: { q1: "a" }, hashes: null },
       rawSubmittedAnswers: { q1: "b" },
-      promoteLegacyIfComplete: true,
-    });
-
-    expect(result.answerFieldHashes).toEqual({});
-  });
-
-  it("auto-save de response legacy nunca promove, ainda que completa (#548)", () => {
-    // Auto-save não atesta a codificação inteira: mesmo com todos os obrigatórios
-    // respondidos, `promoteLegacyIfComplete: false` conserva o sentinela.
-    const fields = [
-      field({ name: "q1", type: "single", options: ["a", "b"], hash: "h1" }),
-    ];
-
-    const result = buildPersistedResponseSnapshot({
-      fields,
-      existing: { answers: { q1: "a" }, hashes: null },
-      rawSubmittedAnswers: { q1: "b" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.answerFieldHashes).toEqual({});
@@ -442,7 +424,6 @@ describe("buildPersistedResponseSnapshot", () => {
       fields,
       existing: null,
       rawSubmittedAnswers: { respondido: "x" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.answerFieldHashes).toEqual({
@@ -465,7 +446,6 @@ describe("buildPersistedResponseSnapshot", () => {
       fields,
       existing: { answers: { antigo: "a" }, hashes: { antigo: "antigo-hash" } },
       rawSubmittedAnswers: { antigo: "b" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.persistedAnswers).toEqual({ antigo: "b" });
@@ -482,7 +462,6 @@ describe("buildPersistedResponseSnapshot", () => {
       fields,
       existing: { answers: { antigo: "a" }, hashes: { antigo: "antigo-hash" } },
       rawSubmittedAnswers: { antigo: "a", novo_obrigatorio: "resposta" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.answerFieldHashes).toEqual({
@@ -496,7 +475,6 @@ describe("buildPersistedResponseSnapshot", () => {
       fields: [],
       existing: { answers: { legado: "valor" }, hashes: { legado: "hash-antigo" } },
       rawSubmittedAnswers: {},
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.persistedAnswers).toEqual({ legado: "valor" });
@@ -537,7 +515,6 @@ describe("buildPersistedResponseSnapshot", () => {
           hashes: { q7: "q7-antigo" },
         },
         rawSubmittedAnswers: { q7: "18 anos e 6 meses" },
-        promoteLegacyIfComplete: false,
       });
 
       expect(result.persistedAnswers.q7).toBe("18 anos e 6 meses");
@@ -553,7 +530,6 @@ describe("buildPersistedResponseSnapshot", () => {
           hashes: { q7: "q7-antigo" },
         },
         rawSubmittedAnswers: { q7: { anos: "18 anos e 6 meses" } },
-        promoteLegacyIfComplete: false,
       });
 
       expect(result.persistedAnswers.q7).toEqual({ anos: "18 anos e 6 meses" });
@@ -575,7 +551,6 @@ describe("buildPersistedResponseSnapshot — stampsCurrentSchema (#529/#548)", (
       fields: [single("q1", "h1")],
       existing: { answers: { q1: "a" }, hashes: { q1: "h1" } },
       rawSubmittedAnswers: { q1: "a" },
-      promoteLegacyIfComplete: false,
     });
 
     expect(result.stampsCurrentSchema).toBe(false);
@@ -586,7 +561,6 @@ describe("buildPersistedResponseSnapshot — stampsCurrentSchema (#529/#548)", (
       fields: [single("q1", "h1")],
       existing: { answers: { q1: "a" }, hashes: { q1: "h1" } },
       rawSubmittedAnswers: { q1: "b" },
-      promoteLegacyIfComplete: true,
     });
 
     expect(result.stampsCurrentSchema).toBe(true);
@@ -598,7 +572,6 @@ describe("buildPersistedResponseSnapshot — stampsCurrentSchema (#529/#548)", (
       fields: [single("antigo", "antigo-hash"), single("novo", "novo-hash")],
       existing: { answers: { antigo: "a" }, hashes: { antigo: "antigo-hash" } },
       rawSubmittedAnswers: { antigo: "a", novo: "b" },
-      promoteLegacyIfComplete: true,
     });
 
     expect(result.stampsCurrentSchema).toBe(true);
@@ -611,7 +584,6 @@ describe("buildPersistedResponseSnapshot — stampsCurrentSchema (#529/#548)", (
       fields: [single("q1", "h1")],
       existing: { answers: { q1: "a" }, hashes: { q1: "h1" } },
       rawSubmittedAnswers: {},
-      promoteLegacyIfComplete: true,
     });
 
     expect(result.persistedAnswers).toEqual({});
@@ -623,13 +595,12 @@ describe("buildPersistedResponseSnapshot — stampsCurrentSchema (#529/#548)", (
       fields: [single("q1", "h1")],
       existing: null,
       rawSubmittedAnswers: { q1: "a" },
-      promoteLegacyIfComplete: true,
     });
 
     expect(result.stampsCurrentSchema).toBe(true);
   });
 
-  it("true na via de saída legacy: submit completo recodifica e estampa (#548)", () => {
+  it("via de saída legacy: recodificação completa desliga o sentinela e estampa (#548)", () => {
     // A interação que exige o sinal UNIFICADO: aqui `changedFieldNames` pode até
     // estar vazio (valores iguais aos apresentados), mas a recodificação completa
     // desliga o sentinela e estampa o mapa inteiro — então `stampsCurrentSchema`
@@ -640,24 +611,9 @@ describe("buildPersistedResponseSnapshot — stampsCurrentSchema (#529/#548)", (
       fields: [single("q1", "h1")],
       existing: { answers: { q1: "a" }, hashes: null },
       rawSubmittedAnswers: { q1: "a" },
-      promoteLegacyIfComplete: true,
     });
 
     expect(result.answerFieldHashes).toEqual({ q1: "h1" });
     expect(result.stampsCurrentSchema).toBe(true);
-  });
-
-  it("false na legacy sob auto-save: conserva a época (#548)", () => {
-    // Mesmo cenário, mas auto-save não atesta a codificação inteira: o sentinela
-    // é conservado (`{}`) e o sinal fica false, simétrico ao mapa.
-    const result = buildPersistedResponseSnapshot({
-      fields: [single("q1", "h1")],
-      existing: { answers: { q1: "a" }, hashes: null },
-      rawSubmittedAnswers: { q1: "a" },
-      promoteLegacyIfComplete: false,
-    });
-
-    expect(result.answerFieldHashes).toEqual({});
-    expect(result.stampsCurrentSchema).toBe(false);
   });
 });

@@ -222,81 +222,28 @@ async function loadSaveResponse() {
   return (await import("@/actions/responses")).saveResponse;
 }
 
-describe("saveResponse — auto-save vs submit explicito", () => {
-  it("auto-save com todos os campos preenchidos NAO promove assignment para concluido", async () => {
+describe("saveResponse — gravação pelo envio explícito", () => {
+  it("com todos os campos preenchidos promove assignment para concluido", async () => {
     const saveResponse = await loadSaveResponse();
-    const r = await saveResponse(
-      "proj-1",
-      "doc-1",
-      { q1: "a" },
-      { isAutoSave: true },
-    );
-    expect(r.success).toBe(true);
-    // Auto-save em assignment pendente promove apenas para em_andamento — nunca concluido.
-    expect(state.assignmentUpdatePayload?.status).toBe("em_andamento");
-    expect(state.assignmentUpdatePayload?.completed_at).toBeNull();
-  });
-
-  it("submit explicito com todos os campos preenchidos promove assignment para concluido", async () => {
-    const saveResponse = await loadSaveResponse();
-    const r = await saveResponse(
-      "proj-1",
-      "doc-1",
-      { q1: "a" },
-      // isAutoSave default = false
-    );
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
     expect(r.success).toBe(true);
     expect(state.assignmentUpdatePayload?.status).toBe("concluido");
     expect(typeof state.assignmentUpdatePayload?.completed_at).toBe("string");
   });
 
-  it("auto-save em response nova grava is_partial=true (INSERT)", async () => {
-    const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "a" }, { isAutoSave: true });
-    expect(state.responseInsertPayload?.is_partial).toBe(true);
-  });
-
-  it("submit explicito grava response com is_partial=false", async () => {
+  it("grava response com is_partial=false", async () => {
     const saveResponse = await loadSaveResponse();
     await saveResponse("proj-1", "doc-1", { q1: "a" });
     expect(state.responseInsertPayload?.is_partial).toBe(false);
   });
 
-  it("auto-save em response existente parcial mantem is_partial=true (UPDATE)", async () => {
-    // Pesquisador ja salvou parcial antes; novo auto-save deve continuar parcial.
-    state.existingResponse = { id: "resp-1", is_partial: true };
-    const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "a" }, { isAutoSave: true });
-    expect(state.responseUpdatePayload?.is_partial).toBe(true);
-  });
-
-  it("auto-save em response ja submetida NAO rebaixa is_partial (UPDATE)", async () => {
-    // Cenario critico: response existe com is_partial=false (foi submetida) e
-    // assignment esta concluido. Pesquisador reabre e edita; auto-save NAO
-    // deve flipar is_partial para true, senao classifyDocStatus passa a tratar
-    // o doc como pendente mesmo com o assignment.status preservado pelo guard
-    // como concluido — estado inconsistente.
-    state.existingResponse = { id: "resp-1", is_partial: false };
-    state.currentAssignmentStatus = "concluido";
-    const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "a" }, { isAutoSave: true });
-    expect(state.responseUpdatePayload?.is_partial).toBe(false);
-    // Assignment.status nao deve regredir (guard pre-existente).
-    expect(state.assignmentUpdatePayload).toBeNull();
-  });
-
-  it("auto-save em response já submetida invalida imediatamente a auto-revisão", async () => {
+  it("editar uma response já submetida invalida imediatamente a auto-revisão", async () => {
     state.existingResponse = { id: "resp-1", is_partial: false };
     state.currentAssignmentStatus = "concluido";
     state.automationMode = "compare_humans";
     const saveResponse = await loadSaveResponse();
 
-    const result = await saveResponse(
-      "proj-1",
-      "doc-1",
-      { q1: "b" },
-      { isAutoSave: true },
-    );
+    const result = await saveResponse("proj-1", "doc-1", { q1: "b" });
 
     expect(result.success).toBe(true);
     expect(drainAutoReviewReconciliationRequests).toHaveBeenCalledWith({
@@ -304,9 +251,10 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     });
   });
 
-  it("submit apos auto-save sobrescreve is_partial: true -> false (UPDATE)", async () => {
-    // Cenario: o pesquisador deu auto-save antes (response existe com is_partial=true)
-    // e agora clica Enviar — o submit deve fazer UPDATE com is_partial=false.
+  it("envio sobre response parcial sobrescreve is_partial: true -> false (UPDATE)", async () => {
+    // A linha parcial pode vir de um envio incompleto anterior ou, nas anteriores
+    // ao #608, do auto-save que marcava "nunca submetida". Completar o conjunto
+    // e enviar deve fazer UPDATE com is_partial=false nos dois casos.
     state.existingResponse = { id: "resp-1", is_partial: true };
     const saveResponse = await loadSaveResponse();
     await saveResponse("proj-1", "doc-1", { q1: "a" });
@@ -329,7 +277,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     expect(r.success && r.missingRequired).toBe(1);
   });
 
-  it("auto-save que ENCOLHE uma response submetida devolve is_partial=true", async () => {
+  it("envio que ENCOLHE uma response submetida devolve is_partial=true", async () => {
     // A heranca do sinal ("ja foi submetida uma vez") sobrevivia a uma escrita
     // posterior com menos respostas, carimbando de submetido um conjunto
     // incompleto. Distinto do caso vizinho, onde o conjunto continua completo.
@@ -344,12 +292,12 @@ describe("saveResponse — auto-save vs submit explicito", () => {
       answer_field_hashes: { q1: "h-q1", q2: "h-q2" },
     };
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "a" }, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", { q1: "a" });
     expect(state.responseUpdatePayload?.answers).toEqual({ q1: "a" });
     expect(state.responseUpdatePayload?.is_partial).toBe(true);
   });
 
-  it("campo obrigatorio criado depois NAO rebaixa codificacao antiga em auto-save", async () => {
+  it("campo obrigatorio criado depois NAO rebaixa codificacao antiga", async () => {
     // Espelho do caso real: a codificacao estava completa contra o schema da
     // epoca; o campo novo so entra na regua se o carimbo provar que ele existia.
     state.pydanticFields = [
@@ -363,7 +311,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
       answer_field_hashes: { q1: "h-q1" },
     };
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "a" }, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", { q1: "a" });
     expect(state.responseUpdatePayload?.is_partial).toBe(false);
     expect(state.responseUpdatePayload?.answer_field_hashes).toEqual({ q1: "h-q1" });
   });
@@ -401,7 +349,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     expect(state.assignmentUpdatePayload?.status).toBe("em_andamento");
   });
 
-  it("auto-save em doc codificado antes do bump NAO passa a dever o campo novo (#520)", async () => {
+  it("doc codificado antes do bump NAO passa a dever o campo novo (#520)", async () => {
     // Critério de aceite da #520: a codificação foi completa à época; o schema
     // ganhou um obrigatório depois. Basta o pesquisador reabrir o doc e tocar
     // qualquer coisa para o save reestampar o mapa — e a leitura retroativa
@@ -418,12 +366,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     };
 
     const saveResponse = await loadSaveResponse();
-    const result = await saveResponse(
-      "proj-1",
-      "doc-1",
-      { q1: "b" },
-      { isAutoSave: true },
-    );
+    const result = await saveResponse("proj-1", "doc-1", { q1: "b" });
 
     expect(result.success).toBe(true);
     const gravado = state.responseUpdatePayload?.answer_field_hashes as AnswerFieldHashes;
@@ -460,7 +403,11 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     expect(state.assignmentUpdatePayload?.status).toBe("concluido");
   });
 
-  it("response legacy conserva o sentinela em vez de ganhar chaves (#520)", async () => {
+  it("response legacy INCOMPLETA conserva o sentinela em vez de ganhar chaves (#520)", async () => {
+    // `q_novo` fica em branco, então a recodificação não fica completa contra o
+    // schema atual e o sentinela é conservado. Desde o #608 a incompletude é a
+    // condição inteira — antes o auto-save também suprimia a promoção, e era ele
+    // que este caso exercitava.
     state.pydanticFields = [
       { name: "q1", type: "single", required: true, options: ["a", "b"], hash: "h1" },
       { name: "q_novo", type: "single", required: true, options: ["x"], hash: "h-novo" },
@@ -473,7 +420,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     };
 
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "b" }, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", { q1: "b" });
 
     expect(state.responseUpdatePayload?.answer_field_hashes).toEqual({});
   });
@@ -485,7 +432,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     ];
 
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "a" }, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", { q1: "a" });
 
     expect(state.responseInsertPayload?.answer_field_hashes).toEqual({
       q1: "h1",
@@ -499,8 +446,13 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     // coluna no mesmo save tornaria esse fallback permissivo — a codificacao
     // antiga passaria a ser lida como feita contra o schema de hoje, e nenhum
     // campo apareceria stale. Omitir as colunas preserva o que esta na linha.
+    //
+    // `q2` em branco mantém a recodificação incompleta, que é o que conserva o
+    // sentinela. O caso simétrico — recodificação COMPLETA, que promove tudo —
+    // é o teste da #548 mais abaixo, e é ele que fixa a fronteira entre os dois.
     state.pydanticFields = [
       { name: "q1", type: "single", required: true, options: ["a", "b"], hash: "h1" },
+      { name: "q2", type: "text", required: true, hash: "h2" },
     ];
     state.existingResponse = {
       id: "resp-1",
@@ -510,7 +462,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     };
 
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "b" }, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", { q1: "b" });
 
     const payload = state.responseUpdatePayload ?? {};
     expect(payload).not.toHaveProperty("pydantic_hash");
@@ -541,7 +493,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     };
 
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "b" }, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", { q1: "b" });
 
     expect(state.responseUpdatePayload?.pydantic_hash).toBe("hash-1");
     expect(state.responseUpdatePayload?.schema_version_major).toBe(1);
@@ -550,8 +502,9 @@ describe("saveResponse — auto-save vs submit explicito", () => {
 
   it("toque sem revisao preserva as colunas de versao da epoca (#529)", async () => {
     // Prova do vermelho do #529: o pesquisador reabre um doc codificado sob a
-    // versao anterior e re-submete o MESMO valor (auto-save por navegacao, sem
-    // editar nada). Nenhum campo e revisado, entao o mapa per-campo (#528) ja
+    // versao anterior e re-envia o MESMO valor, sem editar nada (o gatilho
+    // original era o auto-save por navegacao; hoje e um clique em Enviar sobre
+    // um formulario intocado). Nenhum campo e revisado, entao o mapa per-campo (#528) ja
     // conserva a epoca — as colunas de versao devem acompanhar e NAO promover
     // para o schema de hoje. Antes deste fix, `buildResponsePayload` promovia em
     // todo save, deixando a linha assimetrica (hashes de epoca x versao de hoje)
@@ -567,7 +520,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     };
 
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "a" }, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", { q1: "a" });
 
     const payload = state.responseUpdatePayload ?? {};
     expect(payload).not.toHaveProperty("pydantic_hash");
@@ -585,7 +538,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     state.pydanticFields = [];
 
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", {}, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", {});
 
     expect(state.responseInsertPayload?.answer_field_hashes).toEqual({});
     expect(state.responseInsertPayload?.pydantic_hash).toBe("hash-1");
@@ -611,7 +564,7 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     };
 
     const saveResponse = await loadSaveResponse();
-    // Submit explícito (isAutoSave default = false) completando o schema atual.
+    // Envio que completa o schema atual.
     await saveResponse("proj-1", "doc-1", { q1: "b" });
 
     // (a) proveniência corrente estampada — deixa de ser o sentinela.
@@ -640,28 +593,37 @@ describe("saveResponse — auto-save vs submit explicito", () => {
     ).toBe(true);
   });
 
-  it("auto-save com campo obrigatorio vazio mantem pendente em em_andamento", async () => {
+  it("envio com campo obrigatorio vazio mantem pendente em em_andamento", async () => {
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "" }, { isAutoSave: true });
+    await saveResponse("proj-1", "doc-1", { q1: "" });
     expect(state.assignmentUpdatePayload?.status).toBe("em_andamento");
   });
 
-  it("auto-save NAO regride um assignment ja concluido para em_andamento", async () => {
+  it("envio incompleto rebaixa is_partial mas NAO regride o assignment concluido", async () => {
+    // Os dois sinais divergem de propósito, e é este o caso que os separa: o
+    // conjunto gravado deixou de estar completo (`is_partial` volta a true),
+    // mas a conclusão foi um ato do pesquisador e só ele a desfaz. Quem sustenta
+    // a segunda metade é o guard de `keepCodingAssignmentInProgress` — sem ele,
+    // reabrir e apagar uma resposta tiraria o documento de "concluído".
+    //
+    // Até o #608 o mesmo cenário era alcançado pelo auto-save de navegação; hoje
+    // exige um clique em Enviar, mas a invariante é a mesma.
     state.currentAssignmentStatus = "concluido";
+    state.existingResponse = {
+      id: "resp-1",
+      is_partial: false,
+      answers: { q1: "a" },
+      answer_field_hashes: { q1: "h1" },
+    };
     const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "" }, { isAutoSave: true });
-    // Nao deve ter chamado update em assignments (status nao muda).
+    await saveResponse("proj-1", "doc-1", { q1: "" });
+
+    expect(state.responseUpdatePayload?.is_partial).toBe(true);
+    // Nenhum update em assignments — o status nao muda.
     expect(state.assignmentUpdatePayload).toBeNull();
   });
 
-  it("auto-save NAO dispara revalidatePath nem revalidateTag", async () => {
-    const saveResponse = await loadSaveResponse();
-    await saveResponse("proj-1", "doc-1", { q1: "a" }, { isAutoSave: true });
-    expect(revalidatePath).not.toHaveBeenCalled();
-    expect(revalidateTag).not.toHaveBeenCalled();
-  });
-
-  it("submit explicito dispara revalidatePath e revalidateTag das rotas relevantes", async () => {
+  it("o envio dispara revalidatePath e revalidateTag das rotas relevantes", async () => {
     const saveResponse = await loadSaveResponse();
     await saveResponse("proj-1", "doc-1", { q1: "a" });
     expect(revalidatePath).toHaveBeenCalledWith("/projects/proj-1/analyze/code");

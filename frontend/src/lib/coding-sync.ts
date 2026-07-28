@@ -59,7 +59,6 @@ export interface SyncCodingAssignmentParams {
   userId: string;
   fields: PydanticField[];
   sanitizedAnswers: Record<string, unknown>;
-  isAutoSave: boolean;
   automationMode: string | null | undefined;
   hadCompletedResponse: boolean;
 }
@@ -134,13 +133,11 @@ async function keepCodingAssignmentInProgress(
   return error ? { error: error.message } : {};
 }
 
-// Recomputes the reviewer's "codificacao" assignment status right after a
-// save: completes it (and fires the project's automation) when every field
-// is answered and this isn't an autosave; otherwise regresses it back to
-// em_andamento — but never out of concluido, so autosave never undoes
-// progress. Mirrors the "recompute + update assignment" shape already
-// established by syncCompareAssignment (compare-sync.ts) for the
-// "comparacao" assignment type.
+// Recalcula o status do assignment de "codificacao" logo depois de um save:
+// conclui (e dispara a automação do projeto) quando todo campo está
+// respondido; caso contrário regride para em_andamento — mas nunca para fora
+// de concluido. Mesma forma "recalcula + atualiza assignment" já estabelecida
+// por syncCompareAssignment (compare-sync.ts) para o tipo "comparacao".
 export async function syncCodingAssignmentStatus(
   supabase: SupabaseServerClient,
   params: SyncCodingAssignmentParams,
@@ -150,21 +147,26 @@ export async function syncCodingAssignmentStatus(
   const allAnswered = isCodingComplete(params.fields, params.sanitizedAnswers);
 
   // A response humana continua sendo a mesma row depois do primeiro submit.
-  // Portanto, qualquer save posterior (inclusive autosave) precisa reconciliar
-  // imediatamente os ciclos que dependiam do valor anterior.
+  // Portanto, qualquer save posterior precisa reconciliar imediatamente os
+  // ciclos que dependiam do valor anterior.
   if (params.hadCompletedResponse) {
     const reconciliation = await reconcileEditedResponse(params);
     if (reconciliation.error) return reconciliation;
   }
 
-  // Auto-save nunca promove para "concluido" — mesmo que todos os campos
-  // estejam preenchidos, o pesquisador ainda nao clicou em Enviar. Sem essa
-  // guarda, sair da pagina dispara visibilitychange -> saveResponse -> doc
-  // some da lista no filtro padrao por virar current_done.
-  if (allAnswered && !params.isAutoSave) {
+  // Até o #608 a promoção era gateada também pelo canal de escrita
+  // (`allAnswered && !isAutoSave`): sair da página disparava
+  // visibilitychange -> saveResponse, e sem o gate o documento sumia do filtro
+  // padrão por virar current_done sem ninguém ter clicado em Enviar. Removido
+  // o auto-save, todo save que chega aqui é submit explícito — a completude
+  // voltou a ser a condição inteira.
+  if (allAnswered) {
     return completeCodingAssignment(supabase, params);
   }
 
-  // So regredir se NAO esta concluido (evita desfazer progresso por auto-save)
+  // Um submit incompleto sobre um assignment já concluído NÃO o rebaixa: a
+  // conclusão foi um ato do pesquisador, e o guard de
+  // `keepCodingAssignmentInProgress` é quem sustenta essa invariante agora que
+  // o gate por canal saiu.
   return keepCodingAssignmentInProgress(supabase, params);
 }

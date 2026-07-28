@@ -11,7 +11,6 @@ import type { AnswerFieldHashes, PydanticField } from "@/lib/types";
 
 export interface SaveResponseOpts {
   notes?: string;
-  isAutoSave?: boolean;
 }
 
 export type SaveResponseResult =
@@ -107,7 +106,6 @@ interface BuildResponsePayloadParams {
   stampsCurrentSchema: boolean;
   project: SaveResponseProjectFields | null | undefined;
   existing: { is_partial: boolean | null } | null | undefined;
-  isAutoSave: boolean;
   notes?: string;
 }
 
@@ -174,7 +172,6 @@ function buildResponsePayload({
   stampsCurrentSchema,
   project,
   existing,
-  isAutoSave,
   notes,
 }: BuildResponsePayloadParams) {
   const justifications = notes ? { _notes: notes } : null;
@@ -182,14 +179,15 @@ function buildResponsePayload({
   const roundIdToPersist =
     project?.round_strategy === "manual" ? (project?.current_round_id ?? null) : null;
 
-  // Para humanos is_partial descreve O QUE FOI GRAVADO, não por qual canal a
-  // escrita chegou: uma resposta só deixa de ser parcial quando o conjunto
-  // gravado satisfaz a régua de completude E o pesquisador já enviou (submit
-  // explícito). Enquanto o sinal era função apenas do canal
+  // Para humanos is_partial descreve O QUE FOI GRAVADO: uma resposta só deixa
+  // de ser parcial quando o conjunto gravado satisfaz a régua de completude.
+  // Enquanto o sinal era função do canal de escrita
   // (`isAutoSave && existing?.is_partial !== false`), um auto-save herdava o
   // `false` de um submit anterior e podia carimbar "submetida" um conjunto que
   // já não estava completo — o estado que fazia o documento voltar à fila com
-  // aparência de concluído (#519).
+  // aparência de concluído (#519). Removido o auto-save (#608), o canal deixou
+  // de existir como variável: toda escrita é submit explícito, e o conjunto
+  // gravado é a condição inteira.
   //
   // `codingIsComplete` chega pronto de `saveResponse`, do MESMO cálculo que
   // produz o `missingRequired` devolvido ao cliente: o sinal gravado no banco e o
@@ -199,14 +197,11 @@ function buildResponsePayload({
   // campo obrigatório criado depois não rebaixe codificação completa à época)
   // vive em coding-completeness, onde está documentada.
   //
-  // O auto-save continua sem promover nada por conta própria — quem nunca enviou
-  // segue parcial mesmo com tudo preenchido; combinado com o guard que preserva
-  // assignment.status = "concluido" em coding-sync, um auto-save posterior a um
-  // submit também não rebaixa um doc já concluído (salvo se o conjunto encolheu e
-  // deixou de estar completo). A imutabilidade descrita na migration
-  // 20260425000000 vale so para o fluxo LLM.
-  const submittedBefore = existing?.is_partial === false;
-  const isPartialToWrite = !codingIsComplete || (isAutoSave && !submittedBefore);
+  // Um submit que encolhe o conjunto rebaixa `is_partial` de volta a `true`,
+  // mas NÃO rebaixa `assignment.status = "concluido"` — quem sustenta isso é o
+  // guard de `keepCodingAssignmentInProgress` (coding-sync). A imutabilidade
+  // descrita na migration 20260425000000 vale só para o fluxo LLM.
+  const isPartialToWrite = !codingIsComplete;
 
   const payload = {
     answers: answersToPersist,
@@ -300,12 +295,11 @@ async function persistResponseRow({
   return { status: "error", error: insErr.message };
 }
 
-// Auto-save nao revalida o RSC tree — evita re-fetch do servidor a cada
-// troca de aba / navegacao entre docs e qualquer flicker residual no
-// formulario. Submit explicito (handleSubmit / handleBrowseSubmit) revalida
-// normalmente, propagando o efeito para Compare, Reviews e o progresso.
-function revalidateAfterSave(projectId: string, isAutoSave: boolean): void {
-  if (isAutoSave) return;
+// Propaga o efeito do envio para as telas que leem a mesma resposta —
+// Comparação, Revisões e o progresso do projeto. Até o #608 o auto-save pulava
+// esta função inteira (para não re-buscar o servidor a cada troca de aba, com o
+// flicker que isso trazia ao formulário); sem ele, todo save revalida.
+function revalidateAfterSave(projectId: string): void {
   revalidatePath(`/projects/${projectId}/analyze/code`);
   revalidatePath(`/projects/${projectId}/analyze/compare`);
   revalidatePath(`/projects/${projectId}/analyze/auto-revisao`);
@@ -319,7 +313,6 @@ interface BuildSaveWriteParams {
   existing: ExistingResponseRow | null | undefined;
   project: SaveResponseProjectFields | null | undefined;
   answers: Record<string, unknown>;
-  isAutoSave: boolean;
   notes?: string;
 }
 
@@ -332,7 +325,6 @@ function buildSaveWrite({
   existing,
   project,
   answers,
-  isAutoSave,
   notes,
 }: BuildSaveWriteParams) {
   // O formulário devolve um snapshot sanitizado, não um patch. A reconciliação
@@ -344,9 +336,6 @@ function buildSaveWrite({
       ? { answers: existing.answers, hashes: existing.answer_field_hashes }
       : null,
     rawSubmittedAnswers: answers,
-    // Só um submit explícito atesta a codificação inteira; auto-save não pode
-    // promover uma response legacy à versão corrente (#548).
-    promoteLegacyIfComplete: !isAutoSave,
   });
 
   // Régua de completude aplicada UMA vez, ao conjunto que vai ser gravado
@@ -368,7 +357,6 @@ function buildSaveWrite({
     stampsCurrentSchema: snapshot.stampsCurrentSchema,
     project,
     existing,
-    isAutoSave,
     notes,
   });
 
@@ -413,7 +401,6 @@ interface SaveAttemptParams {
   userEmail: string;
   answers: Record<string, unknown>;
   notes?: string;
-  isAutoSave: boolean;
 }
 
 // Uma tentativa completa de gravação: lê o contexto, monta o snapshot a partir
@@ -435,7 +422,6 @@ async function runSaveAttempt({
   userEmail,
   answers,
   notes,
-  isAutoSave,
 }: SaveAttemptParams): Promise<SaveResponseResult | { conflict: true }> {
   const { profile, existing, existingErr, project, projErr, doc } =
     await fetchSaveContext(supabase, projectId, documentId, effectiveId);
@@ -451,7 +437,6 @@ async function runSaveAttempt({
     existing,
     project,
     answers,
-    isAutoSave,
     notes,
   });
 
@@ -476,11 +461,10 @@ async function runSaveAttempt({
     project,
     existing,
     snapshot,
-    isAutoSave,
   });
   if (syncErr) return { success: false, error: syncErr };
 
-  revalidateAfterSave(projectId, isAutoSave);
+  revalidateAfterSave(projectId);
   return { success: true, missingRequired };
 }
 
@@ -495,7 +479,6 @@ async function syncAssignmentAfterSave({
   project,
   existing,
   snapshot,
-  isAutoSave,
 }: {
   supabase: SupabaseServerClient;
   projectId: string;
@@ -505,7 +488,6 @@ async function syncAssignmentAfterSave({
   project: { automation_mode?: string | null } | null | undefined;
   existing: { is_partial: boolean | null } | null | undefined;
   snapshot: { submittedAnswers: Record<string, unknown> };
-  isAutoSave: boolean;
 }): Promise<string | undefined> {
   if (fields.length === 0) return undefined;
   const { error } = await syncCodingAssignmentStatus(supabase, {
@@ -514,7 +496,6 @@ async function syncAssignmentAfterSave({
     userId: effectiveId,
     fields,
     sanitizedAnswers: snapshot.submittedAnswers,
-    isAutoSave,
     automationMode: project?.automation_mode,
     // Lido ANTES da escrita: distingue "já estava concluída" de "concluiu
     // agora", que é o que impede o rebaixamento descrito em
@@ -550,7 +531,7 @@ export async function saveResponse(
   answers: Record<string, unknown>,
   opts: SaveResponseOpts = {},
 ): Promise<SaveResponseResult> {
-  const { notes, isAutoSave = false } = opts;
+  const { notes } = opts;
 
   try {
     const actor = await resolveProjectMemberActor(projectId);
@@ -568,7 +549,6 @@ export async function saveResponse(
         userEmail: user.email,
         answers,
         notes,
-        isAutoSave,
       });
       if (!("conflict" in result)) return result;
 

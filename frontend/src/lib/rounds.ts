@@ -59,8 +59,10 @@ export function classifyDocStatus(
 ): DocRoundStatus {
   if (!response) return { kind: "no_response" };
 
-  // Resposta parcial (autosave em andamento) ainda precisa ser concluida —
-  // tratar como pendente da rodada atual independente de schema/round_id.
+  // Resposta parcial ainda precisa ser concluida — tratar como pendente da
+  // rodada atual independente de schema/round_id. Vale tanto para o conjunto
+  // gravado incompleto (semântica a partir do #608) quanto para as linhas
+  // legadas que o auto-save deixou marcadas como nunca submetidas.
   if (response.is_partial === true) return { kind: "current_pending" };
 
   if (ctx.strategy === "manual") {
