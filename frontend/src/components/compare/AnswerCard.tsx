@@ -99,16 +99,7 @@ export function AnswerCard({
   onUnmarkPair,
   canUnmarkPair,
 }: AnswerCardProps) {
-  const allStale = staleCount > 0 && staleCount === respondentCount;
-  const fusedCount = equivalentVariants?.length ?? 0;
-  const selected = equivalenceMode?.selected === true;
-  // Gabarito radio is only reachable on the selected branch (invariant in type).
-  const gabarito = equivalenceMode?.selected ? equivalenceMode.gabarito : null;
   const voteTitle = readOnlyTitle(readOnly);
-  const equivalenceTitle = readOnlyTitle(
-    readOnly,
-    "Selecionar para marcar como equivalente",
-  );
   const unmarkTitle = readOnlyTitle(readOnly, "Desfazer equivalência");
 
   return (
@@ -121,126 +112,36 @@ export function AnswerCard({
       className={cn(
         "relative isolate w-full rounded-lg border p-2.5 text-left transition-colors hover:bg-accent/50",
         "has-[[data-vote-target]:focus-visible]:outline-none has-[[data-vote-target]:focus-visible]:ring-2 has-[[data-vote-target]:focus-visible]:ring-ring has-[[data-vote-target]:focus-visible]:ring-offset-2",
-        isChosen
-          ? "border-green-500/50 bg-green-500/5"
-          : isPending
-            ? "border-brand bg-brand/10"
-            : selected
-              ? "border-brand/60 bg-brand/5"
-              : "border-muted",
+        cardStateClass({ isChosen, isPending, equivalenceMode }),
       )}
     >
-      {/*
-        Vote target: a transparent <button> overlaying the whole card. The card
-        itself is a plain <div> so the interactive controls below (checkbox,
-        popover, gabarito radio) can be siblings of this button instead of
-        nested inside it (nested interactive = invalid HTML, plus the manual
-        role="button" that prefer-tag-over-role flagged). Any new interactive or
-        hover child must be lifted above this overlay with `relative z-[2]`;
-        non-interactive content stays below and clicking it votes
-        (stretched-link pattern). The native <button> handles Enter/Space.
-      */}
-      <button
-        type="button"
-        data-vote-target
-        onClick={onVote}
-        disabled={readOnly}
-        aria-label={`Selecionar esta resposta para confirmar: ${displayAnswer || "(vazia)"}`}
+      <VoteOverlay
+        displayAnswer={displayAnswer}
+        readOnly={readOnly}
+        onVote={onVote}
         title={voteTitle}
-        className={cn(
-          "absolute inset-0 z-[1] rounded-lg focus:outline-none",
-          readOnly ? "cursor-default" : "cursor-pointer",
-        )}
       />
       <div className="flex items-start gap-2">
-        {equivalenceMode && (
-          <div className="relative z-[2] flex h-5 shrink-0 items-center">
-            <Checkbox
-              checked={equivalenceMode.selected}
-              onCheckedChange={() => equivalenceMode.onToggle()}
-              disabled={readOnly}
-              aria-label="Selecionar para marcar como equivalente"
-              title={equivalenceTitle}
-            />
-          </div>
-        )}
+        <EquivalenceCheckbox mode={equivalenceMode} readOnly={readOnly} />
         <span className="flex size-5 shrink-0 items-center justify-center rounded bg-muted text-xs font-medium">
           {index + 1}
         </span>
-        <div className="min-w-0 flex-1">
-          <p className="text-sm">{displayAnswer}</p>
+        <AnswerBody
+          displayAnswer={displayAnswer}
+          respondentNames={respondentNames}
+          respondentCount={respondentCount}
+          hasLlm={hasLlm}
+          llmJustification={llmJustification}
+          staleCount={staleCount}
+          versions={versions}
+          readOnly={readOnly}
+          unmarkTitle={unmarkTitle}
+          equivalentVariants={equivalentVariants}
+          onUnmarkPair={onUnmarkPair}
+          canUnmarkPair={canUnmarkPair}
+        />
 
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span className="relative z-[2] cursor-default underline decoration-dotted underline-offset-2">
-                  {respondentCount}{" "}
-                  {respondentCount === 1 ? "respondente" : "respondentes"}
-                </span>
-              </TooltipTrigger>
-              <TooltipContent side="top">
-                {respondentNames.map((name) => (
-                  <div key={name}>{name}</div>
-                ))}
-              </TooltipContent>
-            </Tooltip>
-
-            {hasLlm && (
-              <span className="inline-flex items-center gap-1 text-brand">
-                <Bot className="size-3" />
-                LLM
-              </span>
-            )}
-
-            {staleCount > 0 && (
-              <span className="inline-flex items-center gap-1 text-amber-600">
-                <AlertTriangle className="size-3" />
-                {allStale
-                  ? "desatualizada"
-                  : `${staleCount} de ${respondentCount} desatualizadas`}
-              </span>
-            )}
-
-            {fusedCount > 0 && (
-              <FusedVariantsPopover
-                variants={equivalentVariants!}
-                readOnly={readOnly}
-                unmarkTitle={unmarkTitle}
-                onUnmarkPair={onUnmarkPair}
-                canUnmarkPair={canUnmarkPair}
-              />
-            )}
-
-            {versions.length === 1 && (
-              <span
-                className="relative z-[2] font-mono text-[10px] text-muted-foreground"
-                title="Versão do schema em que esta resposta foi salva"
-              >
-                v{versions[0]}
-              </span>
-            )}
-            {versions.length > 1 && (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <span className="relative z-[2] cursor-default font-mono text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2">
-                    {versions.length} versões
-                  </span>
-                </TooltipTrigger>
-                <TooltipContent side="top">
-                  {versions.map((v) => (
-                    <div key={v}>v{v}</div>
-                  ))}
-                </TooltipContent>
-              </Tooltip>
-            )}
-          </div>
-
-          {hasLlm && llmJustification && (
-            <LlmJustification text={llmJustification} />
-          )}
-        </div>
-
-        {gabarito && <GabaritoRadio gabarito={gabarito} readOnly={readOnly} />}
+        <GabaritoRadio mode={equivalenceMode} readOnly={readOnly} />
       </div>
 
       {/*
@@ -257,18 +158,282 @@ export function AnswerCard({
 }
 
 /**
+ * A coluna central do card: a resposta, a linha de metadados e a justificativa
+ * do LLM. Tudo que não é affordance de seleção (checkbox à esquerda, gabarito à
+ * direita) nem o overlay que cobre o card.
+ */
+function AnswerBody({
+  displayAnswer,
+  respondentNames,
+  respondentCount,
+  hasLlm,
+  llmJustification,
+  staleCount,
+  versions,
+  readOnly,
+  unmarkTitle,
+  equivalentVariants,
+  onUnmarkPair,
+  canUnmarkPair,
+}: {
+  displayAnswer: string;
+  respondentNames: string[];
+  respondentCount: number;
+  hasLlm: boolean;
+  llmJustification?: string;
+  staleCount: number;
+  versions: string[];
+  readOnly: boolean;
+  unmarkTitle: string | undefined;
+  equivalentVariants?: EquivalentVariant[];
+  onUnmarkPair?: (pairId: string) => void;
+  canUnmarkPair?: (variant: EquivalentVariant) => boolean;
+}) {
+  return (
+    <div className="min-w-0 flex-1">
+      <p className="text-sm">{displayAnswer}</p>
+
+      <AnswerMetaRow
+        respondentNames={respondentNames}
+        respondentCount={respondentCount}
+        hasLlm={hasLlm}
+        staleCount={staleCount}
+        versions={versions}
+        readOnly={readOnly}
+        unmarkTitle={unmarkTitle}
+        equivalentVariants={equivalentVariants}
+        onUnmarkPair={onUnmarkPair}
+        canUnmarkPair={canUnmarkPair}
+      />
+
+      {hasLlm && llmJustification && (
+        <LlmJustification text={llmJustification} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Alvo de voto: um <button> transparente cobrindo o card inteiro.
+ *
+ * O card é uma <div> simples justamente para que os controles interativos
+ * (checkbox, popover, radio do gabarito, barra de confirmação) sejam IRMÃOS
+ * deste botão em vez de filhos — interativo aninhado é HTML inválido. Todo
+ * filho interativo ou com hover precisa subir acima deste overlay com
+ * `relative z-[2]`; conteúdo não-interativo fica abaixo e clicar nele vota
+ * (padrão stretched-link). O <button> nativo cuida de Enter/Espaço.
+ */
+function VoteOverlay({
+  displayAnswer,
+  readOnly,
+  onVote,
+  title,
+}: {
+  displayAnswer: string;
+  readOnly: boolean;
+  onVote: () => void;
+  title: string | undefined;
+}) {
+  return (
+    <button
+      type="button"
+      data-vote-target
+      onClick={onVote}
+      disabled={readOnly}
+      aria-label={`Selecionar esta resposta para confirmar: ${displayAnswer || "(vazia)"}`}
+      title={title}
+      className={cn(
+        "absolute inset-0 z-[1] rounded-lg focus:outline-none",
+        readOnly ? "cursor-default" : "cursor-pointer",
+      )}
+    />
+  );
+}
+
+/**
+ * A cor de borda e de fundo que comunica o estado do card. Um estado só, em
+ * ordem de precedência: o veredito já gravado vence o rascunho, que vence a
+ * seleção de equivalência. Fora do JSX porque era a única cadeia de ternários
+ * aninhados do corpo do componente, e ali a precedência ficava legível apenas
+ * pela indentação.
+ */
+function cardStateClass({
+  isChosen,
+  isPending,
+  equivalenceMode,
+}: {
+  isChosen: boolean;
+  isPending: boolean;
+  equivalenceMode?: EquivalenceMode;
+}): string {
+  if (isChosen) return "border-green-500/50 bg-green-500/5";
+  if (isPending) return "border-brand bg-brand/10";
+  if (equivalenceMode?.selected) return "border-brand/60 bg-brand/5";
+  return "border-muted";
+}
+
+/**
+ * Caixa de seleção para marcar este card como equivalente a outro. Ausente
+ * quando o modo de equivalência não está permitido — `undefined` é o próprio
+ * sinal disso, e a leitura fica com quem já recebe o modo.
+ */
+function EquivalenceCheckbox({
+  mode,
+  readOnly,
+}: {
+  mode?: EquivalenceMode;
+  readOnly: boolean;
+}) {
+  if (!mode) return null;
+  return (
+    <div className="relative z-[2] flex h-5 shrink-0 items-center">
+      <Checkbox
+        checked={mode.selected}
+        onCheckedChange={() => mode.onToggle()}
+        disabled={readOnly}
+        aria-label="Selecionar para marcar como equivalente"
+        title={readOnlyTitle(readOnly, "Selecionar para marcar como equivalente")}
+      />
+    </div>
+  );
+}
+
+/**
+ * A linha de metadados do card: quem respondeu, se houve LLM, o que está
+ * desatualizado, as variantes fundidas e a versão do schema.
+ *
+ * Extraída porque era o maior aglomerado de ramos do corpo do `AnswerCard` —
+ * seis condições que nada decidem sobre a resposta em si, só sobre quais
+ * marcadores acompanham. Nenhuma delas é interativa exceto o popover de
+ * variantes, que carrega o próprio `z-[2]`.
+ */
+function AnswerMetaRow({
+  respondentNames,
+  respondentCount,
+  hasLlm,
+  staleCount,
+  versions,
+  readOnly,
+  unmarkTitle,
+  equivalentVariants,
+  onUnmarkPair,
+  canUnmarkPair,
+}: {
+  respondentNames: string[];
+  respondentCount: number;
+  hasLlm: boolean;
+  staleCount: number;
+  versions: string[];
+  readOnly: boolean;
+  unmarkTitle: string | undefined;
+  equivalentVariants?: EquivalentVariant[];
+  onUnmarkPair?: (pairId: string) => void;
+  canUnmarkPair?: (variant: EquivalentVariant) => boolean;
+}) {
+  const fusedCount = equivalentVariants?.length ?? 0;
+  // "desatualizada" no singular quando TODAS estão: dizer "2 de 2
+  // desatualizadas" para um grupo inteiro velho é ruído, não informação.
+  const allStale = staleCount > 0 && staleCount === respondentCount;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span className="relative z-[2] cursor-default underline decoration-dotted underline-offset-2">
+            {respondentCount}{" "}
+            {respondentCount === 1 ? "respondente" : "respondentes"}
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top">
+          {respondentNames.map((name) => (
+            <div key={name}>{name}</div>
+          ))}
+        </TooltipContent>
+      </Tooltip>
+
+      {hasLlm && (
+        <span className="inline-flex items-center gap-1 text-brand">
+          <Bot className="size-3" />
+          LLM
+        </span>
+      )}
+
+      {staleCount > 0 && (
+        <span className="inline-flex items-center gap-1 text-amber-600">
+          <AlertTriangle className="size-3" />
+          {allStale
+            ? "desatualizada"
+            : `${staleCount} de ${respondentCount} desatualizadas`}
+        </span>
+      )}
+
+      {fusedCount > 0 && (
+        <FusedVariantsPopover
+          variants={equivalentVariants!}
+          readOnly={readOnly}
+          unmarkTitle={unmarkTitle}
+          onUnmarkPair={onUnmarkPair}
+          canUnmarkPair={canUnmarkPair}
+        />
+      )}
+
+      <SchemaVersionsBadge versions={versions} />
+    </div>
+  );
+}
+
+/**
+ * Versão do schema em que a resposta foi salva. Uma versão vira texto direto;
+ * várias (respostas do mesmo grupo salvas em versões diferentes) viram um
+ * tooltip com a lista, porque enfileirá-las na linha estouraria a largura do
+ * card. Nenhuma versão — resposta legada sem carimbo — não rende marcador.
+ */
+function SchemaVersionsBadge({ versions }: { versions: string[] }) {
+  if (versions.length === 0) return null;
+  if (versions.length === 1) {
+    return (
+      <span
+        className="relative z-[2] font-mono text-[10px] text-muted-foreground"
+        title="Versão do schema em que esta resposta foi salva"
+      >
+        v{versions[0]}
+      </span>
+    );
+  }
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="relative z-[2] cursor-default font-mono text-[10px] text-muted-foreground underline decoration-dotted underline-offset-2">
+          {versions.length} versões
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="top">
+        {versions.map((v) => (
+          <div key={v}>v{v}</div>
+        ))}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+/**
  * Marcador do gabarito de um grupo de respostas equivalentes. Extraído do corpo
  * do card para pagar a complexidade que o `confirmSlot` acrescentou — o
  * `AnswerCard` já estava acima do limiar, então acrescentar sem devolver
  * empurraria o débito adiante.
  */
 function GabaritoRadio({
-  gabarito,
+  mode,
   readOnly,
 }: {
-  gabarito: GabaritoAffordance;
+  mode?: EquivalenceMode;
   readOnly: boolean;
 }) {
+  // A decisão mora aqui, e não no `AnswerCard`: o tipo já garante que
+  // `gabarito` só existe no ramo selecionado, então quem pergunta "há gabarito
+  // a mostrar?" é quem sabe respondê-la. No card, a mesma pergunta virava um
+  // ternário sobre uma união discriminada mais um teste de nulidade.
+  const gabarito = mode?.selected ? mode.gabarito : null;
+  if (!gabarito) return null;
   return (
     <label
       className="relative z-[2] flex shrink-0 cursor-pointer items-center gap-1 rounded border border-brand/30 bg-background px-1.5 py-0.5 text-[10px] hover:bg-brand/5"

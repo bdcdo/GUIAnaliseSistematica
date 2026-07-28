@@ -16,6 +16,7 @@ import {
   pendingVerdictLabel,
   readOnlyTitle,
   type PendingVerdict,
+  type VerdictOrigin,
 } from "./compare-types";
 import { useVerdictOrigin } from "./compare-field-scope";
 
@@ -77,80 +78,16 @@ export function DivergenceActionsPanel({
   return (
     <>
       {!isMulti && (
-        <div className="mt-2 flex flex-wrap gap-1">
-          <Button
-            variant="outline"
-            size="sm"
-            className={cn(
-              (pendingVerdict
-                ? pendingVerdict.kind === "ambiguous"
-                : existingVerdict?.verdict === "ambiguo") &&
-                "border-brand bg-brand/10 text-brand",
-            )}
-            onClick={() =>
-              onPrepareVerdict({
-                kind: "ambiguous",
-                verdict: "ambiguo",
-                origin,
-              })
-            }
-            disabled={readOnly}
-            title={writeTitle}
-          >
-            [A] Ambíguo
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className={cn(
-              (pendingVerdict
-                ? pendingVerdict.kind === "skip"
-                : existingVerdict?.verdict === "pular") &&
-                "border-brand bg-brand/10 text-brand",
-            )}
-            onClick={() =>
-              onPrepareVerdict({ kind: "skip", verdict: "pular", origin })
-            }
-            disabled={readOnly}
-            title={writeTitle}
-          >
-            [S] Pular
-          </Button>
-          {/*
-            "Nenhuma correta" + input de resposta nova (issue #247, ponto
-            4). Keyed por doc|campo: navegar remonta e reseta o estado
-            interno (aberto/valor) sem reset-em-effect — react-doctor só
-            aceita key={identidade} para reset-on-prop-change.
-
-            currentValue: no bloco !isMulti, um veredito de texto sem
-            chosenResponseId que não seja marcador especial é, por
-            construção, uma resposta custom (voto sempre carrega
-            chosenResponseId). Passá-lo destaca o botão e re-semeia o
-            input ao revisitar o campo — paridade com Ambíguo/Pular.
-          */}
-          <CustomAnswerInput
-            key={`${documentId}|${fieldName}`}
-            readOnly={readOnly}
-            currentValue={
-              existingVerdict &&
-              existingVerdict.verdict !== "ambiguo" &&
-              existingVerdict.verdict !== "pular" &&
-              !existingVerdict.chosenResponseId
-                ? existingVerdict.verdict
-                : null
-            }
-            pendingValue={
-              pendingVerdict?.kind === "custom" ? pendingVerdict.verdict : null
-            }
-            onSubmit={(value) =>
-              onPrepareVerdict({
-                kind: "custom",
-                verdict: value,
-                origin,
-              })
-            }
-          />
-        </div>
+        <SpecialVerdictMarkers
+          readOnly={readOnly}
+          writeTitle={writeTitle}
+          origin={origin}
+          documentId={documentId}
+          fieldName={fieldName}
+          existingVerdict={existingVerdict}
+          pendingVerdict={pendingVerdict}
+          onPrepareVerdict={onPrepareVerdict}
+        />
       )}
 
       {pendingVerdict && pendingConfirm && (
@@ -224,4 +161,106 @@ export function DivergenceActionsPanel({
       />
     </>
   );
+}
+
+/**
+ * Os três caminhos de decisão que não vêm de um card: Ambíguo, Pular e resposta
+ * nova. Extraído do corpo do painel porque cada botão carrega a mesma pergunta
+ * em duas versões — "é o rascunho atual?" e, na falta de rascunho, "é o veredito
+ * já gravado?" —, e essas seis condições dominavam a complexidade do painel sem
+ * dizer nada sobre o resto dele (nota, sugestão de schema, veredito anterior).
+ *
+ * Nenhum deles GRAVA: todos preparam um rascunho, que só vira linha em `reviews`
+ * pela confirmação explícita (#417).
+ */
+function SpecialVerdictMarkers({
+  readOnly,
+  writeTitle,
+  origin,
+  documentId,
+  fieldName,
+  existingVerdict,
+  pendingVerdict,
+  onPrepareVerdict,
+}: {
+  readOnly: boolean;
+  writeTitle: string | undefined;
+  origin: VerdictOrigin;
+  documentId: string;
+  fieldName: string;
+  existingVerdict: VerdictInfo | null;
+  pendingVerdict: PendingVerdict | null;
+  onPrepareVerdict: (pending: PendingVerdict) => void;
+}) {
+  // O rascunho, quando existe, é quem manda no destaque: ele representa a
+  // decisão que a revisora está tomando agora, e o veredito gravado é apenas o
+  // que valia antes dela abrir o campo.
+  const marked = (kind: PendingVerdict["kind"], savedVerdict: string) =>
+    cn(
+      (pendingVerdict
+        ? pendingVerdict.kind === kind
+        : existingVerdict?.verdict === savedVerdict) &&
+        "border-brand bg-brand/10 text-brand",
+    );
+
+  return (
+    <div className="mt-2 flex flex-wrap gap-1">
+      <Button
+        variant="outline"
+        size="sm"
+        className={marked("ambiguous", "ambiguo")}
+        onClick={() =>
+          onPrepareVerdict({ kind: "ambiguous", verdict: "ambiguo", origin })
+        }
+        disabled={readOnly}
+        title={writeTitle}
+      >
+        [A] Ambíguo
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        className={marked("skip", "pular")}
+        onClick={() =>
+          onPrepareVerdict({ kind: "skip", verdict: "pular", origin })
+        }
+        disabled={readOnly}
+        title={writeTitle}
+      >
+        [S] Pular
+      </Button>
+      {/*
+        "Nenhuma correta" + input de resposta nova (issue #247, ponto 4). Keyed
+        por doc|campo: navegar remonta e reseta o estado interno (aberto/valor)
+        sem reset-em-effect — react-doctor só aceita key={identidade} para
+        reset-on-prop-change.
+      */}
+      <CustomAnswerInput
+        key={`${documentId}|${fieldName}`}
+        readOnly={readOnly}
+        currentValue={savedCustomAnswer(existingVerdict)}
+        pendingValue={
+          pendingVerdict?.kind === "custom" ? pendingVerdict.verdict : null
+        }
+        onSubmit={(value) =>
+          onPrepareVerdict({ kind: "custom", verdict: value, origin })
+        }
+      />
+    </div>
+  );
+}
+
+/**
+ * A resposta custom já gravada neste campo, se houver. Num campo não-multi, um
+ * veredito de texto sem `chosenResponseId` que não seja marcador especial é, por
+ * construção, uma resposta digitada — o voto num card sempre carrega o
+ * `chosenResponseId`. Devolvê-la destaca o botão e re-semeia o input ao
+ * revisitar o campo, em paridade com Ambíguo/Pular.
+ */
+function savedCustomAnswer(existingVerdict: VerdictInfo | null): string | null {
+  if (!existingVerdict) return null;
+  if (existingVerdict.chosenResponseId) return null;
+  const { verdict } = existingVerdict;
+  if (verdict === "ambiguo" || verdict === "pular") return null;
+  return verdict;
 }
