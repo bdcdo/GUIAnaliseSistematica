@@ -86,6 +86,7 @@ vi.mock("@/components/coding/FullscreenNav", () => ({
   FullscreenNav: () => <div data-testid="fsnav" />,
 }));
 
+import { toast } from "sonner";
 import { CodingPage } from "@/components/coding/CodingPage";
 import { codingDraftStorageKey, parseCodingDraft } from "@/lib/coding-draft";
 import { requestNavigation } from "@/lib/unsaved-work-guard";
@@ -166,6 +167,10 @@ beforeEach(() => {
   window.localStorage.clear();
   Element.prototype.scrollTo = vi.fn();
   Element.prototype.scrollIntoView = vi.fn();
+  // jsdom não implementa matchMedia; getScrollBehavior() depende dele. No
+  // caminho do veredito do servidor a chamada acontece dentro de um `.then`, e
+  // sem o stub o erro vira rejeição não tratada em vez de falha localizada.
+  window.matchMedia = vi.fn().mockReturnValue({ matches: false }) as never;
   getDocumentsForBrowse.mockResolvedValue([]);
   saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
 });
@@ -342,6 +347,88 @@ describe("envio confirmado", () => {
     await waitFor(() => expect(saveResponse).toHaveBeenCalled());
     expect(storedDraft()?.draft.answers).toEqual({ q1: "Zolgensma" });
     expect(screen.getByText(/alterações não enviadas/i)).toBeTruthy();
+  });
+});
+
+// Critério 5 da #608 no nível da TELA. O teste de unidade de
+// `useQuestionValidation` prova que, DADO um `onSubmit` que resolve com nomes, o
+// painel aponta a pergunta — mas ele mocka o handler e por isso não vê a cadeia
+// real `CodingPage → AssignedCodingView → QuestionsPanel`, onde o veredito era
+// descartado por um `void` posto para calar o `no-floating-promises`. Typecheck e
+// lint aceitavam o descarte (o tipo do handler admite `void`), então nenhum gate
+// existente reclamava e a feature ficava inerte em produção.
+describe("veredito do servidor chega ao painel (#608, critério 5)", () => {
+  const DUAS: PydanticField[] = [
+    { name: "q1", type: "text", options: null, description: "Qual o medicamento?" },
+    { name: "q2", type: "text", options: null, description: "Houve deferimento?" },
+  ];
+
+  it("save que grava com obrigatória em aberto leva o foco até ela e a nomeia", async () => {
+    // O cenário real: a régua do cliente está satisfeita (as duas respondidas na
+    // tela), o envio GRAVA, e mesmo assim o servidor — que reavalia contra o
+    // carimbo per-campo da própria escrita — ainda vê `q2` em aberto.
+    saveResponse.mockResolvedValue({
+      success: true,
+      missingRequiredFields: ["q2"],
+    });
+    const user = userEvent.setup();
+    render(
+      <CodingPage
+        userId={USER}
+        projectId={PROJECT}
+        documents={[assignedDoc(DOC)]}
+        fields={DUAS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+    const [inputQ1, inputQ2] = screen.getAllByRole("textbox");
+    // Responde q2 ANTES de q1 de propósito: assim o foco não está em q2 quando o
+    // envio começa, e o clique no botão o leva para o próprio botão. Sem isso a
+    // asserção de foco passaria sozinha e não discriminaria nada.
+    await user.type(inputQ2, "sim");
+    await user.type(inputQ1, "Zolgensma");
+
+    await user.click(screen.getByRole("button", { name: /enviar/i }));
+    await waitFor(() => expect(saveResponse).toHaveBeenCalled());
+
+    // O discriminador: com o `void` de volta em qualquer elo da cadeia, o foco
+    // fica no botão de envio e esta asserção cai. O toast, sozinho, não
+    // discrimina — ele sai do container e independe do retorno.
+    await waitFor(() => expect(document.activeElement).toBe(inputQ2));
+    expect(toast.warning).toHaveBeenCalledWith(
+      'Salvo — falta responder "Houve deferimento?"',
+    );
+  });
+
+  it("codificação completa não mexe no foco nem avisa pendência", async () => {
+    // Boundary: `[]` é truthy. Se o ramo testasse a lista em vez do tamanho, todo
+    // envio bem-sucedido roubaria o foco da pesquisadora.
+    saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
+    const user = userEvent.setup();
+    render(
+      <CodingPage
+        userId={USER}
+        projectId={PROJECT}
+        documents={[assignedDoc(DOC)]}
+        fields={DUAS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+    const [inputQ1, inputQ2] = screen.getAllByRole("textbox");
+    await user.type(inputQ1, "Zolgensma");
+    await user.type(inputQ2, "sim");
+
+    const enviar = screen.getByRole("button", { name: /enviar/i });
+    await user.click(enviar);
+    await waitFor(() => expect(saveResponse).toHaveBeenCalled());
+
+    expect(toast.warning).not.toHaveBeenCalled();
+    expect(document.activeElement).not.toBe(inputQ1);
+    expect(document.activeElement).not.toBe(inputQ2);
   });
 });
 

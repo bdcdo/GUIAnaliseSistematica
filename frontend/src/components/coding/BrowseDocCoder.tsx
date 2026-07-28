@@ -8,6 +8,7 @@ import {
 } from "@/components/ui/resizable";
 import { DocumentReader } from "./DocumentReader";
 import { QuestionsPanel, type OutOfScopeConfig } from "./QuestionsPanel";
+import type { CodingSubmitVerdict } from "./useQuestionValidation";
 import { FullscreenNav } from "./FullscreenNav";
 import { clearHiddenConditionalAnswers } from "@/lib/conditional";
 import type { CodingDocument } from "@/hooks/useDocumentForCoding";
@@ -37,8 +38,10 @@ export interface ForwardedCodingProps {
   responseCount: number;
   onToggleFullscreen: () => void;
   onReorder: (newOrder: string[]) => void;
-  /** Dispara o envio; o container faz o `saveResponse` + coordenação. */
-  onSubmit: (draft: CodingDraft) => void;
+  /** Dispara o envio; o container faz o `saveResponse` + coordenação. O retorno
+   *  é o veredito do servidor e precisa chegar ao `QuestionsPanel` — ver
+   *  `CodingSubmitVerdict`. */
+  onSubmit: (draft: CodingDraft) => CodingSubmitVerdict;
   /** Reporta o rascunho atual para cima (rascunho local + dirty tracking). */
   onDraftChange: (draft: CodingDraft) => void;
   outOfScope?: OutOfScopeConfig;
@@ -115,9 +118,12 @@ export function BrowseDocCoder({
     [onDraftChange, submitting],
   );
 
-  const handleSubmit = useCallback(() => {
-    onSubmit(draftRef.current);
-  }, [onSubmit]);
+  // Devolve o que o container devolveu: é este valor que faz o painel rolar até
+  // a obrigatória que o servidor ainda vê em aberto (#608).
+  const handleSubmit = useCallback(
+    () => onSubmit(draftRef.current),
+    [onSubmit],
+  );
 
   return (
     <>

@@ -220,16 +220,20 @@ export default async function CodePage({
 
   // Estado por documento, capturado do MESMO `classifyDocStatus` que decide o
   // filtro: a tela precisa dizer à pesquisadora por que o documento à sua frente
-  // está na fila (parcial dela × resposta reaberta por mudança de schema), e
-  // classificar de novo no cliente abriria espaço para o rótulo discordar do
-  // filtro que pôs o documento ali (#608).
-  const statusByDoc: Record<string, DocRoundStatus["kind"]> = {};
+  // está na fila (parcial dela × resposta de rodada anterior), e classificar de
+  // novo no cliente abriria espaço para o rótulo discordar do filtro que pôs o
+  // documento ali (#608).
+  //
+  // Guarda o status INTEIRO, não só o `kind`: o membro `previous` carrega o
+  // `label` da rodada — o rótulo do coordenador na estratégia manual, o semver na
+  // `schema_version` — e é ele que torna o texto na tela verdadeiro nas duas.
+  const statusByDoc: Record<string, DocRoundStatus> = {};
 
   // Filtro server-side conforme effectiveRound
   const filteredDocuments = allDocuments.filter((d) => {
     const resp = responseByDoc.get(d.id);
     const status = classifyDocStatus(ctx, resp ?? null, roundsById);
-    statusByDoc[d.id] = status.kind;
+    statusByDoc[d.id] = status;
 
     if (effectiveRound === "all") return true;
     if (effectiveRound === CURRENT_FILTER_VALUE) {

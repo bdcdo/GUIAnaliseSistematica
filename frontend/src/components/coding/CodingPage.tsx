@@ -53,7 +53,7 @@ function computeInitialCodingState(
   docParam: string | null,
   sortedDocuments: AssignedDoc[],
   hasAssignments: boolean,
-  statusByDoc: Record<string, DocRoundStatus["kind"]>,
+  statusByDoc: Record<string, DocRoundStatus>,
 ): InitialCodingState {
   if (docParam) {
     const assignedIdx = sortedDocuments.findIndex((d) => d.id === docParam);
@@ -73,7 +73,7 @@ function computeInitialCodingState(
   // sort é a melhor resposta que existe (em "recent", o último documento que ela
   // mexeu — retomar de onde parou).
   const firstPending = sortedDocuments.findIndex(
-    (d) => statusByDoc[d.id] === "current_pending",
+    (d) => statusByDoc[d.id]?.kind === "current_pending",
   );
   return {
     mode: hasAssignments ? "assigned" : "browse",
@@ -82,7 +82,7 @@ function computeInitialCodingState(
 }
 
 const EMPTY_CODED_AT: Record<string, string> = {};
-const EMPTY_STATUS_BY_DOC: Record<string, DocRoundStatus["kind"]> = {};
+const EMPTY_STATUS_BY_DOC: Record<string, DocRoundStatus> = {};
 const EMPTY_JUSTIFICATIONS: Record<string, Record<string, unknown>> = {};
 const EMPTY_PENDING_EXCLUSIONS: Record<string, string> = {};
 
@@ -129,7 +129,7 @@ function buildHeaderDocSection(
     total: number;
     onNavigate: (index: number) => void;
     parecerUrl?: string;
-    roundStatus: DocRoundStatus["kind"] | undefined;
+    roundStatus: DocRoundStatus | undefined;
   },
   browse: {
     docId: string | null;
@@ -179,7 +179,7 @@ interface CodingPageProps {
   codedAtByDoc?: Record<string, string>;
   /** Por que cada documento está na fila — mesma classificação que a decidiu
    *  (`classifyDocStatus`, no servidor). Ver `CodingHeader`. */
-  statusByDoc?: Record<string, DocRoundStatus["kind"]>;
+  statusByDoc?: Record<string, DocRoundStatus>;
   fields: PydanticField[];
   existingAnswers: Record<string, Record<string, unknown>>;
   existingJustifications?: Record<string, Record<string, unknown>>;
@@ -283,7 +283,13 @@ function CodingPageInner({
   const assigned = useAssignedCoding({
     projectId,
     documents,
-    fields,
+    // `orderedFields`, e não `fields`: o toast de pendência nomeia a primeira
+    // obrigatória em aberto NESTA ordem, que é a mesma em que o painel procura o
+    // card para o qual rolar (`pointAtFields` sobre `visibleFields`). Com o
+    // schema cru aqui e a ordem custom lá, o toast nomearia uma pergunta e a tela
+    // saltaria para outra. O outro consumidor (`clearHiddenConditionalAnswers`)
+    // é indiferente à ordem — é o mesmo conjunto.
+    fields: orderedFields,
     sortedDocuments,
     codedAtByDoc,
     existingAnswers,
@@ -303,7 +309,8 @@ function CodingPageInner({
   const browse = useBrowseCoding({
     projectId,
     documents,
-    fields,
+    // Mesma razão do modo Atribuídos: a ordem daqui é a que o toast nomeia.
+    fields: orderedFields,
     mode,
     docParam,
     setSubmitting,
@@ -533,7 +540,11 @@ function CodingPageInner({
           fields={orderedFields}
           answers={assigned.docAnswers}
           onAnswer={assigned.handleAnswer}
-          onSubmit={() => void assigned.handleSubmit()}
+          // Sem `void`: o retorno É o veredito do servidor, e é ele que faz o
+          // painel rolar até a obrigatória que ficou em aberto (#608). O
+          // `no-floating-promises` fica satisfeito porque a Promise passa a ser
+          // devolvida, não descartada.
+          onSubmit={() => assigned.handleSubmit()}
           submitting={submitting}
           notes={assigned.docNotes}
           onNotesChange={assigned.handleNotesChange}
@@ -566,7 +577,7 @@ function CodingPageInner({
           responseCount={browse.browseDocInfo?.responseCount ?? 0}
           onToggleFullscreen={toggleFullscreen}
           onReorder={handleReorder}
-          onSubmit={(draft) => void browse.handleBrowseSubmit(draft)}
+          onSubmit={(draft) => browse.handleBrowseSubmit(draft)}
           onDraftChange={browse.handleDraftChange}
           outOfScope={browseOutOfScope}
           restoreNonce={browseRestoreNonce}

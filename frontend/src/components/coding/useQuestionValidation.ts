@@ -5,17 +5,24 @@ import { isFieldAnswered, requiredHumanFields } from "@/lib/coding-completeness"
 import type { PydanticField } from "@/lib/types";
 
 /**
- * Handler de envio de uma codificação. Resolve com os NOMES das obrigatórias que
- * o servidor ainda considera em aberto no conjunto gravado — vazio/`undefined`
- * quando a codificação ficou completa, ou quando o envio nem chegou a acontecer
- * (erro de transporte, guard de save em voo). É por este valor de retorno, e não
- * por um canal de estado à parte, que o veredito do servidor chega ao painel:
- * quem sabe rolar até a pergunta é o `QuestionsPanel`, dono dos refs, e quem
- * sabe o veredito é o container que fez a escrita.
+ * Veredito de um envio: os NOMES das obrigatórias que o servidor ainda considera
+ * em aberto no conjunto gravado — vazio/`undefined` quando a codificação ficou
+ * completa, ou quando o envio nem chegou a acontecer (erro de transporte, guard
+ * de save em voo). É por este valor de retorno, e não por um canal de estado à
+ * parte, que o veredito chega ao painel: quem sabe rolar até a pergunta é o
+ * `QuestionsPanel`, dono dos refs, e quem sabe o veredito é o container que fez
+ * a escrita.
+ *
+ * O tipo é exportado separado do handler porque a cadeia até o painel não tem
+ * aridade única: `BrowseDocCoder` recebe o rascunho por parâmetro. Todo elo
+ * entre o container e o `QuestionsPanel` precisa DEVOLVER isto — um `void` no
+ * meio do caminho (para calar `no-floating-promises`) descarta o veredito e
+ * deixa o critério 5 da #608 inerte sem que typecheck ou lint reclamem.
  */
-export type CodingSubmitHandler = () =>
-  | void
-  | Promise<readonly string[] | undefined>;
+export type CodingSubmitVerdict = void | Promise<readonly string[] | undefined>;
+
+/** Handler de envio sem parâmetros — o do modo Atribuídos. */
+export type CodingSubmitHandler = () => CodingSubmitVerdict;
 
 /**
  * Estado de destaque de obrigatórias faltantes + validação de envio. O

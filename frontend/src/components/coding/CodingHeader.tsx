@@ -37,8 +37,9 @@ export type DocSection =
       total: number;
       onNavigate: (index: number) => void;
       parecerUrl?: string;
-      /** Por que este documento está na fila — ver `RoundStatusTag`. */
-      roundStatus: DocRoundStatus["kind"] | undefined;
+      /** Por que este documento está na fila — ver `RoundStatusTag`. Status
+       *  inteiro (não só o `kind`) porque `previous` carrega o rótulo da rodada. */
+      roundStatus: DocRoundStatus | undefined;
     }
   | {
       variant: "browse";
@@ -213,8 +214,8 @@ function RoundSelect({ data }: { data: RoundFilterData }) {
 
 // Por que este documento está na fila. A pesquisadora abria um formulário já
 // preenchido sem nada na tela explicando se aquilo era uma codificação dela pela
-// metade ou uma resposta completa que voltou por mudança de schema — e lia as
-// duas como "o sistema não salvou o que eu respondi" (#608).
+// metade ou uma resposta completa que voltou porque pertence a outra rodada — e
+// lia as duas como "o sistema não salvou o que eu respondi" (#608).
 //
 // `current_done` não aparece: o filtro de rodada padrão o exclui server-side, e
 // no `?round=all` ele chega aqui como o único estado sem pendência — daí o
@@ -233,24 +234,29 @@ const ROUND_STATUS_TAG: Record<
     Icon: CircleDot,
     className: "text-amber-700 dark:text-amber-500",
   },
+  // O motivo de `previous` depende da estratégia de rodadas do projeto: em
+  // `schema_version` a resposta voltou porque o schema mudou, mas em `manual`
+  // ela pertence a uma rodada que o coordenador definiu, sem schema nenhum
+  // envolvido. Cravar "mudança no schema" mentiria na metade dos projetos, então
+  // o enunciado fica no fato comum às duas e o `label` que `classifyDocStatus`
+  // já produz (rótulo da rodada ou semver) entra como identificação.
   previous: {
-    label: "Reaberto por mudança no schema",
+    label: "Respondido em rodada anterior",
     Icon: RotateCcw,
     className: "text-muted-foreground",
   },
   current_done: null,
 };
 
-function RoundStatusTag({ kind }: { kind: DocRoundStatus["kind"] | undefined }) {
-  const tag = kind ? ROUND_STATUS_TAG[kind] : null;
+function RoundStatusTag({ status }: { status: DocRoundStatus | undefined }) {
+  const tag = status ? ROUND_STATUS_TAG[status.kind] : null;
   if (!tag) return null;
   const { label, Icon, className } = tag;
+  const detail = status?.kind === "previous" ? status.label : undefined;
   return (
-    <span
-      className={cn("flex shrink-0 items-center gap-1 text-xs", className)}
-    >
+    <span className={cn("flex shrink-0 items-center gap-1 text-xs", className)}>
       <Icon className="size-3.5" aria-hidden />
-      {label}
+      {detail ? `${label} (${detail})` : label}
     </span>
   );
 }
@@ -267,7 +273,7 @@ function AssignedDocSection({
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <span className="truncate font-medium">{doc.title}</span>
         {doc.parecerUrl && <CopyLinkButton url={doc.parecerUrl} />}
-        <RoundStatusTag kind={doc.roundStatus} />
+        <RoundStatusTag status={doc.roundStatus} />
       </div>
       <div className="flex items-center gap-1 shrink-0">
         <Button

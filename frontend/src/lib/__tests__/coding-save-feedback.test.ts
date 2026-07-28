@@ -81,4 +81,35 @@ describe("notifySaved — feedback de save distingue salvo × pendente", () => {
     expect(msg).toContain("Recarregue a página");
     expect(msg).not.toContain("criado_depois");
   });
+
+  // As duas asserções abaixo fixam a mesma invariante por dois ângulos: a
+  // pergunta NOMEADA aqui tem de ser a MESMA até a qual `pointAtFields` rola, e
+  // lá a escolha é o primeiro pendente na ordem em que o formulário renderiza.
+  // Enquanto isto lia `missingNames[0]` — a ordem do SCHEMA —, o toast citava uma
+  // pergunta e a tela saltava para outra.
+  it("nomeia pela ordem de `fields`, não pela ordem em que o servidor listou", () => {
+    // A pesquisadora arrastou "valor" para cima de "deferimento": é "valor" que
+    // ela vê primeiro, e é para ele que a tela vai.
+    const reordenado = [FIELDS[1]!, FIELDS[0]!, FIELDS[2]!];
+    notifySaved(["deferimento", "valor"], reordenado);
+    expect(toast.warning).toHaveBeenCalledWith(
+      'Salvo — falta responder "Valor da condenação" (e mais 1)',
+    );
+  });
+
+  it("nome desconhecido primeiro não engole o conhecido que vem depois", () => {
+    // Basta UMA pendência estar na tela para o scroll acontecer. Mandar
+    // recarregar aqui contradiria o que a página faz no mesmo instante.
+    notifySaved(["criado_depois", "deferimento"], FIELDS);
+    expect(toast.warning).toHaveBeenCalledWith(
+      'Salvo — falta responder "Houve deferimento do pedido?" (e mais 1)',
+    );
+  });
+
+  it("só manda recarregar quando NENHUM dos nomes está na tela", () => {
+    notifySaved(["criado_depois", "outro_novo"], FIELDS);
+    const [msg] = vi.mocked(toast.warning).mock.calls[0] as [string];
+    expect(msg).toContain("criada depois que você abriu este documento");
+    expect(msg).toContain("(e mais 1)");
+  });
 });

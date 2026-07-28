@@ -18,16 +18,26 @@ const {
   getDocumentsForBrowse,
   getDocumentForCoding,
   urlParams,
+  submitVerdict,
 } = vi.hoisted(() => ({
   saveResponse: vi.fn(),
   getDocumentsForBrowse: vi.fn(),
   getDocumentForCoding: vi.fn(),
   urlParams: { current: {} as Record<string, string | null> },
+  // O que o painel recebeu de volta no último Enviar. No modo Explorar a cadeia
+  // tem um elo a mais que no Atribuídos — `BrowseDocCoder` fica entre o
+  // container e o painel —, e é ele que precisa DEVOLVER o veredito para a tela
+  // rolar até a obrigatória em aberto (#608).
+  submitVerdict: { current: undefined as unknown },
 }));
 
 vi.mock("@/actions/responses", () => ({ saveResponse }));
 vi.mock("@/actions/documents", () => ({ getDocumentsForBrowse, getDocumentForCoding }));
-vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+// `warning` incluído: é por ele que `notifySaved` avisa a pendência. Mock
+// incompleto não falha no typecheck e só aparece como rejeição não tratada.
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
+}));
 
 vi.mock("@/hooks/useUrlState", async () => {
   const React = await import("react");
@@ -69,14 +79,22 @@ vi.mock("@/components/coding/QuestionsPanel", () => ({
     notes?: string;
     onAnswer: (f: string, v: unknown) => void;
     onNotesChange?: (n: string) => void;
-    onSubmit: () => void;
+    // `unknown`, não `void`: o painel real usa o retorno, e um mock que o
+    // declarasse `void` deixaria a cadeia livre para descartá-lo.
+    onSubmit: () => unknown;
   }) => (
     <div>
       <div data-testid="qp-answers">{JSON.stringify(answers)}</div>
       <div data-testid="qp-notes">{notes}</div>
       <button onClick={() => onAnswer("q1", "sim")}>qp-set</button>
       <button onClick={() => onNotesChange?.("nota")}>qp-notes</button>
-      <button onClick={onSubmit}>qp-enviar</button>
+      <button
+        onClick={() => {
+          submitVerdict.current = onSubmit();
+        }}
+      >
+        qp-enviar
+      </button>
     </div>
   ),
 }));
@@ -169,11 +187,56 @@ function assignedDoc(id: string): Document {
 
 beforeEach(() => {
   urlParams.current = {};
+  submitVerdict.current = undefined;
   Element.prototype.scrollTo = vi.fn();
 });
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+});
+
+// A cadeia do critério 5 no modo Explorar. Ela tem um elo a mais que a do modo
+// Atribuídos — `CodingPage → BrowseCodingView → BrowseDocCoder → QuestionsPanel`
+// —, e cada elo precisa DEVOLVER o veredito. Um `{ onSubmit(...) }` em vez de
+// `() => onSubmit(...)` em qualquer um deles anula a feature sem que typecheck
+// ou lint reclamem, porque o tipo do handler admite `void`.
+describe("CodingPage/Explorar — o veredito do servidor atravessa o BrowseDocCoder (#608)", () => {
+  it("obrigatória em aberto: o painel recebe os NOMES, não `undefined`", async () => {
+    getDocumentsForBrowse.mockResolvedValue([browseDoc("d1")]);
+    getDocumentForCoding.mockResolvedValue(codingResult("d1", null));
+    saveResponse.mockResolvedValue({
+      success: true,
+      missingRequiredFields: ["q2"],
+    });
+
+    render(
+      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+    );
+
+    await userEvent.click(await screen.findByText("pick-d1"));
+    await userEvent.click(await screen.findByText("qp-set"));
+    await userEvent.click(screen.getByText("qp-enviar"));
+
+    await waitFor(() => expect(saveResponse).toHaveBeenCalled());
+    await expect(submitVerdict.current).resolves.toEqual(["q2"]);
+  });
+
+  it("codificação completa resolve sem nomes", async () => {
+    getDocumentsForBrowse.mockResolvedValue([browseDoc("d1")]);
+    getDocumentForCoding.mockResolvedValue(codingResult("d1", null));
+    saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
+
+    render(
+      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+    );
+
+    await userEvent.click(await screen.findByText("pick-d1"));
+    await userEvent.click(await screen.findByText("qp-set"));
+    await userEvent.click(screen.getByText("qp-enviar"));
+
+    await waitFor(() => expect(saveResponse).toHaveBeenCalled());
+    await expect(submitVerdict.current).resolves.toBeUndefined();
+  });
 });
 
 describe("CodingPage — modo Explorar (integração)", () => {
