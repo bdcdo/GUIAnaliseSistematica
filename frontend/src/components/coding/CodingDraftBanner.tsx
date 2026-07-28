@@ -70,7 +70,15 @@ export function CodingDraftBanner({
         {/* A região live cobre os dois textos e nenhum dos botões. Envolvendo o
             container inteiro, como estava, o leitor de tela reanunciava
             "Retomar rascunho" e "Descartar" junto do aviso a cada mudança —
-            controle dentro de live region é ruído, não informação. */}
+            controle dentro de live region é ruído, não informação.
+            O layout paga por isso: o aviso de sobrescrita, que antes ocupava uma
+            linha própria em largura total, agora divide esta coluna estreitada
+            pelos botões. É o preço de uma região contígua que contenha os dois
+            textos e nenhum controle — devolvê-lo para a linha de baixo parece
+            ajuste visual inócuo e desfaz a correção de acessibilidade.
+            O que esta região AINDA não resolve: ela nasce populada (a faixa
+            devolve `null` quando não há oferta), e região inserida já cheia
+            costuma não ser anunciada. Ver #635. */}
         <div role="status" className="flex flex-1 flex-col gap-2">
           <span>
             Você tem alterações não enviadas neste documento, salvas neste navegador{" "}

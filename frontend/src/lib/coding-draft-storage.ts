@@ -30,15 +30,20 @@ const DRAFT_DEBOUNCE_MS = 300;
 // quota estourada degrada em silêncio, que é exatamente o modo de falha que
 // esta issue existe para eliminar.
 //
-// Duas limitações conhecidas e aceitas, registradas aqui para não se perderem
+// Três limitações conhecidas e aceitas, registradas aqui para não se perderem
 // (ver #608). Primeiro, retenção: o envelope guarda RESPOSTAS de codificação em
 // claro no `localStorage` por até 30 dias, e nada o limpa no logout. A chave
 // isola usuários entre si, mas não protege contra quem tenha acesso ao mesmo
 // perfil de navegador — em máquina compartilhada, o isolamento real é o perfil,
 // não esta chave. Segundo, o teto é por USUÁRIO e não por projeto: uma sessão
 // longa num projeto pode evictar o rascunho mais antigo de outro projeto do
-// mesmo usuário. Ambas são aceitáveis enquanto o rascunho for uma rede de
-// segurança de curta duração; deixam de ser se ele virar armazenamento primário.
+// mesmo usuário. Terceiro, envelope de formato maior não tem limite superior
+// nenhum: este build não pode apagá-lo (é de uma aba que sabe mais) e ele
+// tampouco conta para o teto, sob pena de empurrar rascunho nosso para fora —
+// ver `GcVerdict`. Só morde se um formato novo proliferar entre abas, e quem
+// pode limpá-lo é justamente a aba que sabe lê-lo. As três são aceitáveis
+// enquanto o rascunho for uma rede de segurança de curta duração; deixam de ser
+// se ele virar armazenamento primário.
 const DRAFT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // Exportado para a suíte: um teste que repetisse o `100` passaria a mentir no
 // dia em que a política mudar, e é justamente o comportamento no teto que ele
@@ -269,6 +274,12 @@ function sweepOwnKeys(
   // "sobreviventes + 1 se há documento aberto", o `+1` contava um slot que
   // muitas vezes não existia — a primeira abertura, antes de qualquer tecla, é
   // exatamente quando o GC roda — e o teto evictava um rascunho válido a mais.
+  //
+  // Ocupação aqui é de QUOTA, não de envelope legível: o slot do documento
+  // aberto conta mesmo guardando lixo ou formato maior, porque ocupa espaço e
+  // nunca será evictado. É a exceção deliberada à isenção que `keep-foreign`
+  // recebe nos demais documentos — lá o envelope pode sair pela mão da aba que
+  // o escreveu, aqui não sai por mão nenhuma.
   openSlotTaken: boolean;
 } {
   const prefix = codingDraftUserPrefix(userId);
