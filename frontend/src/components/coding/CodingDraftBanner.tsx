@@ -64,16 +64,47 @@ export function CodingDraftBanner({
     recovery.kind === "diverged" ? recovery.overwrittenFields : [];
 
   return (
-    <div
-      role="status"
-      className="flex flex-col gap-2 border-b bg-amber-50 px-4 py-2.5 text-sm dark:bg-amber-950/30"
-    >
-      <div className="flex items-center gap-2">
-        <FileClock className="size-4 shrink-0 text-amber-600" aria-hidden />
-        <span className="flex-1">
-          Você tem alterações não enviadas neste documento, salvas neste navegador{" "}
-          {humanizeAge(recovery.updatedAt, reference)}.
-        </span>
+    <div className="border-b bg-amber-50 px-4 py-2.5 text-sm dark:bg-amber-950/30">
+      <div className="flex items-start gap-2">
+        <FileClock className="mt-0.5 size-4 shrink-0 text-amber-600" aria-hidden />
+        {/* A região live cobre os dois textos e nenhum dos botões. Envolvendo o
+            container inteiro, como estava, o leitor de tela reanunciava
+            "Retomar rascunho" e "Descartar" junto do aviso a cada mudança —
+            controle dentro de live region é ruído, não informação.
+            O layout paga por isso: o aviso de sobrescrita, que antes ocupava uma
+            linha própria em largura total, agora divide esta coluna estreitada
+            pelos botões. É o preço de uma região contígua que contenha os dois
+            textos e nenhum controle — devolvê-lo para a linha de baixo parece
+            ajuste visual inócuo e desfaz a correção de acessibilidade.
+            O que esta região AINDA não resolve: ela nasce populada (a faixa
+            devolve `null` quando não há oferta), e região inserida já cheia
+            costuma não ser anunciada. Ver #635. */}
+        <div role="status" className="flex flex-1 flex-col gap-2">
+          <span>
+            Você tem alterações não enviadas neste documento, salvas neste navegador{" "}
+            {humanizeAge(recovery.updatedAt, reference)}.
+          </span>
+
+          {overwritten.length > 0 && (
+            // Só o que retomar de fato sobrescreve — ver `overwrittenFields`, que é
+            // a interseção e não tudo que o servidor mudou.
+            <div className="flex items-start gap-2 text-amber-800 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+              <span>
+                Este documento foi salvo depois que o rascunho foi criado. Retomar
+                substitui{" "}
+                {overwritten.length === 1
+                  ? "a resposta de "
+                  : `as respostas de ${overwritten.length} perguntas: `}
+                <strong>
+                  {overwritten.map((name) => fieldLabel(name, fields)).join(", ")}
+                </strong>
+                .
+              </span>
+            </div>
+          )}
+        </div>
+
         <Button size="sm" variant="default" onClick={onRestore}>
           Retomar rascunho
         </Button>
@@ -81,25 +112,6 @@ export function CodingDraftBanner({
           Descartar
         </Button>
       </div>
-
-      {overwritten.length > 0 && (
-        // Só o que retomar de fato sobrescreve — ver `overwrittenFields`, que é
-        // a interseção e não tudo que o servidor mudou.
-        <div className="flex items-start gap-2 text-amber-800 dark:text-amber-200">
-          <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-          <span>
-            Este documento foi salvo depois que o rascunho foi criado. Retomar
-            substitui{" "}
-            {overwritten.length === 1
-              ? "a resposta de "
-              : `as respostas de ${overwritten.length} perguntas: `}
-            <strong>
-              {overwritten.map((name) => fieldLabel(name, fields)).join(", ")}
-            </strong>
-            .
-          </span>
-        </div>
-      )}
     </div>
   );
 }
