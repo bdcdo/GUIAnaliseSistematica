@@ -490,6 +490,72 @@ describe("indisponibilidade do storage", () => {
   });
 });
 
+// A faixa OFERECE o rascunho; ela não bloqueia o formulário. Continuar digitando
+// sem decidir nada sobre a oferta é fluxo corriqueiro — e era o fluxo em que a
+// cópia local deixava de ser mantida: a abertura não assumia a posse do slot que
+// acabara de ler, então a primeira tecla falhava o compare-and-swap contra o
+// próprio envelope ofertado. Sem o salvamento automático, é trabalho perdido.
+describe("oferta pendente — ignorar a faixa não pode desligar a rede local", () => {
+  it("editar sem responder à oferta continua gravando a cópia local", () => {
+    plant({ writeToken: "tok-de-ontem", draft: snap({ q1: "de ontem" }) });
+    const { result } = render();
+    // Pré-condição: a oferta está de pé, ninguém retomou nem descartou.
+    expect(result.current.recovery.kind).not.toBe("none");
+
+    act(() => result.current.recordDraft(DOC, snap({ q1: "digitado agora" })));
+    flushDebounce();
+
+    expect(stored()?.draft.answers).toEqual({ q1: "digitado agora" });
+    expect(result.current.storageAvailable).toBe(true);
+  });
+
+  it("a posse assumida é a do envelope observado, não licença para sobrescrever", () => {
+    plant({ writeToken: "tok-de-ontem", draft: snap({ q1: "de ontem" }) });
+    const { result } = render();
+    // Outra aba toma o slot DEPOIS da nossa leitura: o token observado não vale
+    // mais, e o CAS tem de barrar a escrita como antes.
+    plant({ writeToken: "de-outra-aba", draft: snap({ q1: "da outra aba" }) });
+
+    act(() => result.current.recordDraft(DOC, snap({ q1: "meu" })));
+    flushDebounce();
+
+    expect(stored()?.draft.answers).toEqual({ q1: "da outra aba" });
+    expect(result.current.storageAvailable).toBe(false);
+  });
+});
+
+// Envelope que este build não sabe usar não é trabalho de outra aba: é lixo
+// nosso. Tratá-lo como slot tomado o fazia barrar toda escrita seguinte daquele
+// documento — o envelope inútil ficava, e o trabalho novo não entrava.
+describe("slot inutilizável — lixo nosso não pode barrar trabalho novo", () => {
+  it("envelope com identidade discordante é sobrescrito pela edição nova", () => {
+    // Gravado NA chave deste documento, mas dizendo pertencer a outro. O `key`
+    // explícito importa: sem ele `plant` derivaria a chave do `documentId`
+    // divergente e plantaria longe do slot sob teste.
+    plant({ key: KEY, documentId: "outro-doc", writeToken: "tok-discordante" });
+    const { result } = render();
+
+    act(() => result.current.recordDraft(DOC, snap({ q1: "novo" })));
+    flushDebounce();
+
+    expect(stored()?.draft.answers).toEqual({ q1: "novo" });
+    expect(stored()?.documentId).toBe(DOC);
+  });
+
+  it("envelope de formato MAIOR continua intocado: é de uma aba que sabe mais", () => {
+    plant({ formatVersion: CODING_DRAFT_FORMAT_VERSION + 1 });
+    const { result } = render();
+
+    act(() => result.current.recordDraft(DOC, snap({ q1: "meu" })));
+    flushDebounce();
+
+    const raw = JSON.parse(window.localStorage.getItem(KEY) ?? "{}");
+    expect(raw.formatVersion).toBe(CODING_DRAFT_FORMAT_VERSION + 1);
+    // E a pesquisadora é avisada de que esta aba não está guardando cópia.
+    expect(result.current.storageAvailable).toBe(false);
+  });
+});
+
 // `hasStoredDraft` responde por uma afirmação que a tela faz à pesquisadora no
 // aviso de saída — "elas ficam salvas neste navegador". Por isso a pergunta é
 // feita ao STORAGE, e não ao estado em memória: existem três situações em que a
