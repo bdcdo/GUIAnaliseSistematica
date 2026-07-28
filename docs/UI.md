@@ -28,6 +28,14 @@ Escolher uma resposta na tela de comparação não grava o veredito: a escolha f
 
 A mudança veio de perda silenciosa observada em produção ([#417](https://github.com/bdcdo/dataframeitGUI/issues/417), [#430](https://github.com/bdcdo/dataframeitGUI/issues/430), corrigida no PR [#434](https://github.com/bdcdo/dataframeitGUI/pull/434)): com gravação implícita, uma navegação que acontecesse antes de a escrita concluir descartava o veredito sem que nada na tela indicasse a falha. O passo de confirmação existe para que o gesto de decidir e o de gravar sejam o mesmo evento, observável pelo usuário.
 
+## A fila de codificação abre no trabalho pendente, e "Ordem de atribuição" ordena por estado
+
+O modo "Ordem de atribuição" não é cronológico — `assignments` não tem `created_at`, então não há ordem de atribuição a recuperar. Ele ordena pelo estado do assignment, com o que exige trabalho primeiro: pendente, em andamento, concluído. Sem `?doc=` na URL, a tela abre na primeira codificação incompleta, com fallback para o primeiro item da ordenação escolhida.
+
+A ordem é declarada em `sortByAssignmentStatus` e não delegada ao banco por um motivo específico: até a [#608](https://github.com/bdcdo/dataframeitGUI/issues/608) a query usava `ORDER BY status`, que ordena pelo **alfabeto do enum** — `concluido` < `em_andamento` < `pendente` —, e por isso a fila abria justamente no que a pesquisadora já tinha terminado. Um enum ordenado por acaso é acoplamento invisível: renomear um dos valores mudaria a fila sem nenhum gate reclamar.
+
+A peça originalmente planejada — abrir no primeiro documento *nunca respondido* — foi descartada depois de medida, em 27/07/2026: nas filas dos dois projetos ativos, nenhum dos 13 pesquisadores tinha documento nunca respondido, e os concluídos da rodada atual já saem no filtro server-side. O que se encontrava na frente da fila eram respostas completas devolvidas por mudança de rodada, que exigem ação. Priorizar o "nunca tocado" não morderia em nenhuma fila real e contradiria o propósito do modo "Codificados recentemente", que existe para retomar de onde parou.
+
 ## Onde procurar o que este arquivo não descreve
 
 - **Mapeamento entre tipo de campo e controle de formulário** (incluindo campos de data, grupos de subcampos e a opção "Outro"): `frontend/src/components/coding/FieldRenderer.tsx` — é a fonte única, e reproduzi-lo em prosa apenas criaria uma cópia para divergir.
