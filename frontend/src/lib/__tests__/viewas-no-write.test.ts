@@ -114,9 +114,9 @@ describe("saveResponse — escrita persiste o ator real, nunca o viewAs", () => 
       "member-viewed",
     );
 
-    // `missingRequired` acompanha todo save bem-sucedido: é a contagem de
-    // obrigatórias em aberto no conjunto GRAVADO (0 = codificação completa).
-    expect(result).toEqual({ success: true, missingRequired: 0 });
+    // `missingRequiredFields` acompanha todo save bem-sucedido: são os nomes das
+    // obrigatórias em aberto no conjunto GRAVADO (vazio = codificação completa).
+    expect(result).toEqual({ success: true, missingRequiredFields: [] });
     // A identidade veio do ator autenticado (por projectId), não de input do caller.
     expect(resolveMemberUserId).toHaveBeenCalledWith("project-1");
 

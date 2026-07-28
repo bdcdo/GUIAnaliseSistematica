@@ -9,7 +9,7 @@ import { OutOfScopeToggle } from "./OutOfScopeToggle";
 import { useOutOfScopeState, type OutOfScopeConfig } from "./useOutOfScopeState";
 import { useScrollToRevealedField } from "./useScrollToRevealedField";
 import { useQuestionReorder } from "./useQuestionReorder";
-import { useQuestionValidation } from "./useQuestionValidation";
+import { useQuestionValidation, type CodingSubmitHandler } from "./useQuestionValidation";
 import { MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isFieldVisible } from "@/lib/conditional";
@@ -23,7 +23,8 @@ export interface QuestionsPanelProps {
   fields: PydanticField[];
   answers: Record<string, unknown>;
   onAnswer: (fieldName: string, value: unknown) => void;
-  onSubmit: () => void;
+  /** Ver `CodingSubmitHandler`: o retorno é o canal do veredito do servidor. */
+  onSubmit: CodingSubmitHandler;
   submitting?: boolean;
   notes?: string;
   onNotesChange?: (notes: string) => void;

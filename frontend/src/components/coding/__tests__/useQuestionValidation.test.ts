@@ -107,6 +107,67 @@ describe("useQuestionValidation — envio", () => {
     );
   });
 
+  it("veredito do servidor aponta a pergunta, mesmo com a régua local satisfeita", async () => {
+    // O caso do critério 5 da #608, e o único em que as duas réguas discordam:
+    // o cliente é staleness-blind contra o schema que carregou, então libera o
+    // envio; o servidor reavalia contra o carimbo per-campo da própria escrita e
+    // ainda vê `q2` em aberto (obrigatória criada depois). O envio GRAVOU — não é
+    // um bloqueio —, e mesmo assim a tela tem de levar a pesquisadora até ela.
+    const fields = [field({ name: "q1" }), field({ name: "q2" })];
+    const { view, onSubmit, refs } = setup(fields, { q1: "a", q2: "b" });
+    onSubmit.mockResolvedValue(["q2"]);
+
+    await act(async () => {
+      view.result.current.handleSubmitWithValidation();
+    });
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    // Sem aviso de bloqueio: quem fala com a pesquisadora aqui é o toast do
+    // save (`notifySaved`), que nomeia a pergunta. Este hook só aponta.
+    expect(warn).not.toHaveBeenCalled();
+    expect(view.result.current.highlightedFields).toEqual(new Set(["q2"]));
+    const secondCard = refs.current![1]!;
+    expect(secondCard.scrollIntoView).toHaveBeenCalled();
+    expect(document.activeElement).toBe(
+      secondCard.querySelector("[data-question-body] input"),
+    );
+  });
+
+  it("veredito vazio do servidor não destaca nada", async () => {
+    // Boundary: `[]` é truthy em JS. Se o ramo testasse a lista em vez do
+    // tamanho, toda codificação COMPLETA acabaria com o `Set` de destaque
+    // esvaziado por um caminho que nem deveria rodar — e, pior, o mesmo engano
+    // no container prenderia a pesquisadora no documento.
+    const fields = [field({ name: "q1" })];
+    const { view, refs } = setup(fields, { q1: "a" });
+    view.result.current.handleSubmitWithValidation();
+
+    await act(async () => {});
+
+    expect(view.result.current.highlightedFields).toEqual(new Set());
+    expect(refs.current![0]!.scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("nome fora do formulário não rola para lugar nenhum", async () => {
+    // A pergunta nasceu depois que o formulário abriu: ela não está em
+    // `visibleFields`. O teste fixa o COMPORTAMENTO (não rolar para o card
+    // errado), não o mecanismo — que é `findIndex` devolvendo -1 e o `?.`
+    // tornando scroll e foco no-ops. Quem avisa a pesquisadora neste caso é o
+    // toast do save, que manda recarregar a página.
+    const fields = [field({ name: "q1" })];
+    const { view, onSubmit, refs } = setup(fields, { q1: "a" });
+    onSubmit.mockResolvedValue(["criado_depois"]);
+
+    await act(async () => {
+      view.result.current.handleSubmitWithValidation();
+    });
+
+    expect(refs.current![0]!.scrollIntoView).not.toHaveBeenCalled();
+    // O destaque ainda registra a pendência — se o campo aparecer num render
+    // posterior (refresh do RSC), ele já entra marcado.
+    expect(view.result.current.highlightedFields).toEqual(new Set(["criado_depois"]));
+  });
+
   it("submitting/outOfScopeBlocked → nunca envia nem avisa", () => {
     const fields = [field({ name: "q1" })];
     const a = setup(fields, { q1: "a" }, { submitting: true });

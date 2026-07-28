@@ -64,7 +64,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 beforeEach(() => {
-  mockSave.mockResolvedValue({ success: true });
+  mockSave.mockResolvedValue({ success: true, missingRequiredFields: [] });
 });
 
 describe("useAssignedCoding", () => {
@@ -104,7 +104,7 @@ describe("useAssignedCoding", () => {
     // completar o documento — e ele reapareceria na fila depois, o sintoma
     // relatado como "minha codificação não salvou" (#519). O save em si teve
     // sucesso: markClean roda, só a navegação é que fica retida.
-    mockSave.mockResolvedValue({ success: true, missingRequired: 2 });
+    mockSave.mockResolvedValue({ success: true, missingRequiredFields: ["q1", "q2"] });
     const { view, params } = setup();
     act(() => view.result.current.handleAnswer("q1", "sim"));
     await act(async () => {
@@ -116,10 +116,11 @@ describe("useAssignedCoding", () => {
     expect(view.result.current.allDone).toBe(false);
   });
 
-  it("save sem pendência (missingRequired 0) avança normalmente", async () => {
-    // Boundary com o teste acima: é 0 — e não a mera presença da chave — que
-    // libera a navegação.
-    mockSave.mockResolvedValue({ success: true, missingRequired: 0 });
+  it("save sem pendência (lista vazia) avança normalmente", async () => {
+    // Boundary com o teste acima: é o TAMANHO da lista — não a presença da
+    // chave — que libera a navegação. `[]` é truthy em JS, então testar a lista
+    // crua prenderia no documento quem completou a codificação.
+    mockSave.mockResolvedValue({ success: true, missingRequiredFields: [] });
     const { view, params } = setup();
     act(() => view.result.current.handleAnswer("q1", "sim"));
     await act(async () => {
@@ -130,7 +131,7 @@ describe("useAssignedCoding", () => {
   });
 
   it("pendência no último documento não marca allDone", async () => {
-    mockSave.mockResolvedValue({ success: true, missingRequired: 1 });
+    mockSave.mockResolvedValue({ success: true, missingRequiredFields: ["q1"] });
     const { view } = setup();
     act(() => view.result.current.handleDocNavigate(2)); // vai para d3 (último)
     act(() => view.result.current.handleAnswer("q1", "sim"));
@@ -156,7 +157,7 @@ describe("useAssignedCoding", () => {
     expect(params.setSubmitting).toHaveBeenLastCalledWith(false);
     expect(toast.error).toHaveBeenCalledWith(CODING_SAVE_TRANSPORT_ERROR);
 
-    mockSave.mockResolvedValue({ success: true });
+    mockSave.mockResolvedValue({ success: true, missingRequiredFields: [] });
     await act(async () => {
       await view.result.current.handleSubmit();
     });
@@ -268,9 +269,9 @@ describe("useAssignedCoding", () => {
   });
 
   it("duplo-clique em Enviar não duplica saveResponse (guarda de reentrância)", async () => {
-    let resolveSave: (v: { success: true }) => void = () => {};
+    let resolveSave: (v: { success: true, missingRequiredFields: [] }) => void = () => {};
     mockSave.mockReturnValue(
-      new Promise<{ success: true }>((r) => {
+      new Promise<{ success: true, missingRequiredFields: [] }>((r) => {
         resolveSave = r;
       }),
     );
@@ -283,16 +284,16 @@ describe("useAssignedCoding", () => {
     expect(mockSave).toHaveBeenCalledTimes(1);
 
     await act(async () => {
-      resolveSave({ success: true });
+      resolveSave({ success: true, missingRequiredFields: [] });
       await Promise.all([p1, p2]);
     });
     expect(mockSave).toHaveBeenCalledTimes(1);
   });
 
   it("congela a edição enquanto submitting (não perde teclas no save em voo)", async () => {
-    let resolveSave: (v: { success: true }) => void = () => {};
+    let resolveSave: (v: { success: true, missingRequiredFields: [] }) => void = () => {};
     mockSave.mockReturnValue(
-      new Promise<{ success: true }>((r) => {
+      new Promise<{ success: true, missingRequiredFields: [] }>((r) => {
         resolveSave = r;
       }),
     );
@@ -310,7 +311,7 @@ describe("useAssignedCoding", () => {
     expect(params.markDirty).not.toHaveBeenCalled();
 
     await act(async () => {
-      resolveSave({ success: true });
+      resolveSave({ success: true, missingRequiredFields: [] });
       await p;
     });
   });

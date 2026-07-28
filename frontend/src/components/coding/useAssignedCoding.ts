@@ -236,14 +236,18 @@ export function useAssignedCoding({
       // passa a ser o que foi gravado. Vem ANTES do early-return abaixo de
       // propósito — um envio que deixou obrigatória em aberto também gravou.
       submitConfirmed(currentDoc.id, { answers: docAnswers, notes: docNotes });
-      notifySaved(result.missingRequired);
+      notifySaved(result.missingRequiredFields, fields);
       // Save com obrigatórias em aberto mantém o pesquisador NO documento:
       // avançar tiraria a tela de baixo do aviso que acabou de pedir para
       // completá-lo, e o doc reapareceria na fila depois — o sintoma que o #519
       // descreve. Só alcançável quando o schema cresceu entre o carregamento do
       // formulário e o envio; fora disso o SubmitBar já cobra a pendência antes
       // do clique, pela mesma régua.
-      if (result.missingRequired) return;
+      //
+      // Devolver a lista (em vez de só sair) é o que deixa o painel rolar até a
+      // pergunta: o veredito trafega pelo retorno do handler, não por um estado
+      // paralelo que precisaria ser mantido em sincronia (#608).
+      if (result.missingRequiredFields.length) return result.missingRequiredFields;
       if (docIndex < sortedDocuments.length - 1) {
         const nextIndex = docIndex + 1;
         dispatch({ type: "index", index: nextIndex });
@@ -266,6 +270,7 @@ export function useAssignedCoding({
     currentDoc,
     docAnswers,
     docNotes,
+    fields,
     projectId,
     docIndex,
     sortedDocuments,

@@ -3,6 +3,7 @@
 import { Suspense, useCallback, useMemo, useState } from "react";
 import { applyFieldOrder } from "@/lib/field-order";
 import { sortByRecent } from "@/lib/coding-sort";
+import type { DocRoundStatus } from "@/lib/rounds";
 import { useUrlState } from "@/hooks/useUrlState";
 import { useFieldOrder } from "@/hooks/useFieldOrder";
 import { useFullscreen } from "@/hooks/useFullscreen";
@@ -52,6 +53,7 @@ function computeInitialCodingState(
   docParam: string | null,
   sortedDocuments: AssignedDoc[],
   hasAssignments: boolean,
+  statusByDoc: Record<string, DocRoundStatus["kind"]>,
 ): InitialCodingState {
   if (docParam) {
     const assignedIdx = sortedDocuments.findIndex((d) => d.id === docParam);
@@ -60,10 +62,27 @@ function computeInitialCodingState(
     }
     return { mode: "browse", docIndex: 0 };
   }
-  return { mode: hasAssignments ? "assigned" : "browse", docIndex: 0 };
+  // Sem `?doc=`, abre na primeira codificação INCOMPLETA — trabalho que a
+  // pesquisadora começou e não terminou vem antes de resposta completa que
+  // voltou à fila por mudança de schema (#608). Medido em 2026-07-27: nenhuma
+  // fila dos projetos ativos tem documento nunca respondido, então o critério
+  // "não abrir no que já foi respondido" só é acionável nesta forma — e os
+  // concluídos da rodada atual já saem server-side, no filtro de rodada.
+  //
+  // Fallback para o índice 0 quando não há parcial: aí a ordem escolhida pelo
+  // sort é a melhor resposta que existe (em "recent", o último documento que ela
+  // mexeu — retomar de onde parou).
+  const firstPending = sortedDocuments.findIndex(
+    (d) => statusByDoc[d.id] === "current_pending",
+  );
+  return {
+    mode: hasAssignments ? "assigned" : "browse",
+    docIndex: firstPending < 0 ? 0 : firstPending,
+  };
 }
 
 const EMPTY_CODED_AT: Record<string, string> = {};
+const EMPTY_STATUS_BY_DOC: Record<string, DocRoundStatus["kind"]> = {};
 const EMPTY_JUSTIFICATIONS: Record<string, Record<string, unknown>> = {};
 const EMPTY_PENDING_EXCLUSIONS: Record<string, string> = {};
 
@@ -110,6 +129,7 @@ function buildHeaderDocSection(
     total: number;
     onNavigate: (index: number) => void;
     parecerUrl?: string;
+    roundStatus: DocRoundStatus["kind"] | undefined;
   },
   browse: {
     docId: string | null;
@@ -130,6 +150,7 @@ function buildHeaderDocSection(
       total: assigned.total,
       onNavigate: assigned.onNavigate,
       parecerUrl: assigned.parecerUrl,
+      roundStatus: assigned.roundStatus,
     };
   }
   if (mode === "browse" && browse.docId) {
@@ -156,6 +177,9 @@ interface CodingPageProps {
   userId: string;
   documents: AssignedDoc[];
   codedAtByDoc?: Record<string, string>;
+  /** Por que cada documento está na fila — mesma classificação que a decidiu
+   *  (`classifyDocStatus`, no servidor). Ver `CodingHeader`. */
+  statusByDoc?: Record<string, DocRoundStatus["kind"]>;
   fields: PydanticField[];
   existingAnswers: Record<string, Record<string, unknown>>;
   existingJustifications?: Record<string, Record<string, unknown>>;
@@ -186,6 +210,7 @@ function CodingPageInner({
   userId,
   documents,
   codedAtByDoc = EMPTY_CODED_AT,
+  statusByDoc = EMPTY_STATUS_BY_DOC,
   fields,
   existingAnswers,
   existingJustifications = EMPTY_JUSTIFICATIONS,
@@ -215,7 +240,7 @@ function CodingPageInner({
   // hasAssignments iniciais — intencional: navegação posterior não deve
   // recomputar o estado inicial (era um useCallback com deps [] + eslint-disable).
   const [initial] = useState(() =>
-    computeInitialCodingState(docParam, sortedDocuments, hasAssignments),
+    computeInitialCodingState(docParam, sortedDocuments, hasAssignments, statusByDoc),
   );
 
   const [mode, setMode] = useState<"assigned" | "browse">(initial.mode);
@@ -278,6 +303,7 @@ function CodingPageInner({
   const browse = useBrowseCoding({
     projectId,
     documents,
+    fields,
     mode,
     docParam,
     setSubmitting,
@@ -435,6 +461,9 @@ function CodingPageInner({
               total: documents.length,
               onNavigate: assigned.handleDocNavigate,
               parecerUrl: assignedParecerUrl,
+              roundStatus: assigned.currentDoc
+                ? statusByDoc[assigned.currentDoc.id]
+                : undefined,
             },
             {
               docId: browse.browseDocId,

@@ -113,6 +113,83 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe("CodingPage — documento inicial (#608)", () => {
+  // Critério 6 da #608. Medido em 2026-07-27 nos dois projetos ativos: NENHUMA
+  // fila tem documento nunca respondido, e o filtro de rodada já expulsa os
+  // concluídos da rodada atual server-side. O que a pesquisadora encontrava na
+  // frente eram respostas completas reabertas por mudança de schema — que
+  // exigem ação, mas não são o trabalho que ela deixou pela metade.
+  const TRES = [assignedDoc("a1"), assignedDoc("a2"), assignedDoc("a3")];
+
+  it("abre na primeira codificação incompleta, não no primeiro da lista", async () => {
+    render(
+      <CodingPage
+        userId="user-teste"
+        projectId="p1"
+        documents={TRES}
+        statusByDoc={{ a1: "previous", a2: "current_pending", a3: "previous" }}
+        fields={FIELDS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a2");
+  });
+
+  it("sem nenhuma incompleta, respeita a ordem do sort (índice 0)", async () => {
+    // O fallback não é detalhe: em "recent" o índice 0 é o último documento que
+    // ela mexeu, e pular dali quebraria "retomar de onde parei".
+    render(
+      <CodingPage
+        userId="user-teste"
+        projectId="p1"
+        documents={TRES}
+        statusByDoc={{ a1: "previous", a2: "previous", a3: "previous" }}
+        fields={FIELDS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+  });
+
+  it("?doc= explícito vence a priorização", async () => {
+    // Link compartilhado / refresh: a URL é uma escolha da pesquisadora e não
+    // pode ser sobrescrita por heurística de fila.
+    urlParams.current = { doc: "a3" };
+    render(
+      <CodingPage
+        userId="user-teste"
+        projectId="p1"
+        documents={TRES}
+        statusByDoc={{ a1: "previous", a2: "current_pending", a3: "previous" }}
+        fields={FIELDS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a3");
+  });
+
+  it("sem statusByDoc (prop ausente) cai no índice 0 sem quebrar", async () => {
+    render(
+      <CodingPage
+        userId="user-teste"
+        projectId="p1"
+        documents={TRES}
+        fields={FIELDS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+  });
+});
+
 describe("CodingPage — modo Atribuídos (integração)", () => {
   it("sem documentos atribuídos: mostra o empty-state 'no-doc'", async () => {
     render(
@@ -132,7 +209,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
   });
 
   it("último documento atribuído: enviar mostra o empty-state 'tudo concluído'", async () => {
-    saveResponse.mockResolvedValue({ success: true });
+    saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
 
     render(
       <CodingPage

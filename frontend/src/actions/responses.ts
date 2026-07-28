@@ -14,14 +14,25 @@ export interface SaveResponseOpts {
 }
 
 export type SaveResponseResult =
-  // `missingRequired`: obrigatórias ainda em branco no conjunto GRAVADO (0 =
-  // codificação completa). É a mesma contagem que decide `is_partial`, e vai ao
-  // cliente para o feedback distinguir "salvo" de "concluído" (#519). Opcional
-  // porque só `saveResponse` a computa — o adapter `saveCodingResponse` a repassa
-  // mas seu ramo de erro de transporte não a tem, e `notifySaved` lê `undefined`
-  // como "completo". União (não interface achatada) para manter irrepresentável
-  // o estado `{ success: true, error }`.
-  | { success: true; missingRequired?: number }
+  // `missingRequiredFields`: NOMES das obrigatórias ainda em branco no conjunto
+  // GRAVADO (vazio = codificação completa). É a mesma avaliação que decide
+  // `is_partial`, e vai ao cliente para o feedback distinguir "salvo" de
+  // "concluído" (#519) e para apontar QUAL pergunta falta (#608).
+  //
+  // Nomes, e não uma contagem ao lado deles: `missingRequiredHumanFields` já
+  // devolve os campos, e manter os dois permitiria representar contagem e lista
+  // em desacordo — o tipo de divergência que a régua única de #519 existe para
+  // impossibilitar. A contagem é `.length` no consumidor.
+  //
+  // OBRIGATÓRIA no membro de sucesso: todo save que grava avalia a régua, então
+  // "gravou mas não sei o que falta" não é um estado que exista. O ramo de erro
+  // de transporte do adapter `saveCodingResponse` não precisa dela porque é o
+  // outro membro da união (`success: false`). Uma resposta legacy (sem schema)
+  // chega aqui como lista vazia, não como ausência.
+  //
+  // União (não interface achatada) pelo mesmo motivo: manter irrepresentável o
+  // estado `{ success: true, error }`.
+  | { success: true; missingRequiredFields: string[] }
   | { success: false; error: string };
 
 // Response já existente do mesmo respondente para o mesmo documento. `answers`
@@ -189,9 +200,9 @@ function buildResponsePayload({
   // de existir como variável: toda escrita é submit explícito, e o conjunto
   // gravado é a condição inteira.
   //
-  // `codingIsComplete` chega pronto de `saveResponse`, do MESMO cálculo que
-  // produz o `missingRequired` devolvido ao cliente: o sinal gravado no banco e o
-  // que o pesquisador lê no toast não podem discordar, e derivá-los de uma
+  // `codingIsComplete` chega pronto de `buildSaveWrite`, da MESMA avaliação que
+  // produz o `missingRequiredFields` devolvido ao cliente: o sinal gravado no
+  // banco e o que o pesquisador lê no toast não podem discordar, e derivá-los de uma
   // avaliação só torna isso verdade por construção, não por acordo entre dois
   // call sites. A régua (staleness-aware contra o carimbo per-campo, para que um
   // campo obrigatório criado depois não rebaixe codificação completa à época)
@@ -341,17 +352,18 @@ function buildSaveWrite({
   // Régua de completude aplicada UMA vez, ao conjunto que vai ser gravado
   // (`snapshot.persistedAnswers`) e com o carimbo per-campo da própria escrita —
   // não ao que a tela mostrava. Dela saem os dois consumidores: o `is_partial`
-  // gravado e o `missingRequired` devolvido ao cliente. Se o schema mudou desde
-  // o carregamento do formulário, é esta contagem que impede o feedback de
-  // sucesso de anunciar uma conclusão que não houve (#519).
-  const missingRequired = missingRequiredHumanFields(
+  // gravado e a lista devolvida ao cliente. Se o schema mudou desde o
+  // carregamento do formulário, é esta avaliação que impede o feedback de
+  // sucesso de anunciar uma conclusão que não houve (#519), e é dela que sai o
+  // nome da pergunta até a qual a tela leva a pesquisadora (#608).
+  const missingRequiredFields = missingRequiredHumanFields(
     fields,
     snapshot.persistedAnswers,
     snapshot.answerFieldHashes,
-  ).length;
+  ).map((f) => f.name);
 
   const payload = buildResponsePayload({
-    codingIsComplete: missingRequired === 0,
+    codingIsComplete: missingRequiredFields.length === 0,
     answersToPersist: snapshot.persistedAnswers,
     answerFieldHashes: snapshot.answerFieldHashes,
     stampsCurrentSchema: snapshot.stampsCurrentSchema,
@@ -360,7 +372,7 @@ function buildSaveWrite({
     notes,
   });
 
-  return { snapshot, missingRequired, payload };
+  return { snapshot, missingRequiredFields, payload };
 }
 
 // Os motivos para não gravar, avaliados antes de montar qualquer payload.
@@ -432,7 +444,7 @@ async function runSaveAttempt({
   const respondentName = resolveRespondentName(profile, userEmail);
 
   const fields = (project?.pydantic_fields as PydanticField[]) || [];
-  const { snapshot, missingRequired, payload } = buildSaveWrite({
+  const { snapshot, missingRequiredFields, payload } = buildSaveWrite({
     fields,
     existing,
     project,
@@ -465,7 +477,7 @@ async function runSaveAttempt({
   if (syncErr) return { success: false, error: syncErr };
 
   revalidateAfterSave(projectId);
-  return { success: true, missingRequired };
+  return { success: true, missingRequiredFields };
 }
 
 // Propaga a gravação para a fila de codificação. Projeto sem schema não tem

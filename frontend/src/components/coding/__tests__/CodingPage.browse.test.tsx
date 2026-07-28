@@ -183,7 +183,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     getDocumentForCoding
       .mockResolvedValueOnce(codingResult("d1", null))
       .mockResolvedValueOnce(codingResult("d1", { q1: "sim" }));
-    saveResponse.mockResolvedValue({ success: true });
+    saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
 
     render(
       <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
@@ -210,7 +210,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
   it("I3: Enviar marca o doc como respondido e incrementa o contador na lista", async () => {
     getDocumentsForBrowse.mockResolvedValue([browseDoc("d1", 0)]);
     getDocumentForCoding.mockResolvedValue(codingResult("d1", null));
-    saveResponse.mockResolvedValue({ success: true });
+    saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
 
     render(
       <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,

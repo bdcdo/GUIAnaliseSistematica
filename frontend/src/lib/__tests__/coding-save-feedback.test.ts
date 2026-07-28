@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { toast } from "sonner";
 import { notifySaved } from "@/lib/coding-save-feedback";
+import type { PydanticField } from "@/lib/types";
 
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), warning: vi.fn() },
@@ -11,36 +12,73 @@ beforeEach(() => {
   vi.mocked(toast.warning).mockClear();
 });
 
+const field = (name: string, description?: string): PydanticField =>
+  ({ name, type: "text", options: null, description }) as PydanticField;
+
+const FIELDS = [
+  field("deferimento", "Houve deferimento do pedido?"),
+  field("valor", "Valor da condenação"),
+  field("sem_enunciado", ""),
+];
+
 // A distinção "salvo" vs "concluído" é a metade cliente do #519: um envio que
 // deixou obrigatórias em aberto não pode devolver o mesmo sinal de conclusão. Uma
 // troca warning→success ou um erro de plural aqui passaria por todos os gates —
 // por isso as strings exatas são fixadas.
+//
+// Desde o #608 a mensagem NOMEIA a pergunta: "falta 1 obrigatória" dizia que algo
+// estava pendente sem dizer o quê, e quem não achava a pergunta concluía que o
+// sistema tinha errado. As asserções abaixo fixam o enunciado porque é ele — e
+// não o nome técnico do campo — que a pesquisadora reconhece na tela.
 describe("notifySaved — feedback de save distingue salvo × pendente", () => {
-  it("undefined (legacy, sem régua) → sucesso", () => {
-    notifySaved(undefined);
+  it("lista vazia (inclui o legacy, sem régua) → sucesso", () => {
+    // `[]` é truthy em JS: se o ramo de pendência testasse a lista em vez do
+    // tamanho dela, uma codificação COMPLETA receberia o aviso de pendência.
+    // É também a forma em que chega uma resposta legacy, sem schema a avaliar.
+    notifySaved([], FIELDS);
     expect(toast.success).toHaveBeenCalledWith("Respostas salvas!");
     expect(toast.warning).not.toHaveBeenCalled();
   });
 
-  it("0 obrigatória em aberto → sucesso (boundary com o ramo de pendência)", () => {
-    notifySaved(0);
-    expect(toast.success).toHaveBeenCalledWith("Respostas salvas!");
-    expect(toast.warning).not.toHaveBeenCalled();
-  });
-
-  it("1 obrigatória em aberto → aviso no singular", () => {
-    notifySaved(1);
+  it("1 obrigatória em aberto → aviso nomeando o enunciado", () => {
+    notifySaved(["deferimento"], FIELDS);
     expect(toast.warning).toHaveBeenCalledWith(
-      "Salvo — o documento segue pendente (falta 1 obrigatória)",
+      'Salvo — falta responder "Houve deferimento do pedido?"',
     );
     expect(toast.success).not.toHaveBeenCalled();
   });
 
-  it("N obrigatórias em aberto → aviso no plural com a contagem", () => {
-    notifySaved(3);
+  it("N obrigatórias → nomeia a primeira e conta o resto", () => {
+    // É até a PRIMEIRA que a tela rola (ver `pointAtFields`), então é ela que
+    // precisa ser reconhecível; o resto vira contagem.
+    notifySaved(["deferimento", "valor"], FIELDS);
     expect(toast.warning).toHaveBeenCalledWith(
-      "Salvo — o documento segue pendente (faltam 3 obrigatórias)",
+      'Salvo — falta responder "Houve deferimento do pedido?" (e mais 1)',
     );
-    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("mais de duas → plural na contagem do resto", () => {
+    notifySaved(["deferimento", "valor", "sem_enunciado"], FIELDS);
+    expect(toast.warning).toHaveBeenCalledWith(
+      'Salvo — falta responder "Houve deferimento do pedido?" (e mais 2)',
+    );
+  });
+
+  it("campo sem enunciado cai no nome técnico, não em string vazia", () => {
+    notifySaved(["sem_enunciado"], FIELDS);
+    expect(toast.warning).toHaveBeenCalledWith(
+      'Salvo — falta responder "sem_enunciado"',
+    );
+  });
+
+  it("campo ausente do schema carregado → manda recarregar, não procurar na tela", () => {
+    // O caso que produz a pendência: a pergunta nasceu DEPOIS que o formulário
+    // abriu, então ela não está na tela e não há para onde rolar. Mandar
+    // procurá-la seria pior do que a mensagem genérica que o #608 substituiu.
+    notifySaved(["criado_depois"], FIELDS);
+    const [msg] = vi.mocked(toast.warning).mock.calls[0] as [string];
+    expect(msg).toContain("criada depois que você abriu este documento");
+    expect(msg).toContain("Recarregue a página");
+    expect(msg).not.toContain("criado_depois");
   });
 });

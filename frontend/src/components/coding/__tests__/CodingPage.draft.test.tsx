@@ -167,7 +167,7 @@ beforeEach(() => {
   Element.prototype.scrollTo = vi.fn();
   Element.prototype.scrollIntoView = vi.fn();
   getDocumentsForBrowse.mockResolvedValue([]);
-  saveResponse.mockResolvedValue({ success: true });
+  saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
 });
 afterEach(() => {
   cleanup();
@@ -309,11 +309,14 @@ describe("recuperação — oferecer, nunca aplicar em silêncio", () => {
 });
 
 describe("envio confirmado", () => {
-  // Mutação vermelha: preservar o rascunho quando `missingRequired > 0`. A
+  // Mutação vermelha: preservar o rascunho quando ainda faltam obrigatórias. A
   // escrita aconteceu; manter o envelope deixaria o indicador aceso sobre
   // trabalho que FOI enviado, e a oferta voltaria depois.
   it("descarta o rascunho mesmo quando o documento segue pendente", async () => {
-    saveResponse.mockResolvedValue({ success: true, missingRequired: 1 });
+    saveResponse.mockResolvedValue({
+      success: true,
+      missingRequiredFields: ["outra_pergunta"],
+    });
     const user = userEvent.setup();
     renderPage();
 

@@ -1,7 +1,58 @@
 import { describe, it, expect } from "vitest";
-import { sortByRecent } from "@/lib/coding-sort";
+import { sortByRecent, sortByAssignmentStatus } from "@/lib/coding-sort";
+import type { Assignment } from "@/lib/types";
 
 const ids = (docs: { id: string }[]) => docs.map((d) => d.id);
+
+const doc = (id: string, status?: Assignment["status"]) => ({
+  id,
+  ...(status ? { assignment: { status } } : {}),
+});
+
+describe("sortByAssignmentStatus", () => {
+  it("põe o que exige trabalho primeiro: pendente, em_andamento, concluido", () => {
+    // Prova do vermelho do #608: o `ORDER BY status` do PostgREST ordenava pelo
+    // ALFABETO do enum (c < e < p), então "Ordem de atribuição" abria a fila nos
+    // documentos que a pesquisadora já tinha concluído. A ordem aqui é
+    // declarada, não herdada da grafia dos valores.
+    const docs = [
+      doc("concluido-1", "concluido"),
+      doc("pendente-1", "pendente"),
+      doc("andamento-1", "em_andamento"),
+    ];
+    expect(ids(sortByAssignmentStatus(docs))).toEqual([
+      "pendente-1",
+      "andamento-1",
+      "concluido-1",
+    ]);
+  });
+
+  it("desempata pela ordem original dentro do mesmo estado", () => {
+    // O PostgREST não garante ordem sem ORDER BY: sem o desempate, dois
+    // carregamentos da mesma fila poderiam numerar os documentos de formas
+    // diferentes e o `◀ n/total ▶` deixaria de ser estável entre refreshes.
+    const docs = [
+      doc("b", "pendente"),
+      doc("a", "pendente"),
+      doc("c", "pendente"),
+    ];
+    expect(ids(sortByAssignmentStatus(docs))).toEqual(["b", "a", "c"]);
+  });
+
+  it("documento sem assignment conta como pendente", () => {
+    const docs = [doc("concluido-1", "concluido"), doc("sem-assignment")];
+    expect(ids(sortByAssignmentStatus(docs))).toEqual([
+      "sem-assignment",
+      "concluido-1",
+    ]);
+  });
+
+  it("nao muta o array de entrada", () => {
+    const docs = [doc("concluido-1", "concluido"), doc("pendente-1", "pendente")];
+    sortByAssignmentStatus(docs);
+    expect(ids(docs)).toEqual(["concluido-1", "pendente-1"]);
+  });
+});
 
 describe("sortByRecent", () => {
   it("ordena documentos codificados do mais recente para o mais antigo", () => {

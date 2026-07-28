@@ -8,12 +8,14 @@ import { saveCodingResponse } from "@/lib/coding-save";
 import { notifySaved } from "@/lib/coding-save-feedback";
 import { type CodingDraft } from "./BrowseDocCoder";
 import type { CodingSnapshot } from "@/lib/coding-draft";
-import type { AssignedDoc } from "@/lib/types";
+import type { AssignedDoc, PydanticField } from "@/lib/types";
 
 interface UseBrowseCodingParams {
   projectId: string;
   /** Docs atribuídos — usados para excluir da seleção do modo Explorar. */
   documents: AssignedDoc[];
+  /** Schema carregado no formulário — resolve o enunciado da pergunta pendente. */
+  fields: PydanticField[];
   mode: "assigned" | "browse";
   docParam: string | null;
   setSubmitting: (value: boolean) => void;
@@ -39,6 +41,7 @@ interface UseBrowseCodingParams {
 export function useBrowseCoding({
   projectId,
   documents,
+  fields,
   mode,
   docParam,
   setSubmitting,
@@ -132,7 +135,7 @@ export function useBrowseCoding({
         if (result.success) {
           markClean(browseDocId);
           submitConfirmed(browseDocId, { answers, notes });
-          notifySaved(result.missingRequired);
+          notifySaved(result.missingRequiredFields, fields);
           markResponded(browseDocId);
           browseDraftRef.current = null;
           // Save com obrigatórias em aberto mantém o doc ABERTO, pelo mesmo
@@ -140,10 +143,11 @@ export function useBrowseCoding({
           // tela de baixo do aviso que acabou de pedir para completá-lo. Aqui a
           // invalidação vem sem o `updateDocParam(null)` que a precede no caminho
           // normal — o refetch é desejado, porque reassenta o formulário no que
-          // acabou de ser gravado em vez de num seed stale.
-          if (result.missingRequired) {
+          // acabou de ser gravado em vez de num seed stale. Devolver a lista é o
+          // que faz o painel rolar até a pergunta (#608).
+          if (result.missingRequiredFields.length) {
             invalidateBrowseDoc(browseDocId);
-            return;
+            return result.missingRequiredFields;
           }
           // Zera o ?doc= ANTES de invalidar: com browseDocId já null o hook não
           // refetcha o doc que estamos deixando (evita refetch/flicker). A
@@ -164,6 +168,7 @@ export function useBrowseCoding({
     [
       browseDocId,
       projectId,
+      fields,
       markClean,
       submitConfirmed,
       markResponded,
