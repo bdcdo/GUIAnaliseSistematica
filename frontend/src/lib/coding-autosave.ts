@@ -42,14 +42,27 @@ interface AutosaveDirtyDocParams {
   docId: string;
   answers: Record<string, unknown>;
   notes: string;
-  markClean: (docId: string) => void;
+  /**
+   * Único callback de sucesso, e não um par `markClean` + "rebaseia o rascunho":
+   * uma escrita confirmada produz DOIS efeitos que precisam acontecer juntos —
+   * limpar a sujeira e reassentar o baseline do rascunho local no que foi
+   * gravado. Com dois parâmetros, um call site podia passar só o primeiro, e foi
+   * exatamente o que aconteceu quando o rascunho local (#608) entrou: a
+   * navegação salvava, limpava a sujeira e deixava o envelope para trás, e
+   * reabrir o documento oferecia "alterações não enviadas" sobre trabalho já
+   * enviado. Com um callback só, esse estado não é construível.
+   *
+   * Recebe o snapshot GRAVADO para que o caller não precise recompor o que
+   * acabou de mandar ao servidor.
+   */
+  onSaved: (docId: string, saved: { answers: Record<string, unknown>; notes: string }) => void;
 }
 
 /**
  * Autosave fire-and-forget de um doc sujo ao navegar (trocar de doc ou de
- * ordenação no modo Atribuídos). Salva com `isAutoSave: true`, limpa a sujeira
- * no sucesso e mostra toast no erro. O caller é responsável pelo guard de
- * `isDirty` antes de chamar.
+ * ordenação no modo Atribuídos). Salva com `isAutoSave: true`, notifica o
+ * caller no sucesso (ver `onSaved`) e mostra toast no erro. O caller é
+ * responsável pelo guard de `isDirty` antes de chamar.
  *
  * O back do modo Explorar NÃO usa este helper: lá o save é aguardado (`await`)
  * para manter o rascunho intacto se falhar (#257) — semântica diferente.
@@ -59,7 +72,7 @@ export function autosaveDirtyDoc({
   docId,
   answers,
   notes,
-  markClean,
+  onSaved,
 }: AutosaveDirtyDocParams): void {
   void saveCodingResponse(
     projectId,
@@ -70,13 +83,13 @@ export function autosaveDirtyDoc({
   )
     .then((result) => {
       if (result.success) {
-        markClean(docId);
+        onSaved(docId, { answers, notes });
       } else {
         toast.error(result.error);
       }
     })
     // `saveCodingResponse` não rejeita — este `catch` cobre o que vem DEPOIS do
-    // save (`markClean` do caller, render do toast). Sem ele vira unhandled
+    // save (`onSaved` do caller, render do toast). Sem ele vira unhandled
     // rejection, e o `void` já satisfaz o `no-floating-promises`, então nenhum
     // gate reclamaria. O doc simplesmente segue sujo, que é o estado seguro.
     .catch(() => {});

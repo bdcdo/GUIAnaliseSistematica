@@ -53,7 +53,7 @@ describe("autosaveDirtyDoc", () => {
     docId: "d1",
     answers: { q: "sim" },
     notes: "nota",
-    markClean: vi.fn(),
+    onSaved: vi.fn(),
   });
 
   it("não limpa a sujeira e usa a mensagem de navegação quando o transporte rejeita", async () => {
@@ -63,7 +63,7 @@ describe("autosaveDirtyDoc", () => {
     autosaveDirtyDoc(p);
     await vi.waitFor(() => expect(toast.error).toHaveBeenCalled());
 
-    expect(p.markClean).not.toHaveBeenCalled();
+    expect(p.onSaved).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(CODING_AUTOSAVE_TRANSPORT_ERROR);
     // A mensagem do save aguardado ("continuam nesta página") apontaria para o
     // documento que o pesquisador acabou de deixar.
@@ -80,18 +80,25 @@ describe("autosaveDirtyDoc", () => {
     autosaveDirtyDoc(p);
     await vi.waitFor(() => expect(toast.error).toHaveBeenCalled());
 
-    expect(p.markClean).not.toHaveBeenCalled();
+    expect(p.onSaved).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith(
       "Documento removido do escopo do projeto",
     );
   });
 
-  it("limpa a sujeira e salva como autosave no sucesso", async () => {
+  it("notifica o sucesso com o snapshot GRAVADO e salva como autosave", async () => {
     mockSave.mockResolvedValue({ success: true });
     const p = params();
 
     autosaveDirtyDoc(p);
-    await vi.waitFor(() => expect(p.markClean).toHaveBeenCalledWith("d1"));
+    // O snapshot volta no callback para que o caller rebaseie o baseline do
+    // rascunho local sem recompor o que acabou de mandar ao servidor (#608).
+    await vi.waitFor(() =>
+      expect(p.onSaved).toHaveBeenCalledWith("d1", {
+        answers: { q: "sim" },
+        notes: "nota",
+      }),
+    );
 
     expect(mockSave).toHaveBeenCalledWith(
       "p1",
@@ -108,13 +115,13 @@ describe("autosaveDirtyDoc", () => {
     process.on("unhandledRejection", unhandled);
     const p = {
       ...params(),
-      markClean: vi.fn(() => {
-        throw new Error("markClean explodiu");
+      onSaved: vi.fn(() => {
+        throw new Error("onSaved explodiu");
       }),
     };
 
     autosaveDirtyDoc(p);
-    await vi.waitFor(() => expect(p.markClean).toHaveBeenCalled());
+    await vi.waitFor(() => expect(p.onSaved).toHaveBeenCalled());
     await new Promise((r) => setImmediate(r));
 
     process.off("unhandledRejection", unhandled);

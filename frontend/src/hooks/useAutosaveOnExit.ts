@@ -36,6 +36,15 @@ interface UseAutosaveOnExitParams {
  * Os listeners são registrados uma vez só (`[endpoint]`); `activeDocId`,
  * `getIsDirty` e `getPayload` são lidos via refs sempre atualizados, evitando
  * re-registrar o listener a cada keystroke.
+ *
+ * Diferente dos autosaves de navegação, este caminho **não** rebaseia o
+ * baseline do rascunho local (#608) e nem poderia: o beacon é fire-and-forget
+ * por construção — a aba está sendo fechada e não existe resposta para
+ * confirmar a escrita. Não é um buraco: o envelope sobrevive no `localStorage`
+ * e, na reabertura, é classificado contra o que o servidor ENTÃO devolve; se o
+ * beacon chegou, rascunho e servidor coincidem e o slot é limpo como
+ * `redundant`. Se não chegou, a oferta de recuperação aparece — que é
+ * exatamente o desfecho desejado.
  */
 export function useAutosaveOnExit({
   activeDocId,

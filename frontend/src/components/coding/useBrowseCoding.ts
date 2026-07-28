@@ -7,6 +7,7 @@ import { useDocumentForCoding } from "@/hooks/useDocumentForCoding";
 import { saveCodingResponse } from "@/lib/coding-autosave";
 import { notifySaved } from "@/lib/coding-save-feedback";
 import { type CodingDraft } from "./BrowseDocCoder";
+import type { CodingSnapshot } from "@/lib/coding-draft";
 import type { AutosavePayload } from "@/hooks/useAutosaveOnExit";
 import type { AssignedDoc } from "@/lib/types";
 
@@ -19,6 +20,8 @@ interface UseBrowseCodingParams {
   setSubmitting: (value: boolean) => void;
   markDirty: (docId: string) => void;
   markClean: (docId: string) => void;
+  recordDraft: (docId: string, draft: CodingSnapshot) => void;
+  submitConfirmed: (docId: string, saved: CodingSnapshot) => void;
   isDirty: (docId: string | null | undefined) => boolean;
   updateDocParam: (docId: string | null) => void;
 }
@@ -43,6 +46,8 @@ export function useBrowseCoding({
   setSubmitting,
   markDirty,
   markClean,
+  recordDraft,
+  submitConfirmed,
   isDirty,
   updateDocParam,
 }: UseBrowseCodingParams) {
@@ -104,9 +109,14 @@ export function useBrowseCoding({
   const handleDraftChange = useCallback(
     (draft: CodingDraft) => {
       browseDraftRef.current = draft;
-      if (browseDocId) markDirty(browseDocId);
+      if (browseDocId) {
+        markDirty(browseDocId);
+        // Diferente do modo Atribuídos, aqui o conteúdo novo chega pronto no
+        // callback (o estado vive no filho keyed), então o registro é direto.
+        recordDraft(browseDocId, draft);
+      }
     },
-    [browseDocId, markDirty],
+    [browseDocId, markDirty, recordDraft],
   );
 
   const handleBrowseSubmit = useCallback(
@@ -121,6 +131,7 @@ export function useBrowseCoding({
         });
         if (result.success) {
           markClean(browseDocId);
+          submitConfirmed(browseDocId, { answers, notes });
           notifySaved(result.missingRequired);
           markResponded(browseDocId);
           browseDraftRef.current = null;
@@ -154,6 +165,7 @@ export function useBrowseCoding({
       browseDocId,
       projectId,
       markClean,
+      submitConfirmed,
       markResponded,
       invalidateBrowseDoc,
       updateDocParam,
@@ -184,6 +196,13 @@ export function useBrowseCoding({
           return;
         }
         markClean(docId);
+        // Mesma regra do autosave de navegação em Atribuídos: a escrita
+        // aconteceu, então o baseline do rascunho local passa a ser o que foi
+        // gravado. Aqui o `invalidateBrowseDoc` abaixo tornaria o slot
+        // `redundant` na reabertura de qualquer forma — mas depender do refetch
+        // para não mentir seria acidente, e o caminho de erro (save falho, que
+        // retorna antes) não teria essa rede.
+        submitConfirmed(docId, { answers, notes });
         markResponded(docId);
         saved = true;
       } finally {
@@ -202,6 +221,7 @@ export function useBrowseCoding({
     updateDocParam,
     isDirty,
     markClean,
+    submitConfirmed,
     markResponded,
     invalidateBrowseDoc,
     setSubmitting,

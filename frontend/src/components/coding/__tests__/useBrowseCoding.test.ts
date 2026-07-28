@@ -73,6 +73,8 @@ function setup(docParam: string | null, dirty = new Set<string>()) {
     markDirty: vi.fn((id: string) => dirty.add(id)),
     markClean: vi.fn((id: string) => dirty.delete(id)),
     isDirty: (id: string | null | undefined) => !!id && dirty.has(id),
+    recordDraft: vi.fn(),
+    submitConfirmed: vi.fn(),
     updateDocParam: vi.fn(),
   };
   return { view: renderHook(() => useBrowseCoding(params)), params, dirty };

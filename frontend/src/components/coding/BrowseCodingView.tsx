@@ -2,13 +2,13 @@
 
 import { Button } from "@/components/ui/button";
 import { DocumentPicker } from "./DocumentPicker";
-import { BrowseDocCoder, type CodingDraft } from "./BrowseDocCoder";
+import { type ForwardedCodingProps, BrowseDocCoder, type CodingDraft } from "./BrowseDocCoder";
 import type { OutOfScopeConfig } from "./QuestionsPanel";
 import type { CodingDocument } from "@/hooks/useDocumentForCoding";
 import type { BrowseDocument } from "@/actions/documents";
 import type { PydanticField } from "@/lib/types";
 
-interface BrowseCodingViewProps {
+interface BrowseCodingViewProps extends ForwardedCodingProps {
   browseLoading: boolean;
   browseError: boolean;
   browseDocId: string | null;
@@ -20,17 +20,8 @@ interface BrowseCodingViewProps {
   onRetry: () => void;
   /** Retry do fetch do doc selecionado (conteúdo falhou ao carregar). */
   onRetryDoc: () => void;
-  fields: PydanticField[];
-  submitting: boolean;
-  readOnly: boolean;
-  isFullscreen: boolean;
-  title: string;
-  responseCount: number;
-  onToggleFullscreen: () => void;
-  onReorder: (newOrder: string[]) => void;
-  onSubmit: (draft: CodingDraft) => void;
-  onDraftChange: (draft: CodingDraft) => void;
-  outOfScope?: OutOfScopeConfig;
+  /** Nonce que força o remount do coder ao retomar um rascunho local (#608). */
+  restoreNonce?: number;
 }
 
 /** Estado centralizado de falha + ação de retry do modo Explorar (lista e doc
@@ -74,6 +65,7 @@ export function BrowseCodingView({
   onSubmit,
   onDraftChange,
   outOfScope,
+  restoreNonce = 0,
 }: BrowseCodingViewProps) {
   if (browseError) {
     return (
@@ -114,7 +106,9 @@ export function BrowseCodingView({
   }
   return (
     <BrowseDocCoder
-      key={browseDocId}
+      // O nonce força o remount ao retomar um rascunho: é assim que o conteúdo
+      // recuperado entra no seed sem setState em effect.
+      key={`${browseDocId}:${restoreNonce}`}
       doc={browseDoc}
       fields={fields}
       submitting={submitting}

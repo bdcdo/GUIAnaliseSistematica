@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { applyFieldOrder } from "@/lib/field-order";
 import { sortByRecent } from "@/lib/coding-sort";
 import { useUrlState } from "@/hooks/useUrlState";
@@ -8,6 +8,13 @@ import { useFieldOrder } from "@/hooks/useFieldOrder";
 import { useAutosaveOnExit } from "@/hooks/useAutosaveOnExit";
 import { useFullscreen } from "@/hooks/useFullscreen";
 import { useDirtyDocs } from "@/hooks/useDirtyDocs";
+import { useCodingDrafts } from "@/hooks/useCodingDrafts";
+import { useCodingDraftWiring } from "./useCodingDraftWiring";
+import {
+  CodingDraftBanner,
+  CodingDraftUnavailableBanner,
+  UnsentChangesBadge,
+} from "./CodingDraftBanner";
 import { CodingHeader, type DocSection } from "./CodingHeader";
 import { CodingEmptyStates } from "./CodingEmptyStates";
 import { AssignedCodingView } from "./AssignedCodingView";
@@ -142,6 +149,10 @@ function buildHeaderDocSection(
 
 interface CodingPageProps {
   projectId: string;
+  /** Membro DONO das escritas (`ownMemberUserId`), não o observado sob
+   *  impersonação: é a identidade do slot do rascunho local. Ver
+   *  `CodingDraftScope` em `lib/coding-draft.ts`. */
+  userId: string;
   documents: AssignedDoc[];
   codedAtByDoc?: Record<string, string>;
   fields: PydanticField[];
@@ -171,6 +182,7 @@ export function CodingPage(props: CodingPageProps) {
 
 function CodingPageInner({
   projectId,
+  userId,
   documents,
   codedAtByDoc = EMPTY_CODED_AT,
   fields,
@@ -217,8 +229,11 @@ function CodingPageInner({
     [fields, fieldOrder],
   );
 
-  // Dirty tracking via ref (sem re-render) — compartilhado entre os modos.
-  const { markDirty, markClean, isDirty } = useDirtyDocs();
+  // Sujeira compartilhada entre os modos. O store é imperativo para os handlers
+  // e reativo para a tela (ver `useDirtyDocs`): o indicador de "não enviado" sai
+  // DAQUI, nunca do resultado da persistência local.
+  const dirtyDocs = useDirtyDocs();
+  const { markDirty, markClean, isDirty } = dirtyDocs;
 
   const updateDocParam = useCallback(
     (docId: string | null) => {
@@ -226,6 +241,18 @@ function CodingPageInner({
     },
     [setParams],
   );
+
+  // Rede local (#608). Instanciado ANTES dos hooks de modo porque eles precisam
+  // do `recordDraft`; em troca, o documento aberto — que só é conhecido depois —
+  // entra por `openDocument`, num effect mais abaixo.
+  const drafts = useCodingDrafts({
+    projectId,
+    userId,
+    // Sob impersonação ou rodada anterior a tela é read-only: guardar rascunho
+    // ali depositaria trabalho num slot que ninguém vai enviar.
+    enabled: !readOnly,
+    fields,
+  });
 
   const assigned = useAssignedCoding({
     projectId,
@@ -240,6 +267,9 @@ function CodingPageInner({
     markDirty,
     markClean,
     isDirty,
+    recordDraft: drafts.recordDraft,
+    restoreDraft: drafts.restoreDraft,
+    submitConfirmed: drafts.submitConfirmed,
     updateDocParam,
     setParams,
   });
@@ -253,6 +283,8 @@ function CodingPageInner({
     markDirty,
     markClean,
     isDirty,
+    recordDraft: drafts.recordDraft,
+    submitConfirmed: drafts.submitConfirmed,
     updateDocParam,
   });
 
@@ -285,6 +317,25 @@ function CodingPageInner({
     [mode, getAssignedPayload, getBrowsePayload],
   );
   useAutosaveOnExit({ activeDocId, getIsDirty, getPayload });
+
+  const {
+    activeDocUnsent,
+    handleRestoreDraft,
+    handleDiscardDraft,
+    browseDocForCoder,
+    browseRestoreNonce,
+  } = useCodingDraftWiring({
+    mode,
+    activeDocId,
+    drafts,
+    dirtyDocs,
+    markDirty,
+    restoreAssignedDraft: assigned.handleRestoreDraft,
+    browseDocId: browse.browseDocId,
+    browseDoc: browse.browseDoc,
+    existingAnswers,
+    existingJustifications,
+  });
 
   if (fields.length === 0) {
     return <CodingEmptyStates kind="no-fields" />;
@@ -383,6 +434,34 @@ function CodingPageInner({
         />
       )}
 
+      {/* Faixas do rascunho local (#608), abaixo do header e acima das duas
+          views: a oferta de recuperação e o aviso de que a cópia local não está
+          funcionando. Nenhuma das duas se aplica em fullscreen, onde o header
+          também não aparece. */}
+      {!isFullscreen && (
+        <>
+          {/* Um único indicador para os dois modos, junto das faixas do
+              rascunho: permanente enquanto houver pendência, some quando o envio
+              é confirmado. Fica aqui — e não dentro do painel de perguntas —
+              porque o sinal é da PÁGINA (o documento aberto), e porque duplicá-lo
+              por modo obrigava cada view a repassá-lo. */}
+          {activeDocUnsent && (
+            <div className="flex items-center gap-2 border-b px-4 py-1.5">
+              <UnsentChangesBadge visible />
+            </div>
+          )}
+          <CodingDraftBanner
+            recovery={drafts.recovery}
+            fields={fields}
+            onRestore={handleRestoreDraft}
+            onDiscard={handleDiscardDraft}
+          />
+          <CodingDraftUnavailableBanner
+            visible={!drafts.storageAvailable && activeDocUnsent}
+          />
+        </>
+      )}
+
       {mode === "assigned" && (
         <AssignedCodingView
           doc={assigned.currentDoc}
@@ -416,7 +495,7 @@ function CodingPageInner({
           browseDocId={browse.browseDocId}
           browseDocuments={browse.browseDocuments}
           browseDocLoading={browse.browseDocLoading}
-          browseDoc={browse.browseDoc}
+          browseDoc={browseDocForCoder}
           onSelect={browse.handleBrowseSelect}
           onRetry={browse.retryBrowse}
           onRetryDoc={browse.retryBrowseDoc}
@@ -431,6 +510,7 @@ function CodingPageInner({
           onSubmit={(draft) => void browse.handleBrowseSubmit(draft)}
           onDraftChange={browse.handleDraftChange}
           outOfScope={browseOutOfScope}
+          restoreNonce={browseRestoreNonce}
         />
       )}
     </div>

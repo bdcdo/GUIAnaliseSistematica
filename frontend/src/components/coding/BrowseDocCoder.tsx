@@ -22,9 +22,11 @@ export interface CodingDraft {
   notes: string;
 }
 
-interface BrowseDocCoderProps {
-  /** Documento já carregado (texto + respostas/notas iniciais). */
-  doc: CodingDocument;
+// Props que o container repassa INALTERADAS ao coder. Declaradas uma vez e
+// reusadas por `BrowseCodingView`, que apenas as encaminha: manter as duas
+// listas à mão fazia as assinaturas divergirem a cada campo novo, e era
+// duplicação real (o gate do fallow a flagrou).
+export interface ForwardedCodingProps {
   fields: PydanticField[];
   submitting: boolean;
   readOnly: boolean;
@@ -39,6 +41,11 @@ interface BrowseDocCoderProps {
   /** Reporta o rascunho atual para cima (autosave-on-exit + dirty tracking). */
   onDraftChange: (draft: CodingDraft) => void;
   outOfScope?: OutOfScopeConfig;
+}
+
+interface BrowseDocCoderProps extends ForwardedCodingProps {
+  /** Documento já carregado (texto + respostas/notas iniciais). */
+  doc: CodingDocument;
 }
 
 /**

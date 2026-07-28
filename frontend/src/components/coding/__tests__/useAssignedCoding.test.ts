@@ -49,6 +49,9 @@ function setup(overrides?: {
     markDirty: vi.fn((id: string) => dirty.add(id)),
     markClean: vi.fn((id: string) => dirty.delete(id)),
     isDirty: (id: string | null | undefined) => !!id && dirty.has(id),
+    recordDraft: vi.fn(),
+    restoreDraft: vi.fn(() => null),
+    submitConfirmed: vi.fn(),
     updateDocParam: vi.fn(),
     setParams: vi.fn(),
   };
