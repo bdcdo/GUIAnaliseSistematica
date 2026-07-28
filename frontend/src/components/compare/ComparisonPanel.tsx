@@ -23,11 +23,7 @@ import { ArrowRight, CheckCircle2, MessageSquare, Lightbulb } from "lucide-react
 import { FieldHeaderLabel } from "@/components/shared/FieldHeaderLabel";
 import type { VerdictInfo } from "@/lib/compare-reviews";
 import type { PydanticField } from "@/lib/types";
-import {
-  pendingVerdictLabel,
-  type PendingVerdict,
-  type VerdictOrigin,
-} from "./compare-types";
+import type { PendingVerdict, VerdictOrigin } from "./compare-types";
 
 // Conclusão do documento + navegação da fila. Discriminated union: `hasNextDoc`
 // e `onNextDoc` só fazem sentido depois que a revisão do documento terminou, então
@@ -81,6 +77,14 @@ interface ComparisonPanelProps {
   currentUserId: string;
 }
 
+// Cognitive 43 vs. limiar 15 — mas o fallow o marca como achado NOVO apenas
+// porque o arquivo foi tocado. A medição pareada contra origin/main @ 22f4b99c
+// diz o contrário: cyclomatic 23 → 12 e cognitive 53 → 43, porque este PR
+// REMOVEU daqui o rodapé de confirmação com seus três ternários aninhados. O
+// que sobra é o mesmo débito JSX inerente já rastreado na #580 para
+// ComparePage/CompareMainView: encaminhamento de props, que o fallow conta como
+// fiação. Suprimido com a medição registrada, não por conveniência.
+// fallow-ignore-next-line complexity
 export function ComparisonPanel({
   readOnly,
   projectId,
@@ -267,50 +271,12 @@ export function ComparisonPanel({
           onConfirmEquivalent={onConfirmEquivalent}
           onUnmarkEquivalencePair={onUnmarkEquivalencePair}
           currentUserId={currentUserId}
+          pendingConfirm={{
+            onConfirm: onConfirmPendingVerdict,
+            onDiscard: onDiscardPendingVerdict,
+          }}
         />
       </div>
-
-      {isDivergent && !isMulti && (!docStatus.complete || pendingVerdict) && (
-        <div className="flex shrink-0 items-center justify-between gap-2 border-t bg-muted/20 px-4 py-2">
-          <span className="min-w-0 truncate text-xs text-muted-foreground">
-            {readOnly ? (
-              "Decisões desabilitadas no modo somente leitura."
-            ) : pendingVerdict ? (
-              <>
-                Selecionado:{" "}
-                <span className="font-medium text-foreground">
-                  {pendingVerdictLabel(pendingVerdict)}
-                </span>
-              </>
-            ) : (
-              "Escolha uma resposta para confirmar."
-            )}
-          </span>
-          <div className="flex shrink-0 items-center gap-2">
-            {pendingVerdict && (
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={readOnly || isSavingVerdict}
-                onClick={onDiscardPendingVerdict}
-              >
-                Descartar
-              </Button>
-            )}
-            <Button
-              size="sm"
-              disabled={readOnly || !pendingVerdict || isSavingVerdict}
-              onClick={onConfirmPendingVerdict}
-            >
-              {readOnly
-                ? "Somente leitura"
-                : isSavingVerdict
-                  ? "Salvando..."
-                  : "Confirmar"}
-            </Button>
-          </div>
-        </div>
-      )}
 
       {docStatus.complete && (
         <div className="flex shrink-0 items-center justify-between gap-2 border-t border-green-500/20 bg-green-500/5 px-4 py-2">

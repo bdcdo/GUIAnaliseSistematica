@@ -57,6 +57,11 @@ function renderGroup(
       onUnmarkPair={onUnmarkPair}
       currentUserId="u1"
       canManageAnyPair={false}
+      pendingConfirm={{
+        onConfirm: vi.fn(),
+        onDiscard: vi.fn(),
+        isSaving: false,
+      }}
       {...props}
     />,
   );
