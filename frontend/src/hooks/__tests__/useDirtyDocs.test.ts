@@ -92,3 +92,33 @@ describe("leitura reativa — o indicador de não enviado", () => {
     expect(calls).toBe(1);
   });
 });
+
+// A lista existe para o aviso de saída poder perguntar ao rascunho local, doc por
+// doc, se há cópia guardada — ver `useCodingDrafts.hasStoredDraft`. Só a
+// contagem não bastaria: ela diz quantos, não quais.
+describe("getDirtyDocIds", () => {
+  it("lista os documentos sujos e acompanha marcar/limpar", () => {
+    const { result } = renderHook(() => useDirtyDocs());
+
+    expect(result.current.getDirtyDocIds()).toEqual([]);
+
+    act(() => {
+      result.current.markDirty("d1");
+      result.current.markDirty("d2");
+    });
+    expect([...result.current.getDirtyDocIds()].sort()).toEqual(["d1", "d2"]);
+
+    act(() => result.current.markClean("d1"));
+    expect(result.current.getDirtyDocIds()).toEqual(["d2"]);
+  });
+
+  it("devolve uma cópia: mutar o retorno não mexe no store", () => {
+    const { result } = renderHook(() => useDirtyDocs());
+    act(() => result.current.markDirty("d1"));
+
+    result.current.getDirtyDocIds().push("d2-intruso");
+
+    expect(result.current.getDirtyDocIds()).toEqual(["d1"]);
+    expect(result.current.isDirty("d2-intruso")).toBe(false);
+  });
+});

@@ -90,6 +90,17 @@ export interface CodingDraftsApi {
   // primeiro render do cliente é idêntico ao do servidor por construção: nenhuma
   // flag de hidratação é necessária.
   openDocument(docId: string | null, remote: CodingSnapshot | null): void;
+  // Grava agora tudo o que o debounce ainda devia. Existe para a saída por
+  // navegação SPA, que não dispara `beforeunload`/`pagehide`/`visibilitychange`
+  // — os três gatilhos em que o flush já acontecia.
+  flushAll(): void;
+  // Existe um envelope gravado para este documento AGORA? Consulta o storage, e
+  // não o estado em memória: quem pergunta é o aviso de saída, que afirma à
+  // pesquisadora que a edição está guardada neste navegador. Uma resposta tirada
+  // do estado em memória diria "sim" também quando o debounce ainda não gravou,
+  // quando a quota estourou ou quando o slot foi descartado pela faixa — os três
+  // casos em que a frase seria falsa. Chame depois de `flushAll()`.
+  hasStoredDraft(docId: string): boolean;
   recovery: CodingDraftRecovery;
   // `false` quando esta aba não está conseguindo manter a cópia local — seja
   // porque o storage não responde (janela anônima, quota estourada) ou porque o
@@ -308,6 +319,7 @@ export interface CodingDraftSession {
   submitConfirmed(docId: string, saved: CodingSnapshot): void;
   openDocument(docId: string | null, remote: CodingSnapshot | null): void;
   flushAll(): void;
+  hasStoredDraft(docId: string): boolean;
 }
 
 // Estado mutável de uma sessão. Passado explicitamente às funções abaixo, que
@@ -604,6 +616,15 @@ export function createCodingDraftSession(
         if (token) persist(st, cb, docId, token);
       }
       st.timers.clear();
+    },
+    hasStoredDraft(docId) {
+      const { projectId, userId } = st.keyParts;
+      // `projectId`/`userId` vazios só ocorrem antes do primeiro `configure`,
+      // quando não pode haver rascunho desta sessão: `readSlot` devolveria o
+      // slot de uma chave que ninguém escreve, então a resposta é `false` por
+      // construção — mas ser explícito evita depender desse acidente.
+      if (!projectId || !userId) return false;
+      return readSlot(scopeFor({ projectId, userId }, docId)).envelope !== null;
     },
   };
 }

@@ -31,6 +31,13 @@ export interface DirtyDocsStore {
   isDirty: (docId: string | null | undefined) => boolean;
   subscribe: (listener: () => void) => () => void;
   getVersion: () => number;
+  getDirtyCount: () => number;
+  // Quais documentos estão sujos. Getter imperativo, lido em tempo de evento —
+  // deliberadamente NÃO exposto por `useSyncExternalStore`: o snapshot lá precisa
+  // ser primitivo (o array seria recriado a cada leitura e re-renderizaria em
+  // loop). Quem precisa reagir usa `useDirtyDocsCount`; quem precisa da lista a
+  // consulta no momento em que decide algo.
+  getDirtyDocIds: () => string[];
 }
 
 export function useDirtyDocs(): DirtyDocsStore {
@@ -78,10 +85,28 @@ export function useDirtyDocs(): DirtyDocsStore {
   }, []);
 
   const getVersion = useCallback(() => versionRef.current, []);
+  const getDirtyCount = useCallback(() => ref.current?.size ?? 0, []);
+  const getDirtyDocIds = useCallback(() => [...(ref.current ?? [])], []);
 
   return useMemo(
-    () => ({ markDirty, markClean, isDirty, subscribe, getVersion }),
-    [markDirty, markClean, isDirty, subscribe, getVersion],
+    () => ({
+      markDirty,
+      markClean,
+      isDirty,
+      subscribe,
+      getVersion,
+      getDirtyCount,
+      getDirtyDocIds,
+    }),
+    [
+      markDirty,
+      markClean,
+      isDirty,
+      subscribe,
+      getVersion,
+      getDirtyCount,
+      getDirtyDocIds,
+    ],
   );
 }
 
@@ -100,4 +125,12 @@ export function useIsDocDirty(
     // cliente, senão o React acusa mismatch de hidratação.
     () => false,
   );
+}
+
+// Quantos documentos têm alterações não enviadas. Existia antes como superfície
+// só do teste e foi removida por isso; volta porque o aviso de saída (#608) a
+// consome de fato — quem editou três documentos e clica em "Revisar" precisa
+// saber dos três, não só do que está aberto.
+export function useDirtyDocsCount(store: DirtyDocsStore): number {
+  return useSyncExternalStore(store.subscribe, store.getDirtyCount, () => 0);
 }

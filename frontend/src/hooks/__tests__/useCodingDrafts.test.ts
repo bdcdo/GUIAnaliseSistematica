@@ -555,3 +555,61 @@ describe("slot inutilizável — lixo nosso não pode barrar trabalho novo", () 
     expect(result.current.storageAvailable).toBe(false);
   });
 });
+
+// `hasStoredDraft` responde por uma afirmação que a tela faz à pesquisadora no
+// aviso de saída — "elas ficam salvas neste navegador". Por isso a pergunta é
+// feita ao STORAGE, e não ao estado em memória: existem três situações em que a
+// memória diria "sim" e o navegador não teria nada.
+describe("hasStoredDraft — o que sustenta a frase do aviso de saída", () => {
+  it("é falso enquanto o debounce não gravou, e verdadeiro depois do flush", () => {
+    const { result } = render();
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
+
+    // Janela do debounce: há edição em memória e nada no navegador.
+    expect(result.current.hasStoredDraft(DOC)).toBe(false);
+
+    act(() => result.current.flushAll());
+    expect(result.current.hasStoredDraft(DOC)).toBe(true);
+  });
+
+  it("é falso depois de a faixa descartar o rascunho", () => {
+    const { result } = render();
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
+    flushDebounce();
+    expect(result.current.hasStoredDraft(DOC)).toBe(true);
+
+    act(() => result.current.discardDraft(DOC));
+
+    // O caso que o aviso errava: o slot morreu, a edição segue na tela, e
+    // prometer cópia local aqui perde o trabalho de quem confiou na frase.
+    expect(result.current.hasStoredDraft(DOC)).toBe(false);
+  });
+
+  it("é falso quando o navegador não deixa gravar", () => {
+    const { result } = render();
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("bloqueado", "QuotaExceededError");
+    });
+
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
+    flushDebounce();
+
+    expect(result.current.hasStoredDraft(DOC)).toBe(false);
+  });
+
+  it("é falso para documento que ninguém editou", () => {
+    const { result } = render();
+    expect(result.current.hasStoredDraft("doc-nunca-tocado")).toBe(false);
+  });
+
+  it("é falso depois do envio confirmado", () => {
+    const { result } = render();
+    act(() => result.current.recordDraft(DOC, snap({ q1: "a" })));
+    flushDebounce();
+
+    act(() => result.current.submitConfirmed(DOC, snap({ q1: "a" })));
+
+    // Enviado não é pendente: o aviso nem deve chegar a perguntar por este doc.
+    expect(result.current.hasStoredDraft(DOC)).toBe(false);
+  });
+});

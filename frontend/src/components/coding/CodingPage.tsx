@@ -1,13 +1,14 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useMemo, useState } from "react";
 import { applyFieldOrder } from "@/lib/field-order";
 import { sortByRecent } from "@/lib/coding-sort";
 import { useUrlState } from "@/hooks/useUrlState";
 import { useFieldOrder } from "@/hooks/useFieldOrder";
-import { useAutosaveOnExit } from "@/hooks/useAutosaveOnExit";
 import { useFullscreen } from "@/hooks/useFullscreen";
-import { useDirtyDocs } from "@/hooks/useDirtyDocs";
+import { useDirtyDocs, useDirtyDocsCount } from "@/hooks/useDirtyDocs";
+import { useUnsavedWorkGuard } from "@/hooks/useUnsavedWorkGuard";
+import { UnsavedWorkDialog } from "./UnsavedWorkDialog";
 import { useCodingDrafts } from "@/hooks/useCodingDrafts";
 import { useCodingDraftWiring } from "./useCodingDraftWiring";
 import {
@@ -282,16 +283,20 @@ function CodingPageInner({
     setSubmitting,
     markDirty,
     markClean,
-    isDirty,
     recordDraft: drafts.recordDraft,
     submitConfirmed: drafts.submitConfirmed,
     updateDocParam,
   });
 
-  // Troca de modo (Atribuídos↔Explorar). Ao SAIR do Explorar, descarta o
-  // rascunho de browse não salvo: o BrowseDocCoder (keyed) desmonta e, ao voltar,
-  // re-semeia do cache pré-edição; sem zerar o draft/dirty aqui, a edição sumiria
-  // da tela mas ainda seria salva no autosave-on-exit / "Voltar" (ghost save).
+  // Troca de modo (Atribuídos↔Explorar). Ao SAIR do Explorar, esquece o rascunho
+  // de browse EM MEMÓRIA: o BrowseDocCoder (keyed) desmonta e, ao voltar,
+  // re-semeia do cache pré-edição, então manter o ref preenchido descolaria o que
+  // a tela mostra do que o container acha que está editado.
+  //
+  // Até o #608 isto também zerava a sujeira, para evitar "ghost save" — o
+  // autosave gravando uma edição que a tela já tinha descartado. Sem autosave não
+  // há o que gravar, e o dirty passa a sobreviver à troca de modo de propósito: a
+  // edição continua no rascunho local, logo continua não enviada.
   const discardBrowseDraft = browse.discardDraft;
   const handleModeChange = useCallback(
     (next: "assigned" | "browse") => {
@@ -301,22 +306,34 @@ function CodingPageInner({
     [mode, discardBrowseDraft],
   );
 
-  // --- Auto-save on exit (#14, #28) ---
-  // Instância única; o payload e a sujeira saem do modo ativo. `getIsDirty` é
-  // um getter (lido no unload) para não acessar o ref do dirty no render.
   const activeDocId =
     mode === "assigned" ? assigned.currentDoc?.id ?? null : browse.browseDocId;
-  const getIsDirty = useCallback(
-    () => isDirty(activeDocId),
-    [isDirty, activeDocId],
-  );
-  const getAssignedPayload = assigned.getPayload;
-  const getBrowsePayload = browse.getPayload;
-  const getPayload = useCallback(
-    () => (mode === "assigned" ? getAssignedPayload() : getBrowsePayload()),
-    [mode, getAssignedPayload, getBrowsePayload],
-  );
-  useAutosaveOnExit({ activeDocId, getIsDirty, getPayload });
+
+  // Aviso de saída (#608). Conta DOCUMENTOS com alterações não enviadas, não só
+  // o aberto: quem edita três documentos e clica em "Revisar" precisa saber dos
+  // três. A contagem sai do store de sujeira, nunca do que conseguiu ser
+  // gravado no `localStorage` — ver `useDirtyDocs`. Um documento sem cópia local
+  // é justamente o que MAIS precisa do aviso; derivar a contagem do storage o
+  // esconderia.
+  const unsentDocsCount = useDirtyDocsCount(dirtyDocs);
+
+  // O que o aviso pode AFIRMAR sobre o destino do trabalho, medido no instante
+  // do clique. O `flushAll` vem primeiro por dois motivos: sair por navegação
+  // SPA não dispara nenhum dos três gatilhos em que o rascunho já era gravado
+  // (`beforeunload`, `pagehide`, `visibilitychange`), então sem ele a última
+  // edição digitada dentro da janela do debounce ficaria de fora; e medir antes
+  // de gravar responderia sobre um estado que a própria saída ia mudar.
+  const describeUnsentWork = useCallback(() => {
+    drafts.flushAll();
+    const dirtyIds = dirtyDocs.getDirtyDocIds();
+    return {
+      allHaveLocalCopy:
+        dirtyIds.length > 0 && dirtyIds.every((id) => drafts.hasStoredDraft(id)),
+    };
+  }, [drafts, dirtyDocs]);
+
+  const { isPrompting, pendingInfo, confirmLeave, cancelLeave } =
+    useUnsavedWorkGuard(unsentDocsCount > 0, describeUnsentWork);
 
   const {
     activeDocUnsent,
@@ -433,6 +450,19 @@ function CodingPageInner({
           onToggleFullscreen={toggleFullscreen}
         />
       )}
+
+      {/* Fora do bloco de fullscreen abaixo de propósito: o aviso de saída vale
+          em qualquer modo de exibição, e esconder-lo em fullscreen deixaria a
+          navegação retida sem nada em cena para resolvê-la. */}
+      <UnsavedWorkDialog
+        open={isPrompting}
+        unsentDocsCount={unsentDocsCount}
+        // Fail-safe no `?? false`: sem instantâneo não há o que afirmar, e a
+        // frase cautelosa é a única honesta.
+        allHaveLocalCopy={pendingInfo?.allHaveLocalCopy ?? false}
+        onLeave={confirmLeave}
+        onStay={cancelLeave}
+      />
 
       {/* Faixas do rascunho local (#608), abaixo do header e acima das duas
           views: a oferta de recuperação e o aviso de que a cópia local não está

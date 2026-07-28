@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { renderHook, act, waitFor, cleanup } from "@testing-library/react";
+import { renderHook, act, cleanup } from "@testing-library/react";
 import { saveResponse } from "@/actions/responses";
 import { toast } from "sonner";
-import { CODING_SAVE_TRANSPORT_ERROR } from "@/lib/coding-autosave";
+import { CODING_SAVE_TRANSPORT_ERROR } from "@/lib/coding-save";
 import { useAssignedCoding } from "../useAssignedCoding";
 import type { Document, Assignment, PydanticField } from "@/lib/types";
 
@@ -174,29 +174,45 @@ describe("useAssignedCoding", () => {
     expect(view.result.current.allDone).toBe(true);
   });
 
-  it("handleDocNavigate autosalva o doc sujo antes de trocar (#28)", async () => {
+  // Invertido no #608, não apagado: era "handleDocNavigate autosalva o doc sujo
+  // antes de trocar (#28)". A asserção continua guardando o mesmo ponto do
+  // código — só que agora provando a ausência da escrita. Apagá-la deixaria o
+  // critério "nenhuma gravação automática" sem guarda, e reintroduzir o autosave
+  // não deixaria nada vermelho.
+  it("navegar com o doc sujo NÃO grava no servidor; o conteúdo fica no rascunho", async () => {
     const { view, params } = setup();
     act(() => view.result.current.handleAnswer("q1", "sim")); // d1 fica sujo
     await act(async () => {
       view.result.current.handleDocNavigate(1);
     });
-    // autosave do d1 com isAutoSave antes de navegar
-    expect(mockSave).toHaveBeenCalledWith(
-      "p1",
-      "d1",
-      { q1: "sim" },
-      { notes: "", isAutoSave: true },
-    );
-    await waitFor(() => expect(params.markClean).toHaveBeenCalledWith("d1"));
+    expect(mockSave).not.toHaveBeenCalled();
+    // O doc deixado segue marcado como não enviado: é o que mantém o indicador
+    // aceso e o aviso de saída armado. Limpar aqui afirmaria "enviado" sobre
+    // trabalho que ninguém enviou.
+    expect(params.markClean).not.toHaveBeenCalled();
+    // O registro no rascunho local é o que substitui a gravação: o conteúdo de
+    // d1 continua recuperável depois da troca.
+    expect(params.recordDraft).toHaveBeenCalledWith("d1", {
+      answers: { q1: "sim" },
+      notes: "",
+    });
     expect(view.result.current.currentDoc?.id).toBe("d2");
     expect(params.updateDocParam).toHaveBeenCalledWith("d2");
   });
 
-  it("handleDocNavigate NÃO autosalva quando o doc não está sujo", () => {
+  it("navegar com o doc limpo também não grava", () => {
     const { view } = setup();
     act(() => view.result.current.handleDocNavigate(1));
     expect(mockSave).not.toHaveBeenCalled();
     expect(view.result.current.currentDoc?.id).toBe("d2");
+  });
+
+  it("trocar a ordenação com o doc sujo NÃO grava no servidor", () => {
+    const { view, params } = setup();
+    act(() => view.result.current.handleAnswer("q1", "sim"));
+    act(() => view.result.current.handleSortChange("default"));
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(params.markClean).not.toHaveBeenCalled();
   });
 
   // Regressão da mudança de comportamento intencional: sair da tela "Parabéns!"
@@ -249,16 +265,6 @@ describe("useAssignedCoding", () => {
     // q1 = "não" oculta q2 → a resposta órfã de q2 é zerada para null.
     act(() => view.result.current.handleAnswer("q1", "não"));
     expect(view.result.current.docAnswers).toEqual({ q1: "não", q2: null });
-  });
-
-  it("getPayload reflete o doc e respostas atuais", () => {
-    const { view } = setup({ existingAnswers: { d1: { q: "a" } } });
-    expect(view.result.current.getPayload()).toEqual({
-      projectId: "p1",
-      documentId: "d1",
-      answers: { q: "a" },
-      notes: "",
-    });
   });
 
   it("duplo-clique em Enviar não duplica saveResponse (guarda de reentrância)", async () => {
