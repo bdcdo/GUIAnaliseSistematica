@@ -80,7 +80,7 @@ export function useCodingDrafts(params: UseCodingDraftsParams): CodingDraftsApi 
   // aqui (`pagehide` dispara em todo descarregamento, inclusive nos que o
   // `beforeunload` pega) e registrá-lo tira a página do back/forward cache no
   // Firefox e no Safari — voltar para a fila deixaria de ser instantâneo em
-  // troca de nada. O `beforeunload` que existe em `useAutosaveOnExit` é outro
+  // troca de nada. O `beforeunload` que existe em `useUnsavedWorkGuard` é outro
   // caso: lá ele serve ao aviso nativo do navegador, que só existe por meio dele.
   useEffect(() => {
     const flush = () => session.flushAll();

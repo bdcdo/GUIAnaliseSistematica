@@ -70,8 +70,9 @@ describe("resolveInitialCodingStatus", () => {
   });
 
   it("codificação COMPLETA mas nunca enviada (is_partial) → em_andamento, não concluido", () => {
-    // `is_partial` marca "não clicou em Enviar", não "faltam campos": o
-    // auto-save grava true com o formulário inteiro preenchido. Nascer
+    // Nas linhas ANTERIORES ao #608 `is_partial` marca "não clicou em Enviar",
+    // não "faltam campos": o auto-save gravava true com o formulário inteiro
+    // preenchido, e essas linhas continuam no banco. Nascer
     // `concluido` aqui seria a #521 ao contrário, e definitivo —
     // `keepCodingAssignmentInProgress` nunca regride de `concluido`. O par com
     // o caso acima prova que o veredito vem do is_partial, e não do conteúdo:

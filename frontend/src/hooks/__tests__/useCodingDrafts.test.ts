@@ -192,7 +192,7 @@ describe("flush — os gatilhos de que depende 'fechar a aba não perde trabalho
   // `pagehide` dispara em TODO descarregamento da página, inclusive nos que um
   // `beforeunload` pegaria — por isso este hook não registra o segundo: ele não
   // acrescentaria cobertura e tiraria a página do back/forward cache no Firefox
-  // e no Safari. O `beforeunload` de `useAutosaveOnExit` é outro caso: lá ele
+  // e no Safari. O `beforeunload` de `useUnsavedWorkGuard` é outro caso: lá ele
   // serve ao aviso nativo do navegador, que só existe por meio dele.
   it("pagehide persiste antes do debounce", () => {
     const { result } = render();

@@ -129,9 +129,10 @@ export function missingRequiredHumanFields(
 //   • o gate de `is_partial` em saveResponse, que avalia contra o snapshot da
 //     própria escrita (buildPersistedResponseSnapshot). Para uma codificação NOVA
 //     esse snapshot estampa o schema inteiro como chaves, então aware ≡ blind e
-//     nenhum obrigatório em branco é perdoado; a distinção só morde no auto-save de
+//     nenhum obrigatório em branco é perdoado; a distinção só morde ao reenviar
 //     uma resposta JÁ submetida sob schema que cresceu — exatamente o caso que não
-//     deve rebaixar um doc concluído (#519/#520).
+//     deve rebaixar um doc concluído (#519/#520). Até o #608 o gatilho era o
+//     auto-save de navegação; hoje é reabrir o doc e clicar em Enviar.
 // Quem permanece staleness-BLIND de propósito é a promoção a `concluido` em
 // syncCodingAssignmentStatus (coding-sync): lá é o guard de não-rebaixar um
 // assignment já concluído que sustenta a invariante, não o carimbo per-campo.
