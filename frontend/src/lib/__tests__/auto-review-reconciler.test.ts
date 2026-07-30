@@ -11,6 +11,10 @@ const state = vi.hoisted(() => ({
   rpcCalls: [] as Array<{ name: string; args: unknown }>,
   failures: [] as unknown[],
   deletes: [] as Array<Array<[string, unknown]>>,
+  projectMembers: [{ user_id: "user-1" }] as Array<{ user_id: string }>,
+  // Teto do PostgREST simulado: quanto o mock devolve por página, para provar
+  // que o reconciliador pagina em vez de tomar a primeira página como universo.
+  pageSize: 1000,
 }));
 
 vi.mock("server-only", () => ({}));
@@ -21,6 +25,7 @@ class Query {
   private filters: Array<[string, unknown]> = [];
   private operation: "select" | "delete" = "select";
   private head = false;
+  private rangeFrom: number | null = null;
 
   constructor(private table: string) {}
 
@@ -29,6 +34,7 @@ class Query {
     return this;
   }
   order() { return this; }
+  range(from: number, _to: number) { this.rangeFrom = from; return this; }
   limit() { return this; }
   lte() { return this; }
   single() { return this; }
@@ -95,10 +101,16 @@ class Query {
       field_reviews: [],
       field_review_cycle_history_entries: [{ self_reviewer_id: "user-1" }],
       member_email_links: [],
-      project_members: [{ user_id: "user-1" }],
+      project_members: state.projectMembers,
     };
     if (!(this.table in rowsByTable)) throw new Error(`Tabela inesperada: ${this.table}`);
-    return { data: rowsByTable[this.table], error: null };
+    const rows = rowsByTable[this.table];
+    if (!Array.isArray(rows)) return { data: rows, error: null };
+    // O teto do PostgREST vale mesmo sem .range(): quem não pagina recebe a
+    // primeira página como se fosse o conjunto inteiro. É isso que torna o
+    // truncamento silencioso — e o que faz este mock detectar a regressão.
+    const from = this.rangeFrom ?? 0;
+    return { data: rows.slice(from, from + state.pageSize), error: null };
   }
 
   private result() {
@@ -146,6 +158,8 @@ beforeEach(() => {
   state.rpcCalls = [];
   state.failures = [];
   state.deletes = [];
+  state.projectMembers = [{ user_id: "user-1" }];
+  state.pageSize = 1000;
   admin.rpc.mockClear();
   buildEquivalenceMap.mockClear();
   computeBacklogRows.mockReset();
@@ -183,6 +197,25 @@ describe("drainAutoReviewReconciliationRequests", () => {
       }] },
     }]);
     expect(state.deletes[0]).toContainEqual(["llm_response_id", "llm-1"]);
+  });
+
+  // O Set de membros é o universo que decide quem ainda pode gerar auto-revisão.
+  // Lido sem paginar, um projeto acima do teto do PostgREST devolveria só a
+  // primeira página e o autor da resposta seria descartado como ex-membro — sem
+  // erro, sem log, sem ciclo gerado.
+  it("não trata membro além da primeira página como ex-membro", async () => {
+    state.projectMembers = [
+      ...Array.from({ length: 1000 }, (_, i) => ({ user_id: `outro-${i}` })),
+      { user_id: "user-1" },
+    ];
+    const { drainAutoReviewReconciliationRequests } = await import("@/lib/auto-review-reconciler");
+
+    const result = await drainAutoReviewReconciliationRequests();
+
+    expect(result.processed).toBe(1);
+    expect(computeBacklogRows).toHaveBeenCalledOnce();
+    const humansConsidered = computeBacklogRows.mock.calls[0][1];
+    expect(humansConsidered).toHaveLength(1);
   });
 
   it("também reconcilia consenso para encerrar um ciclo anterior", async () => {

@@ -96,9 +96,20 @@ export function makeSupabaseMock(opts?: {
     },
     from: (table: string) => {
       const builder: Record<string, unknown> = {};
-      for (const m of ["select", "single", "maybeSingle", "order", "limit", "range"]) {
+      let rangeFrom: number | null = null;
+      let rangeTo: number | null = null;
+      for (const m of ["select", "single", "maybeSingle", "order", "limit"]) {
         builder[m] = () => builder;
       }
+      // range() precisa recortar de verdade, com os DOIS limites: um mock que
+      // devolve o conjunto inteiro a cada página faz um leitor paginado nunca
+      // alcançar o fim, e um que ignora o limite superior nunca deixa uma
+      // leitura truncada se distinguir de uma completa.
+      builder.range = (from: number, to: number) => {
+        rangeFrom = from;
+        rangeTo = to;
+        return builder;
+      };
       for (const method of ["eq", "is", "in", "neq", "match"] as const) {
         builder[method] = (column: string, value: unknown) => {
           filterCalls?.push({ table, method, column, value });
@@ -128,10 +139,19 @@ export function makeSupabaseMock(opts?: {
       };
       builder.then = (resolve: (v: unknown) => unknown) => {
         const entry = tableResults?.[table];
-        const fixed = Array.isArray(entry) ? entry.shift() : entry;
+        const queued = Array.isArray(entry);
+        const fixed = queued ? entry.shift() : entry;
         const result = fixed ?? defaultResult;
+        const data = result?.data ?? null;
+        // Uma fila já entrega cada página pronta — recortá-la de novo cortaria
+        // duas vezes. Um resultado fixo, ao contrário, representa a tabela
+        // inteira: sem o recorte, um leitor paginado nunca veria o fim.
+        const paginated =
+          !queued && rangeFrom !== null && Array.isArray(data)
+            ? data.slice(rangeFrom, rangeTo !== null ? rangeTo + 1 : undefined)
+            : data;
         return resolve({
-          data: result?.data ?? null,
+          data: paginated,
           error: result?.error ?? null,
           count: result?.count ?? null,
         });

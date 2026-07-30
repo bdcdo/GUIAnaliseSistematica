@@ -3,6 +3,7 @@ import "server-only";
 import { computeBacklogRows, type HumanResponseRow, type LlmResponseRow } from "@/lib/auto-review-backlog";
 import { buildEquivalenceMap, type EquivalenceRow } from "@/lib/compare-queue";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
+import { fetchAllPaged } from "@/lib/supabase/paginate";
 import type { PydanticField } from "@/lib/types";
 
 interface ReconciliationRequest {
@@ -118,10 +119,17 @@ async function eligibleHumanResponses(
   request: ReconciliationRequest,
   humans: VersionedHumanResponse[],
 ): Promise<VersionedHumanResponse[]> {
-  const membersResult = await admin
-    .from("project_members")
-    .select("user_id")
-    .eq("project_id", request.project_id);
+  // Paginado: este Set é o universo de quem ainda é membro. Truncado no teto do
+  // PostgREST, um membro legítimo seria lido como ex-membro e sua resposta
+  // sairia da reconciliação sem erro nenhum.
+  const membersResult = await fetchAllPaged<{ user_id: string }>(
+    () =>
+      admin
+        .from("project_members")
+        .select("user_id")
+        .eq("project_id", request.project_id),
+    "user_id",
+  );
   if (membersResult.error) throw new Error(membersResult.error.message);
   const memberIds = new Set(
     (membersResult.data ?? []).map((member) => member.user_id),

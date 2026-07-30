@@ -24,6 +24,8 @@ let rpcCalls: RpcCall[];
 let rpcResults: Record<string, RpcResult>;
 let tableData: Record<string, unknown[]>;
 let queryErrors: Record<string, QueryError | null>;
+// Teto do PostgREST por resposta; só os testes de paginação o reduzem.
+let maxRows: number | undefined;
 
 const assignmentCalls = () =>
   rpcCalls.filter((call) => call.fn === "assign_comparison_if_eligible");
@@ -35,6 +37,7 @@ function makeClient() {
     rpcCalls,
     rpcResults,
     queryErrors,
+    maxRows,
   });
 }
 
@@ -70,6 +73,7 @@ beforeEach(() => {
   };
   tableData = makeEmptyComparisonTableData();
   queryErrors = {};
+  maxRows = undefined;
 });
 
 async function loadLib() {
@@ -97,6 +101,29 @@ async function expectAutoComparisonOutcome(
 }
 
 describe("assignComparisonReviewer — pool e balanceamento", () => {
+  // O pool elegível é um universo: lido sem paginar, um projeto acima do teto do
+  // PostgREST perde os revisores que caem fora da primeira página — que ficariam
+  // permanentemente fora do sorteio, sem erro nem log.
+  it("considera revisor além da primeira página do PostgREST", async () => {
+    const { assignComparisonReviewer } = await loadLib();
+    maxRows = 2;
+    tableData.project_members = [
+      makeProjectMember("userA"),
+      makeProjectMember("userB"),
+      makeProjectMember("userC"),
+    ];
+
+    const r = await assignComparisonReviewer(
+      makeClient() as never,
+      "p1",
+      "doc1",
+      new Set(["userA", "userB"]),
+    );
+
+    expect(r.assigned).toBe(true);
+    expect(assignmentCalls()[0].args).toMatchObject({ p_user_id: "userC" });
+  });
+
   it("exclui TODOS os codificadores do pool", async () => {
     const { assignComparisonReviewer } = await loadLib();
     tableData.project_members = [

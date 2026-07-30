@@ -1,6 +1,7 @@
 "use server";
 
 import { createSupabaseServer } from "@/lib/supabase/server";
+import { fetchAllPaged } from "@/lib/supabase/paginate";
 import { getAuthUser } from "@/lib/auth";
 import { revalidatePath, revalidateTag } from "next/cache";
 import {
@@ -595,17 +596,33 @@ async function computeLottery(params: LotteryParams): Promise<{
     throw new Error("Os filtros de lote são mutuamente exclusivos.");
   }
 
-  const [{ data: members }, data] = await Promise.all([
-    supabase
-      .from("project_members")
-      .select("user_id")
-      .eq("project_id", params.projectId),
+  const [membersResult, data] = await Promise.all([
+    // Paginado: a lista valida os participantes escolhidos. Truncada, um
+    // participante legítimo seria recusado como se não fosse membro.
+    fetchAllPaged<{ user_id: string }>(
+      () =>
+        supabase
+          .from("project_members")
+          .select("user_id")
+          .eq("project_id", params.projectId),
+      "user_id",
+    ),
     fetchLotteryData(params.projectId),
   ]);
 
+  // `fetchAllPaged` devolve as páginas que já leu JUNTO com o erro. Ignorar o
+  // erro aqui aceitaria esse universo parcial e recusaria participante legítimo
+  // sob a mensagem genérica de "participante válido" — o truncamento silencioso
+  // que a paginação existe para eliminar, de volta por outra porta.
+  if (membersResult.error) {
+    throw new Error(
+      `Falha ao carregar os membros do projeto: ${membersResult.error.message}`,
+    );
+  }
+
   // Pool de participantes: deduplicado e validado contra project_members
   // (qualquer role) — defesa em profundidade além do RLS (research D5)
-  const memberIds = new Set((members || []).map((m) => m.user_id));
+  const memberIds = new Set((membersResult.data || []).map((m) => m.user_id));
   const uniqueIds = [...new Set(params.participantIds)];
   const participantIds = uniqueIds.filter((id) => memberIds.has(id));
   if (!participantIds.length || participantIds.length !== uniqueIds.length) {

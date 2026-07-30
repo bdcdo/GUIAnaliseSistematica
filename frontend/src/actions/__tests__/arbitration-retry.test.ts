@@ -20,12 +20,16 @@ let tableData: Record<string, unknown>;
 const arbitrationCalls = () =>
   rpcCalls.filter((call) => call.fn === "assign_arbitration_cycles_if_eligible");
 
+// Teto do PostgREST por resposta; só o teste de paginação o reduz.
+let maxRows: number | undefined;
+
 function makeClient() {
   return makeSimpleSupabaseMock({
     tableData,
     writeCalls,
     rpcCalls,
     rpcResults,
+    maxRows,
   });
 }
 
@@ -56,6 +60,7 @@ beforeEach(() => {
   };
   hoisted.isCoord.mockResolvedValue(true);
   hoisted.adminFactory.mockClear();
+  maxRows = undefined;
 });
 
 async function loadRetry() {
@@ -225,6 +230,40 @@ describe("retryPendingArbitrations — exclui codificadores do documento", () =>
     expect(r.assigned).toBe(0);
     expect(r.stillNoPool).toBe(1);
     expect(arbitrationCalls()).toHaveLength(0);
+  });
+});
+
+describe("retryPendingArbitrations — pool além do teto do PostgREST", () => {
+  // O pool de can_arbitrate é um universo, como o de comparação: lido sem
+  // paginar, um projeto acima do teto do PostgREST não enxerga os árbitros que
+  // caem fora da primeira página. Aqui o único candidato ocioso está na 2ª —
+  // sem paginação a arbitragem recai sobre quem já está carregado, e a
+  // degradação do balanceamento não deixa rastro.
+  it("considera árbitro além da primeira página", async () => {
+    maxRows = 2;
+    tableData.field_reviews = [
+      { id: "fr1", document_id: "doc1", self_reviewer_id: "userA" },
+    ];
+    tableData.project_members = [
+      // O auto-revisor nunca arbitra a própria resposta: ocupa a 1ª página sem
+      // ser candidato.
+      { user_id: "userA", role: "pesquisador" },
+      { user_id: "ocupado", role: "pesquisador" },
+      { user_id: "userC", role: "pesquisador" },
+    ];
+    // Carga aberta só de quem está na 1ª página, para que o desempate por menor
+    // carga escolha userC de forma determinística assim que ele for visto.
+    tableData.assignments = [
+      { user_id: "ocupado" },
+      { user_id: "ocupado" },
+    ];
+
+    const retry = await loadRetry();
+    const r = await retry("p1");
+
+    expect(r.success).toBe(true);
+    expect(arbitrationCalls()).toHaveLength(1);
+    expect(arbitrationCalls()[0].args).toMatchObject({ p_user_id: "userC" });
   });
 });
 

@@ -182,6 +182,33 @@ describe("previewLottery", () => {
     expect(fromCalls).toContain("lottery_doc_stats");
     expect(fromCalls).toContain("assignments");
   });
+
+  // `fetchAllPaged` devolve as páginas já lidas JUNTO com o erro. Ignorar esse
+  // erro faria o sorteio validar os participantes contra um universo de membros
+  // parcial — e recusar participante legítimo sob a mensagem genérica de
+  // "participante válido", que é o truncamento silencioso de volta por outra
+  // porta. O erro real tem que chegar ao coordenador.
+  it("reporta a falha ao ler os membros em vez de recusar o participante", async () => {
+    serverTableResults = {
+      project_members: { data: null, error: { message: "conexão caiu" } },
+      lottery_doc_stats: { data: [] },
+      assignment_batches: { data: [] },
+      projects: { data: { min_responses_for_comparison: 2, automation_mode: null } },
+      assignments: { data: [] },
+    };
+
+    const result = await previewLottery({
+      projectId: "p1",
+      type: "codificacao",
+      mode: "append",
+      balancing: "round",
+      researchersPerDoc: 1,
+      participantIds: ["u1"],
+    });
+
+    expect(result.error).toContain("conexão caiu");
+    expect(result.error).not.toContain("participante válido");
+  });
 });
 
 // Regressão da issue #490: o sorteio de Comparação herdava o default 2 do

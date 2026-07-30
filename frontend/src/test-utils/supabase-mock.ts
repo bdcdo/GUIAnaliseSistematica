@@ -18,6 +18,22 @@ export type QueryError = {
   code?: string;
 };
 
+// Comparação estável por coluna. `localeCompare` não serve: os valores são ids
+// opacos e o que importa é uma ordem TOTAL e repetível entre páginas, igual à do
+// servidor — não uma ordem sensível a locale.
+function sortRows(
+  rows: Array<Record<string, unknown>>,
+  { column, ascending }: { column: string; ascending: boolean },
+) {
+  const direction = ascending ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const left = String(a[column] ?? "");
+    const right = String(b[column] ?? "");
+    if (left === right) return 0;
+    return left < right ? -direction : direction;
+  });
+}
+
 function makeRpc(state: {
   rpcCalls?: RpcCall[];
   rpcResults?: Record<string, RpcResult>;
@@ -105,6 +121,8 @@ export function makeFilterAwareSupabaseMock(state: {
   rpcCalls?: RpcCall[];
   rpcResults?: Record<string, RpcResult>;
   queryErrors?: Record<string, QueryError | null>;
+  // Teto de linhas por resposta (PostgREST `max_rows`). Default: sem teto.
+  maxRows?: number;
 }) {
   return {
     rpc: makeRpc(state),
@@ -114,6 +132,9 @@ export function makeFilterAwareSupabaseMock(state: {
       const ins: Array<[string, unknown[]]> = [];
       const opRef: OpRef = { current: "select" };
       let limitN: number | null = null;
+      let rangeFrom: number | null = null;
+      let rangeTo: number | null = null;
+      let orderBy: { column: string; ascending: boolean } | null = null;
       const builder: Record<string, unknown> = {};
       builder.select = () => builder;
       builder.eq = (c: string, v: unknown) => {
@@ -136,6 +157,18 @@ export function makeFilterAwareSupabaseMock(state: {
         limitN = n;
         return builder;
       };
+      builder.range = (from: number, to: number) => {
+        rangeFrom = from;
+        rangeTo = to;
+        return builder;
+      };
+      // Ordena de verdade, porque é a ordem que decide QUAIS linhas caem em cada
+      // página: um mock que aceitasse `.order()` sem aplicá-lo não distinguiria
+      // uma paginação estável de uma que pula linha na fronteira.
+      builder.order = (column: string, options?: { ascending?: boolean }) => {
+        orderBy = { column, ascending: options?.ascending !== false };
+        return builder;
+      };
       attachWriteOps(builder, table, state.writeCalls, opRef);
       const rows = () => {
         const data = (state.tableData[table] ?? []) as Array<
@@ -147,7 +180,18 @@ export function makeFilterAwareSupabaseMock(state: {
           for (const [c, vals] of ins) if (!vals.includes(r[c])) return false;
           return true;
         });
-        return limitN != null ? filtered.slice(0, limitN) : filtered;
+        // A ordem é aplicada ANTES do recorte, como no servidor: ordenar depois
+        // de paginar reordenaria a página em vez de definir o seu conteúdo.
+        const ordered = orderBy ? sortRows(filtered, orderBy) : filtered;
+        const limited = limitN != null ? ordered.slice(0, limitN) : ordered;
+        // `maxRows` reproduz o teto do PostgREST, que vale mesmo sem .range():
+        // sem ele o mock devolveria o conjunto inteiro e nenhum teste
+        // conseguiria distinguir uma leitura paginada de uma truncada. Default
+        // Infinity para não impor fixtures gigantes a quem não testa isso.
+        const maxRows = state.maxRows ?? Infinity;
+        const from = rangeFrom ?? 0;
+        const to = rangeTo != null ? rangeTo + 1 : Infinity;
+        return limited.slice(from, Math.min(to, from + maxRows));
       };
       const err = () => state.queryErrors?.[`${table}:${opRef.current}`] ?? null;
       builder.single = () =>
@@ -170,22 +214,43 @@ export function makeSimpleSupabaseMock(state: {
   rpcCalls?: RpcCall[];
   rpcResults?: Record<string, RpcResult>;
   queryErrors?: Record<string, QueryError | null>;
+  // Teto de linhas por resposta (PostgREST `max_rows`). Default: sem teto.
+  maxRows?: number;
 }) {
   return {
     rpc: makeRpc(state),
     from: (table: string) => {
       const builder: Record<string, unknown> = {};
       const opRef: OpRef = { current: "select" };
-      for (const m of ["select", "eq", "is", "in", "neq", "limit"]) {
+      let rangeFrom: number | null = null;
+      let rangeTo: number | null = null;
+      // `order` é no-op aqui de propósito: esta variante resolve por chave de
+      // tabela e não modela ordenação. O que ela precisa modelar é o TETO, que
+      // é o que separa leitura completa de leitura truncada.
+      for (const m of ["select", "eq", "is", "in", "neq", "limit", "order"]) {
         builder[m] = () => builder;
       }
+      builder.range = (from: number, to: number) => {
+        rangeFrom = from;
+        rangeTo = to;
+        return builder;
+      };
       attachWriteOps(builder, table, state.writeCalls, opRef);
+      // O teto vale mesmo sem .range(): quem não pagina recebe a primeira
+      // página como se fosse o conjunto inteiro.
+      const paginate = (data: unknown) => {
+        if (!Array.isArray(data)) return data;
+        const from = rangeFrom ?? 0;
+        const to = rangeTo != null ? rangeTo + 1 : Infinity;
+        return data.slice(from, Math.min(to, from + (state.maxRows ?? Infinity)));
+      };
       builder.then = (resolve: (v: unknown) => unknown) =>
         resolve({
-          data:
+          data: paginate(
             state.tableData[`${table}:${opRef.current}`] ??
-            state.tableData[table] ??
-            null,
+              state.tableData[table] ??
+              null,
+          ),
           error: state.queryErrors?.[`${table}:${opRef.current}`] ?? null,
         });
       return builder;

@@ -4,6 +4,7 @@
 // export síncrono em módulo "use server" quebra o deploy silenciosamente e nenhum
 // gate local pega (lição do PR #412); a montagem pura mora em lib/export/assemble.
 import { createSupabaseServer } from "@/lib/supabase/server";
+import { fetchAllPaged } from "@/lib/supabase/paginate";
 import { requireCoordinator } from "@/lib/auth";
 import type { PydanticField } from "@/lib/types";
 import {
@@ -16,36 +17,10 @@ import {
 
 export type GetExportDatasetResult = ExportDataset | { error: string };
 
-// O PostgREST limita cada query a `max_rows` (1000 por padrão, hospedado e local).
-// Sem paginar, um projeto grande teria a exportação truncada SILENCIOSAMENTE —
-// contradizendo a FR-008 ("conjunto completo"). Buscamos por páginas com .range()
-// até uma página vir incompleta. `build()` recria a query a cada página porque um
-// builder do PostgREST é de uso único (o await o executa).
-const EXPORT_PAGE_SIZE = 1000;
-
-async function fetchAllPaged<T>(
-  build: () => {
-    range: (
-      from: number,
-      to: number
-    ) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>;
-  }
-): Promise<{ data: T[]; error: { message: string } | null }> {
-  const all: T[] = [];
-  let from = 0;
-  for (;;) {
-    // await sequencial é da natureza da paginação: só dá para pedir a próxima
-    // página sabendo que a anterior veio cheia.
-    // react-doctor-disable-next-line react-doctor/async-await-in-loop
-    const { data, error } = await build().range(from, from + EXPORT_PAGE_SIZE - 1);
-    if (error) return { data: all, error };
-    const batch = data ?? [];
-    all.push(...batch);
-    if (batch.length < EXPORT_PAGE_SIZE) break;
-    from += EXPORT_PAGE_SIZE;
-  }
-  return { data: all, error: null };
-}
+// Sem paginar, a exportação sairia truncada SILENCIOSAMENTE ao passar do teto do
+// PostgREST — contradizendo a FR-008 ("conjunto completo"). A mecânica vive em
+// lib/supabase/paginate porque o mesmo teto atinge toda leitura usada como
+// universo (ver os pools de membros em auto-comparison e auto-review-reconciler).
 
 // Retorna o conjunto completo do projeto (documentos + respostas + gabarito)
 // já montado como planilhas de strings. Gate coordinator-only (fail-closed);
@@ -76,25 +51,32 @@ export async function getExportDataset(
     // Base exportada: documentos não excluídos. Exclusão apenas pendente
     // (exclusion_pending_at) continua na base até ser confirmada. Paginado para
     // não truncar em projetos grandes (ver fetchAllPaged).
-    fetchAllPaged<ExportDocument>(() =>
-      supabase
-        .from("documents")
-        .select("id, external_id, title, created_at, metadata")
-        .eq("project_id", projectId)
-        .is("excluded_at", null)
+    fetchAllPaged<ExportDocument>(
+      () =>
+        supabase
+          .from("documents")
+          .select("id, external_id, title, created_at, metadata")
+          .eq("project_id", projectId)
+          .is("excluded_at", null),
+      "id"
     ),
-    fetchAllPaged<ExportResponse>(() =>
-      supabase
-        .from("responses")
-        .select("document_id, respondent_name, respondent_type, answers")
-        .eq("project_id", projectId)
-        .eq("is_latest", true)
+    fetchAllPaged<ExportResponse>(
+      () =>
+        supabase
+          .from("responses")
+          .select("document_id, respondent_name, respondent_type, answers")
+          .eq("project_id", projectId)
+          .eq("is_latest", true),
+      // A PK basta como ordem total; não precisa estar no select.
+      "id"
     ),
-    fetchAllPaged<ExportReview>(() =>
-      supabase
-        .from("reviews")
-        .select("document_id, field_name, verdict, comment")
-        .eq("project_id", projectId)
+    fetchAllPaged<ExportReview>(
+      () =>
+        supabase
+          .from("reviews")
+          .select("document_id, field_name, verdict, comment")
+          .eq("project_id", projectId),
+      "id"
     ),
   ]);
 

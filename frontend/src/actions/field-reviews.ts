@@ -2,6 +2,7 @@
 
 import { createSupabaseServer } from "@/lib/supabase/server";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
+import { fetchAllPaged } from "@/lib/supabase/paginate";
 import {
   getProjectAccessContext,
   requireCoordinator,
@@ -242,11 +243,26 @@ async function assignArbitrator(
 
   // Elegíveis (can_arbitrate) menos o auto-revisor original — esse nunca
   // arbitra, sob nenhuma circunstância, porque julgaria a própria resposta.
-  const { data: eligibleMembers } = await admin
-    .from("project_members")
-    .select("user_id, role")
-    .eq("project_id", projectId)
-    .eq("can_arbitrate", true);
+  //
+  // Paginado porque este pool é um universo: truncado no teto do PostgREST, um
+  // árbitro apto simplesmente não existe para o sorteio. Diferente do sorteio de
+  // participantes em computeLottery, um erro aqui NÃO precisa lançar — o pool
+  // parcial ainda devolve árbitro válido (a RPC final revalida can_arbitrate sob
+  // lock), e uma leitura que falhe inteira cai em noPool=true, que já é sinal
+  // visível no banner de pendências. O que se perde é balanceamento, não
+  // correção.
+  const { data: eligibleMembers } = await fetchAllPaged<{
+    user_id: string;
+    role: string;
+  }>(
+    () =>
+      admin
+        .from("project_members")
+        .select("user_id, role")
+        .eq("project_id", projectId)
+        .eq("can_arbitrate", true),
+    "user_id",
+  );
   const eligible = (eligibleMembers ?? []).filter(
     (m) => m.user_id !== excludeUserId,
   );

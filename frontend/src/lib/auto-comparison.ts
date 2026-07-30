@@ -1,4 +1,5 @@
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
+import { fetchAllPaged } from "@/lib/supabase/paginate";
 import { buildLoadMap } from "@/lib/load-balancing";
 import { computeDivergentFieldNames } from "@/lib/compare-divergence";
 import { isCodingComplete } from "@/lib/coding-completeness";
@@ -145,11 +146,17 @@ async function loadEligibleReviewerIds(
   coderIds: Set<string>,
 ): Promise<string[]> {
   const [membersResult, previousAssignmentsResult] = await Promise.all([
-    admin
-      .from("project_members")
-      .select("user_id")
-      .eq("project_id", projectId)
-      .eq("can_compare", true),
+    // Paginado: o pool elegível é um universo. Truncado, um revisor apto ficaria
+    // permanentemente fora do sorteio de comparação, sem erro.
+    fetchAllPaged<{ user_id: string }>(
+      () =>
+        admin
+          .from("project_members")
+          .select("user_id")
+          .eq("project_id", projectId)
+          .eq("can_compare", true),
+      "user_id",
+    ),
     admin
       .from("assignments")
       .select("user_id")
