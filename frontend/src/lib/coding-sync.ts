@@ -61,6 +61,7 @@ export interface SyncCodingAssignmentParams {
   sanitizedAnswers: Record<string, unknown>;
   automationMode: string | null | undefined;
   hadCompletedResponse: boolean;
+  roundId: string;
 }
 
 async function reconcileEditedResponse(
@@ -95,7 +96,8 @@ async function completeCodingAssignment(
     .eq("project_id", params.projectId)
     .eq("document_id", params.documentId)
     .eq("user_id", params.userId)
-    .eq("type", "codificacao");
+    .eq("type", "codificacao")
+    .eq("round_id", params.roundId);
   if (error) return { error: error.message };
 
   if (!params.hadCompletedResponse) {
@@ -120,6 +122,7 @@ async function keepCodingAssignmentInProgress(
     .eq("document_id", params.documentId)
     .eq("user_id", params.userId)
     .eq("type", "codificacao")
+    .eq("round_id", params.roundId)
     .maybeSingle();
   if (!currentAssignment || currentAssignment.status === "concluido") return {};
 
@@ -129,7 +132,8 @@ async function keepCodingAssignmentInProgress(
     .eq("project_id", params.projectId)
     .eq("document_id", params.documentId)
     .eq("user_id", params.userId)
-    .eq("type", "codificacao");
+    .eq("type", "codificacao")
+    .eq("round_id", params.roundId);
   return error ? { error: error.message } : {};
 }
 

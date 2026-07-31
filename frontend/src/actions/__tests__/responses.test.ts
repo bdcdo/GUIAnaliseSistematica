@@ -128,7 +128,7 @@ vi.mock("@/lib/supabase/server", () => ({
                   schema_version_minor: state.schemaVersion.minor,
                   schema_version_patch: state.schemaVersion.patch,
                   round_strategy: "schema_version",
-                  current_round_id: null,
+                  current_round_id: "round-1",
                   automation_mode: state.automationMode,
                 },
                 error: null,
@@ -680,6 +680,7 @@ describe("saveResponse — unicidade da resposta corrente (#609)", () => {
       "document_id",
       "respondent_id",
       "respondent_type",
+      "round_id",
       "is_latest",
     ]);
     expect(state.responseUpdateFilters).toContainEqual({

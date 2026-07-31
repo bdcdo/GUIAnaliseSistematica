@@ -11,6 +11,7 @@ from services.llm_runner import _build_llm_response_row, _RunMetadata
 def _run(**overrides) -> _RunMetadata:
     base = dict(
         project_id="proj-1",
+        round_id="round-1",
         llm_provider="google_genai",
         llm_model="gemini-3-flash-preview",
         pydantic_hash="3c5e901f76547135",
@@ -69,6 +70,7 @@ def test_campos_basicos_preservados():
     assert row["pydantic_hash"] == "3c5e901f76547135"
     assert row["llm_job_id"] == "job-1"
     assert row["llm_error"] is None
+    assert row["round_id"] == "round-1"
 
 
 def test_justifications_vazio_vira_none():

@@ -42,6 +42,9 @@ const stats: LotteryStats = {
   batches: [],
   minResponsesForComparison: 2,
   automationMode: null,
+  currentRoundId: "round-1",
+  currentRoundLabel: "Rodada inicial",
+  openAssignmentCount: 0,
 };
 
 const previewResult: LotteryPreview = {

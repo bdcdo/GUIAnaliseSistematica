@@ -9,6 +9,7 @@ import { LotteryDialog } from "@/components/assignments/LotteryDialog";
 import { ClearPendingButton } from "@/components/assignments/ClearPendingButton";
 import type { ProjectMember } from "@/lib/types";
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import {
   activeAliasMemberIds,
   clerkMappingAccessStatesByUserId,
@@ -87,10 +88,16 @@ async function getMembers(
 
 export default async function AssignmentsPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams?: Promise<{ round?: string }>;
 }) {
-  const [{ id }, user] = await Promise.all([params, requirePageAuthUser()]);
+  const [{ id }, query, user] = await Promise.all([
+    params,
+    searchParams ?? Promise.resolve<{ round?: string }>({}),
+    requirePageAuthUser(),
+  ]);
   const access = requireResolvedProjectAccess(
     await getProjectAccessContext(id, user),
   );
@@ -98,16 +105,25 @@ export default async function AssignmentsPage({
 
   const supabase = await createSupabaseServer();
 
-  const [documents, memberState, { data: assignments }] = await Promise.all([
+  const [documents, memberState, { data: project }, { data: rounds }] = await Promise.all([
     getCachedDocuments(id),
     getMembers(supabase, id),
+    supabase.from("projects").select("current_round_id").eq("id", id).single(),
+    supabase.from("rounds").select("id, label, created_at").eq("project_id", id).order("created_at", { ascending: false }),
+  ]);
+  const selectedRoundId = (rounds ?? []).some((round) => round.id === query.round)
+    ? query.round!
+    : project?.current_round_id;
+  const isCurrentRound = selectedRoundId === project?.current_round_id;
+  const { data: assignments } = await (
     supabase
       .from("assignments")
       .select(
-        "id, project_id, document_id, user_id, status, type, batch_id, completed_at",
+        "id, project_id, document_id, user_id, status, type, batch_id, completed_at, round_id",
       )
-      .eq("project_id", id),
-  ]);
+      .eq("project_id", id)
+      .eq("round_id", selectedRoundId ?? "00000000-0000-0000-0000-000000000000")
+  );
 
   type TypedMember = ProjectMember & {
     profiles: {
@@ -184,10 +200,21 @@ export default async function AssignmentsPage({
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {hasPending && (
+          {(rounds ?? []).map((round) => (
+            <Link
+              key={round.id}
+              href={`/projects/${id}/analyze/assignments?round=${round.id}`}
+              className={round.id === selectedRoundId ? "text-sm font-medium text-brand" : "text-sm text-muted-foreground"}
+            >
+              {round.label}
+            </Link>
+          ))}
+          {access.isCoordinator && isCurrentRound && hasPending && (
             <ClearPendingButton projectId={id} pendingByType={pendingByType} />
           )}
-          <LotteryDialog projectId={id} members={lotteryMembers} />
+          {access.isCoordinator && isCurrentRound && (
+            <LotteryDialog projectId={id} members={lotteryMembers} />
+          )}
         </div>
       </div>
       <AssignmentTable
@@ -195,6 +222,7 @@ export default async function AssignmentsPage({
         documents={sortedDocuments}
         researchers={allResearchersForTable}
         assignments={assignments || []}
+        readOnly={!access.isCoordinator || !isCurrentRound}
       />
     </div>
   );

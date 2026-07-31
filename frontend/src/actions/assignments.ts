@@ -1,7 +1,7 @@
 "use server";
 
 import { createSupabaseServer } from "@/lib/supabase/server";
-import { getAuthUser } from "@/lib/auth";
+import { getAuthUser, requireCoordinator } from "@/lib/auth";
 import { revalidatePath, revalidateTag } from "next/cache";
 import {
   createRng,
@@ -27,7 +27,7 @@ import {
 } from "@/lib/coding-initial-status";
 import type { ResponseRoundFields, RoundContext } from "@/lib/rounds";
 import type { SupabaseServerClient } from "@/lib/supabase/server";
-import type { AnswerFieldHashes, PydanticField, Round, RoundStrategy } from "@/lib/types";
+import type { AnswerFieldHashes, PydanticField, Round } from "@/lib/types";
 
 // --- Status inicial do assignment de codificação (issue #521) ---
 
@@ -97,15 +97,13 @@ function requireData<T>(
   return result.data;
 }
 
-/** Só a estratégia manual consulta o mapa de rodadas em classifyDocStatus. */
-async function loadRoundsIfManual(
+async function loadRounds(
   supabase: SupabaseServerClient,
   projectId: string,
-  strategy: RoundStrategy,
 ): Promise<Round[]> {
-  if (strategy !== "manual") return [];
   const result = await supabase.from("rounds").select("id, label").eq("project_id", projectId);
-  return requireData(result, "Erro ao ler as rodadas do projeto") as Round[];
+  if (result.error) throw new Error(`Erro ao ler as rodadas do projeto: ${result.error.message}`);
+  return (result.data ?? []) as Round[];
 }
 
 async function loadInitialStatusInputs(
@@ -116,9 +114,7 @@ async function loadInitialStatusInputs(
   const [projectResult, ...answerResults] = await Promise.all([
     supabase
       .from("projects")
-      .select(
-        "pydantic_fields, round_strategy, current_round_id, schema_version_major, schema_version_minor, schema_version_patch",
-      )
+      .select("pydantic_fields, current_round_id")
       .eq("id", projectId)
       .single(),
     ...chunk(responseIds, RESPONSE_ID_CHUNK).map((ids) =>
@@ -134,9 +130,8 @@ async function loadInitialStatusInputs(
     requireData(result, "Erro ao ler as codificações existentes"),
   );
 
-  const strategy = (project.round_strategy as RoundStrategy) ?? "schema_version";
   return {
-    ctx: buildRoundContext(project, strategy, await loadRoundsIfManual(supabase, projectId, strategy)),
+    ctx: buildRoundContext(project, await loadRounds(supabase, projectId)),
     fields: (project.pydantic_fields as PydanticField[]) ?? [],
     answersById: indexAnswers(answerRows),
   };
@@ -144,17 +139,12 @@ async function loadInitialStatusInputs(
 
 function buildRoundContext(
   project: Record<string, unknown>,
-  strategy: RoundStrategy,
   rounds: Round[],
 ): RoundContext {
   return {
-    strategy,
+    strategy: "manual",
     currentRoundId: (project.current_round_id as string | null) ?? null,
-    currentVersion: {
-      major: (project.schema_version_major as number | null) ?? 0,
-      minor: (project.schema_version_minor as number | null) ?? 0,
-      patch: (project.schema_version_patch as number | null) ?? 0,
-    },
+    currentVersion: { major: 0, minor: 0, patch: 0 },
     rounds,
   };
 }
@@ -190,6 +180,7 @@ async function resolveInitialCodingStatuses(
     const payload = answersById.get(candidate.id);
     const response = {
       ...candidate,
+      round_id: candidate.round_id ?? ctx.currentRoundId,
       answers: payload?.answers ?? null,
       answer_field_hashes: payload?.answer_field_hashes,
     };
@@ -290,13 +281,23 @@ export async function cycleAssignment(
   documentId: string,
   userId: string,
 ): Promise<{ error?: string }> {
+  const gate = await requireCoordinator(projectId, "Apenas coordenadores podem alterar atribuições.");
+  if (!gate.ok) return { error: gate.error };
   const supabase = await createSupabaseServer();
+  const { data: project } = await supabase
+    .from("projects")
+    .select("current_round_id")
+    .eq("id", projectId)
+    .single();
+  if (!project?.current_round_id) return { error: "O projeto não possui uma rodada atual." };
 
   const { data: existing } = await supabase
     .from("assignments")
     .select("id, status, type")
     .eq("document_id", documentId)
-    .eq("user_id", userId);
+    .eq("user_id", userId)
+    .eq("project_id", projectId)
+    .eq("round_id", project.current_round_id);
 
   const rows = existing || [];
 
@@ -343,14 +344,23 @@ export async function clearPendingAssignments(
   projectId: string,
   type: "codificacao" | "comparacao" = "codificacao"
 ): Promise<{ deleted?: number; error?: string }> {
+  const gate = await requireCoordinator(projectId, "Apenas coordenadores podem limpar atribuições.");
+  if (!gate.ok) return { error: gate.error };
   const supabase = await createSupabaseServer();
+  const { data: project } = await supabase
+    .from("projects")
+    .select("current_round_id")
+    .eq("id", projectId)
+    .single();
+  if (!project?.current_round_id) return { error: "O projeto não possui uma rodada atual." };
 
   const { count, error } = await supabase
     .from("assignments")
     .delete({ count: "exact" })
     .eq("project_id", projectId)
     .eq("status", "pendente")
-    .eq("type", type);
+    .eq("type", type)
+    .eq("round_id", project.current_round_id);
 
   if (error) {
     return { error: error.message || "Erro ao limpar as atribuições pendentes" };
@@ -382,6 +392,14 @@ interface LotteryParamsBase {
    * project_members ao sortear para pré-preencher o próximo sorteio.
    */
   participantSettings?: Record<string, { weight?: number; cap?: number | null }>;
+  target?:
+    | { kind: "current"; expectedRoundId: string }
+    | {
+        kind: "new";
+        expectedRoundId: string;
+        roundLabel: string;
+        confirmOpenWork: boolean;
+      };
 }
 
 /**
@@ -414,6 +432,7 @@ export interface LotteryPreview {
   eligibleDocs: number;
   /** semente usada; o dialog a reenvia em smartRandomize (research D13) */
   seed: number;
+  targetRoundLabel?: string;
 }
 
 interface LotteryDocStatsResult {
@@ -422,6 +441,9 @@ interface LotteryDocStatsResult {
   minResponsesForComparison: number;
   /** modo de automação do projeto — governa o gate de comparação */
   automationMode: string | null;
+  currentRoundId: string | null;
+  currentRoundLabel: string | null;
+  openAssignmentCount: number;
 }
 
 interface LotteryData extends LotteryDocStatsResult {
@@ -430,6 +452,7 @@ interface LotteryData extends LotteryDocStatsResult {
     user_id: string;
     status: string;
     type: string;
+    round_id: string;
   }[];
   humanCoderRows: HumanCoderRow[];
 }
@@ -443,7 +466,7 @@ interface LotteryData extends LotteryDocStatsResult {
 async function fetchLotteryDocStats(projectId: string): Promise<LotteryDocStatsResult> {
   const supabase = await createSupabaseServer();
 
-  const [{ data: docs }, { data: batches }, { data: project }] = await Promise.all([
+  const [{ data: docs }, { data: batches }, { data: project }, { data: rounds }] = await Promise.all([
     supabase
       .from("lottery_doc_stats")
       .select(
@@ -452,15 +475,20 @@ async function fetchLotteryDocStats(projectId: string): Promise<LotteryDocStatsR
       .eq("project_id", projectId),
     supabase
       .from("assignment_batches")
-      .select("id, label, created_at")
+      .select("id, label, created_at, round_id")
       .eq("project_id", projectId)
       .order("created_at", { ascending: false }),
     supabase
       .from("projects")
-      .select("min_responses_for_comparison, automation_mode")
+      .select("min_responses_for_comparison, automation_mode, current_round_id")
       .eq("id", projectId)
       .single(),
+    supabase
+      .from("rounds")
+      .select("id, label")
+      .eq("project_id", projectId)
   ]);
+  const currentRound = (rounds ?? []).find((round) => round.id === project?.current_round_id);
 
   return {
     docs: (docs || []).map((d) => ({
@@ -476,13 +504,19 @@ async function fetchLotteryDocStats(projectId: string): Promise<LotteryDocStatsR
       hasAnyAssignmentEver: d.has_any_assignment_ever,
       batchIds: d.batch_ids || [],
     })),
-    batches: (batches || []).map((b) => ({
+    batches: (batches || []).filter((b) => b.round_id === project?.current_round_id).map((b) => ({
       id: b.id,
       label: b.label,
       createdAt: b.created_at,
     })),
     minResponsesForComparison: project?.min_responses_for_comparison ?? 2,
     automationMode: project?.automation_mode ?? null,
+    currentRoundId: project?.current_round_id ?? null,
+    currentRoundLabel: currentRound?.label ?? null,
+    openAssignmentCount: (docs || []).reduce(
+      (total, d) => total + d.active_codificacao + d.active_comparacao,
+      0,
+    ),
   };
 }
 
@@ -500,7 +534,7 @@ async function fetchLotteryData(projectId: string): Promise<LotteryData> {
     fetchLotteryDocStats(projectId),
     supabase
       .from("assignments")
-      .select("document_id, user_id, status, type")
+      .select("document_id, user_id, status, type, round_id")
       .eq("project_id", projectId),
     // Mesmo predicado do trigger enforce_comparison_assignment_actor
     // (20260716160100): resposta humana is_latest define quem codificou.
@@ -526,6 +560,7 @@ async function fetchLotteryData(projectId: string): Promise<LotteryData> {
       user_id: a.user_id,
       status: a.status,
       type: a.type,
+      round_id: a.round_id ?? stats.currentRoundId ?? "",
     })),
     humanCoderRows: (humanCoders || []).flatMap((r) =>
       r.respondent_id
@@ -535,7 +570,7 @@ async function fetchLotteryData(projectId: string): Promise<LotteryData> {
               document_id: r.document_id,
               respondent_id: r.respondent_id,
               updated_at: r.updated_at,
-              round_id: r.round_id,
+              round_id: r.round_id ?? stats.currentRoundId,
               is_partial: r.is_partial,
               schema_version_major: r.schema_version_major,
               schema_version_minor: r.schema_version_minor,
@@ -558,9 +593,7 @@ export async function getLotteryDocStats(
   if (!user) return { error: "Não autenticado" };
 
   try {
-    const { docs, batches, minResponsesForComparison, automationMode } =
-      await fetchLotteryDocStats(projectId);
-    return { docs, batches, minResponsesForComparison, automationMode };
+    return await fetchLotteryDocStats(projectId);
   } catch (e) {
     return { error: errorMessage(e) || "Erro ao carregar as estatísticas do sorteio" };
   }
@@ -577,6 +610,7 @@ async function computeLottery(params: LotteryParams): Promise<{
   assignmentType: "codificacao" | "comparacao";
   /** fase 1 do status inicial (#521): responses humanas leves do projeto */
   humanCoderRows: HumanCoderRow[];
+  target: NonNullable<LotteryParams["target"]>;
 }> {
   const supabase = await createSupabaseServer();
   // Normaliza em vez de confiar no literal: o payload chega por HTTP e não passa
@@ -603,6 +637,21 @@ async function computeLottery(params: LotteryParams): Promise<{
     fetchLotteryData(params.projectId),
   ]);
 
+  const target = params.target ?? {
+    kind: "current" as const,
+    expectedRoundId: data.currentRoundId ?? "",
+  };
+  if (!data.currentRoundId || target.expectedRoundId !== data.currentRoundId) {
+    throw new Error("A rodada atual mudou. Reabra o sorteio e tente novamente.");
+  }
+  const startsNewRound = target.kind === "new";
+  if (startsNewRound && assignmentType !== "codificacao") {
+    throw new Error("Uma nova rodada só pode ser iniciada pelo sorteio de codificação.");
+  }
+  if (target.kind === "new" && !target.roundLabel.trim()) {
+    throw new Error("Informe o nome da nova rodada.");
+  }
+
   // Pool de participantes: deduplicado e validado contra project_members
   // (qualquer role) — defesa em profundidade além do RLS (research D5)
   const memberIds = new Set((members || []).map((m) => m.user_id));
@@ -618,7 +667,16 @@ async function computeLottery(params: LotteryParams): Promise<{
 
   // Gate de comparação derivado do modo de automação — compõe com os filtros.
   // compare_llm exige 1 humano + LLM; demais modos exigem N humanos.
-  let candidateDocs = data.docs;
+  let candidateDocs = startsNewRound
+    ? data.docs.map((doc) => ({
+        ...doc,
+        humanCodingCount: 0,
+        hasLlmResponse: false,
+        activeAssignments: { codificacao: 0, comparacao: 0 },
+        hasAnyAssignmentEver: false,
+        batchIds: [],
+      }))
+    : data.docs;
   if (assignmentType === "comparacao") {
     candidateDocs = filterComparisonEligible(
       candidateDocs,
@@ -647,8 +705,11 @@ async function computeLottery(params: LotteryParams): Promise<{
       ? ["pendente", "em_andamento", "concluido"]
       : ["em_andamento", "concluido"]
   );
-  const preserved = data.assignmentRows.filter(
-    (a) => a.type === assignmentType && preservedStatuses.has(a.status)
+  const currentRoundRows = startsNewRound
+    ? []
+    : data.assignmentRows.filter((a) => a.round_id === data.currentRoundId);
+  const preserved = currentRoundRows.filter(
+    (a) => a.type === assignmentType && preservedStatuses.has(a.status),
   );
 
   // Anti-duplicidade de par: continua derivando de `preserved` (dependente do
@@ -664,7 +725,9 @@ async function computeLottery(params: LotteryParams): Promise<{
   // mesmo invariante entra como par vetado do sorteio manual — veto de par,
   // não de vaga: o codificador continua elegível para outros documentos.
   if (assignmentType === "comparacao") {
-    for (const row of data.humanCoderRows) {
+    for (const row of data.humanCoderRows.filter(
+      (candidate) => candidate.round_id === data.currentRoundId,
+    )) {
       preservedSet.add(`${row.document_id}:${row.respondent_id}`);
     }
   }
@@ -693,8 +756,12 @@ async function computeLottery(params: LotteryParams): Promise<{
   // Carga acumulada segue em `preserved`: uma comparação concluída é trabalho
   // feito — conta para o equilíbrio `history` e é o "existing" da prévia, ainda
   // que não ocupe mais a vaga do documento.
+  const loadRows =
+    params.balancing === "history"
+      ? data.assignmentRows.filter((a) => a.type === assignmentType)
+      : preserved;
   const preservedByUser: Record<string, number> = {};
-  for (const a of preserved) {
+  for (const a of loadRows) {
     preservedByUser[a.user_id] = (preservedByUser[a.user_id] || 0) + 1;
   }
 
@@ -796,17 +863,21 @@ async function computeLottery(params: LotteryParams): Promise<{
     batchData,
     assignmentType,
     humanCoderRows: data.humanCoderRows,
+    target,
   };
 }
 
 export async function previewLottery(
   params: LotteryParams,
 ): Promise<{ preview?: LotteryPreview; error?: string }> {
-  const user = await getAuthUser();
-  if (!user) return { error: "Não autenticado" };
+  const gate = await requireCoordinator(
+    params.projectId,
+    "Apenas coordenadores podem sortear atribuições.",
+  );
+  if (!gate.ok) return { error: gate.error };
 
   try {
-    const { newAssignments, preservedCount, preservedByUser, eligibleCount, seed } =
+    const { newAssignments, preservedCount, preservedByUser, eligibleCount, seed, target } =
       await computeLottery(params);
 
     const newCounts: Record<string, number> = {};
@@ -825,6 +896,10 @@ export async function previewLottery(
         totalPreserved: preservedCount,
         eligibleDocs: eligibleCount,
         seed,
+        targetRoundLabel:
+          target.kind === "new"
+            ? target.roundLabel.trim()
+            : "Rodada atual",
       },
     };
   } catch (e) {
@@ -835,8 +910,11 @@ export async function previewLottery(
 export async function smartRandomize(
   params: LotteryParams,
 ): Promise<{ count?: number; preserved?: number; error?: string }> {
-  const user = await getAuthUser();
-  if (!user) return { error: "Não autenticado" };
+  const gate = await requireCoordinator(
+    params.projectId,
+    "Apenas coordenadores podem sortear atribuições.",
+  );
+  if (!gate.ok) return { error: gate.error };
 
   const supabase = await createSupabaseServer();
 
@@ -846,7 +924,7 @@ export async function smartRandomize(
   // Operação crítica: computeLottery + registro do lote + RPC transacional. Só
   // um erro aqui (nada gravado, ou gravação abortada) deve virar { error }.
   try {
-    const { newAssignments, preservedCount, batchData, assignmentType, humanCoderRows } =
+    const { newAssignments, preservedCount, batchData, assignmentType, humanCoderRows, target } =
       await computeLottery(params);
 
     // Status inicial por linha (#521): um documento já codificado por completo
@@ -858,28 +936,17 @@ export async function smartRandomize(
       assignmentType === "codificacao"
         ? new Map(humanCoderRows.map((r) => [pairKey(r.document_id, r.respondent_id), r]))
         : new Map<string, HumanCoderRow>();
-    const initialStatuses = await resolveInitialCodingStatuses(
-      supabase,
-      params.projectId,
-      newAssignments.flatMap((a) => {
-        const response = responsesByPair.get(pairKey(a.document_id, a.user_id));
-        return response ? [response] : [];
-      }),
-    );
-
-    // O batch é criado antes de qualquer mudança em assignments: se falhar
-    // (ex.: migration ausente), nada foi deletado ainda
-    const { data: batch, error: batchError } = await supabase
-      .from("assignment_batches")
-      .insert({ ...batchData, created_by: user.id })
-      .select("id")
-      .single();
-
-    if (batchError || !batch) {
-      throw new Error(
-        `Erro ao registrar o lote do sorteio: ${batchError?.message ?? "resposta vazia"}`
-      );
-    }
+    const initialStatuses =
+      target.kind === "new"
+        ? new Map<string, InitialCodingStatus>()
+        : await resolveInitialCodingStatuses(
+            supabase,
+            params.projectId,
+            newAssignments.flatMap((a) => {
+              const response = responsesByPair.get(pairKey(a.document_id, a.user_id));
+              return response ? [response] : [];
+            }),
+          );
 
     // Descarte das pendentes (modo substituir) + gravação das novas numa
     // transação única via RPC (issue #181): uma falha entre o delete e o insert
@@ -895,12 +962,17 @@ export async function smartRandomize(
           : {}),
       };
     });
-    const { data: inserted, error: rpcError } = await supabase.rpc(
+    const { data: result, error: rpcError } = await supabase.rpc(
       "apply_lottery_assignments",
       {
         p_project_id: params.projectId,
         p_type: assignmentType,
-        p_batch_id: batch.id,
+        p_expected_round_id: target.expectedRoundId,
+        p_new_round_label:
+          target.kind === "new" ? target.roundLabel.trim() : null,
+        p_confirm_open_work:
+          target.kind === "new" && target.confirmOpenWork,
+        p_batch: batchData,
         p_assignments: assignmentRows,
         p_replace: params.mode === "replace",
       },
@@ -914,7 +986,8 @@ export async function smartRandomize(
     // comparação do documento entre a leitura do computeLottery (fora da
     // transação) e este INSERT. Reportar o pretendido faria o coordenador ver
     // um número que não está no banco.
-    count = typeof inserted === "number" ? inserted : newAssignments.length;
+    const rpcResult = result as { inserted?: number } | null;
+    count = rpcResult?.inserted ?? newAssignments.length;
     preserved = preservedCount;
   } catch (e) {
     return { error: errorMessage(e) || "Erro ao sortear" };

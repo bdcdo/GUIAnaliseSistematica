@@ -29,27 +29,21 @@ export async function createProject(_prev: unknown, formData: FormData) {
     ? (rawMode as AutomationMode)
     : "auto_review_llm";
 
-  const { data: project, error } = await supabase
-    .from("projects")
-    .insert({ name, description, created_by: user.id, automation_mode })
-    .select()
-    .single();
+  const { data: projectId, error } = await supabase.rpc(
+    "create_project_with_initial_round",
+    {
+      p_name: name,
+      p_description: description || null,
+      p_created_by: user.id,
+      p_automation_mode: automation_mode,
+    },
+  );
 
   if (error) return { error: error.message };
-
-  // Add creator as coordinator
-  const { error: memberError } = await supabase
-    .from("project_members")
-    .insert({
-      project_id: project.id,
-      user_id: user.id,
-      role: "coordenador",
-    });
-
-  if (memberError) return { error: memberError.message };
+  if (!projectId) return { error: "Não foi possível criar o projeto." };
 
   revalidatePath("/dashboard");
-  redirect(`/projects/${project.id}/documents`);
+  redirect(`/projects/${projectId}/documents`);
 }
 
 // Retorno { error } em vez de throw: o Next mascara a message de erros

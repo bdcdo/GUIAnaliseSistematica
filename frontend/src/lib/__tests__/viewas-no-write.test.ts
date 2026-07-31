@@ -87,7 +87,7 @@ describe("saveResponse — escrita persiste o ator real, nunca o viewAs", () => 
           schema_version_minor: 0,
           schema_version_patch: 0,
           round_strategy: null,
-          current_round_id: null,
+          current_round_id: "round-1",
           automation_mode: null,
         },
       },

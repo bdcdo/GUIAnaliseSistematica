@@ -28,15 +28,12 @@ import type {
   PydanticField,
   AssignedDoc,
   Round,
-  RoundStrategy,
 } from "@/lib/types";
 
 export interface RoundFilterData {
-  strategy: RoundStrategy;
   currentRoundKey: string;
   currentRoundLabel: string;
   rounds: Round[];
-  previousVersions: string[];
   selected: string;
 }
 
@@ -282,6 +279,7 @@ function CodingPageInner({
 
   const assigned = useAssignedCoding({
     projectId,
+    currentRoundId: roundFilter?.currentRoundKey ?? "",
     documents,
     // `orderedFields`, e não `fields`: o toast de pendência nomeia a primeira
     // obrigatória em aberto NESTA ordem, que é a mesma em que o painel procura o
@@ -308,6 +306,7 @@ function CodingPageInner({
 
   const browse = useBrowseCoding({
     projectId,
+    currentRoundId: roundFilter?.currentRoundKey ?? "",
     documents,
     // Mesma razão do modo Atribuídos: a ordem daqui é a que o toast nomeia.
     fields: orderedFields,

@@ -139,8 +139,14 @@ class _FakeTable:
 
 
 class _FakeSupabase:
-    def __init__(self, tables: dict[str, _FakeTable]):
+    def __init__(
+        self,
+        tables: dict[str, _FakeTable],
+        *,
+        rpc_errors: dict[str, Exception] | None = None,
+    ):
         self._tables = tables
+        self._rpc_errors = rpc_errors or {}
         self.rpc_calls: list[tuple[str, dict]] = []
         self.operation_log: list[
             tuple[str, str, dict, list[tuple[str, str, object]]]
@@ -153,6 +159,9 @@ class _FakeSupabase:
         return self._tables[name]
 
     def rpc(self, name, params):
+        if name in self._rpc_errors:
+            return _RaisingQuery(self._rpc_errors[name])
+
         def record(_filters):
             self.rpc_calls.append((name, params))
 
@@ -171,6 +180,7 @@ def _project_row(**overrides) -> dict:
         "schema_version_major": 1,
         "schema_version_minor": 0,
         "schema_version_patch": 0,
+        "current_round_id": "round-1",
     }
     row.update(overrides)
     return row
@@ -221,14 +231,21 @@ def _make_fake_dataframeit(row_specs: dict[str, dict], calls: list[dict] | None 
     return _fake
 
 
-def _build_supabase(project_row, docs, *, documents_error=None) -> _FakeSupabase:
+def _build_supabase(
+    project_row,
+    docs,
+    *,
+    documents_error=None,
+    rpc_errors: dict[str, Exception] | None = None,
+) -> _FakeSupabase:
     return _FakeSupabase(
         {
             "projects": _FakeTable(select_data=project_row),
             "documents": _FakeTable(select_data=docs, select_error=documents_error),
             "responses": _FakeTable(),
             "llm_runs": _FakeTable(),
-        }
+        },
+        rpc_errors=rpc_errors,
     )
 
 
@@ -305,6 +322,7 @@ def test_run_llm_happy_path(monkeypatch):
         row["is_partial"] is False and row["is_latest"] is True for row in inserts
     )
     assert all(row["llm_error"] is None for row in inserts)
+    assert all(row["round_id"] == "round-1" for row in inserts)
     assert all(
         row["answer_field_hashes"] == {"campo_a": "ha", "campo_b": None}
         for row in inserts
@@ -317,6 +335,49 @@ def test_run_llm_happy_path(monkeypatch):
 
     project_updates = sb.table("projects").update_calls
     assert any("pydantic_hash" in payload for payload in project_updates)
+
+    snapshot = next(
+        payload
+        for payload in sb.table("llm_runs").update_calls
+        if "document_count" in payload
+    )
+    assert snapshot["round_id"] == "round-1"
+
+
+def test_run_llm_preserves_captured_round_and_propagates_stale_round_error(
+    monkeypatch,
+):
+    docs = _docs(1)
+    sb = _build_supabase(
+        _project_row(current_round_id="round-captured"),
+        docs,
+        rpc_errors={
+            "publish_latest_llm_response": RuntimeError(
+                "round changed while LLM run was processing"
+            )
+        },
+    )
+
+    _run_llm_sync(
+        monkeypatch,
+        sb,
+        {"doc-0": {"campo_a": "a", "campo_b": "b", "campo_c": "c"}},
+    )
+
+    snapshot = next(
+        payload
+        for payload in sb.table("llm_runs").update_calls
+        if "document_count" in payload
+    )
+    assert snapshot["round_id"] == "round-captured"
+    assert _jobs[JOB_ID]["status"] == "error"
+    assert _jobs[JOB_ID]["error_type"] == "RuntimeError"
+    assert _jobs[JOB_ID]["errors"] == ["round changed while LLM run was processing"]
+    error_update = _last_update_where(sb.table("llm_runs"), status="error")
+    assert error_update is not None
+    assert error_update["error_message"] == (
+        "round changed while LLM run was processing"
+    )
 
 
 def test_run_llm_routes_kwargs_without_leaking_internal_options(monkeypatch):

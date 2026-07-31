@@ -83,6 +83,7 @@ function notesFromJustifications(
 
 interface UseAssignedCodingParams {
   projectId: string;
+  currentRoundId?: string;
   documents: AssignedDoc[];
   /** Schema completo — usado para limpar condicionais órfãs ao responder (#252). */
   fields: PydanticField[];
@@ -125,6 +126,7 @@ interface UseAssignedCodingParams {
  */
 export function useAssignedCoding({
   projectId,
+  currentRoundId = "",
   documents,
   fields,
   sortedDocuments,
@@ -226,6 +228,7 @@ export function useAssignedCoding({
     try {
       const result = await saveCodingResponse(projectId, currentDoc.id, docAnswers, {
         notes: docNotes,
+        ...(currentRoundId ? { expectedRoundId: currentRoundId } : {}),
       });
       if (!result.success) {
         toast.error(result.error);
@@ -272,6 +275,7 @@ export function useAssignedCoding({
     docNotes,
     fields,
     projectId,
+    currentRoundId,
     docIndex,
     sortedDocuments,
     updateDocParam,

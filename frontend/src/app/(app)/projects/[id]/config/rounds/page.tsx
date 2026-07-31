@@ -3,8 +3,7 @@ import { getProjectAccessContext } from "@/lib/auth";
 import { requirePageAuthUser } from "@/lib/page-auth";
 import { RoundsConfig } from "@/components/config/RoundsConfig";
 import { requireResolvedProjectAccess } from "@/lib/project-access";
-import type { Round, RoundStrategy } from "@/lib/types";
-import { versionLabel } from "@/lib/rounds";
+import type { Round } from "@/lib/types";
 
 export default async function RoundsConfigPage({
   params,
@@ -20,9 +19,7 @@ export default async function RoundsConfigPage({
   const [{ data: project }, { data: rounds }, accessResult] = await Promise.all([
     supabase
       .from("projects")
-      .select(
-        "round_strategy, current_round_id, schema_version_major, schema_version_minor, schema_version_patch",
-      )
+      .select("current_round_id")
       .eq("id", id)
       .single(),
     supabase
@@ -33,23 +30,13 @@ export default async function RoundsConfigPage({
     getProjectAccessContext(id, user),
   ]);
 
-  const { isCoordinator } = requireResolvedProjectAccess(accessResult);
-
-  const currentVersion = versionLabel({
-    major: project?.schema_version_major ?? 0,
-    minor: project?.schema_version_minor ?? 1,
-    patch: project?.schema_version_patch ?? 0,
-  });
+  requireResolvedProjectAccess(accessResult);
 
   return (
     <div className="mx-auto max-w-3xl p-6">
       <RoundsConfig
-        projectId={id}
-        strategy={(project?.round_strategy as RoundStrategy) ?? "schema_version"}
         currentRoundId={project?.current_round_id ?? null}
-        currentVersion={currentVersion}
         rounds={(rounds ?? []) as Round[]}
-        isCoordinator={isCoordinator}
       />
     </div>
   );
