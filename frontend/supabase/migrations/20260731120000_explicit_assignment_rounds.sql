@@ -92,6 +92,44 @@ ALTER TABLE public.assignments
   ADD CONSTRAINT assignments_document_user_type_round_key
   UNIQUE (document_id, user_id, type, round_id);
 
+-- Funcoes de revisao criadas por migrations anteriores reabrem assignments com
+-- ON CONFLICT. O alvo precisa acompanhar a nova chave; manter a assinatura
+-- antiga faria a funcao falhar em runtime assim que o indice global fosse
+-- substituido pelo indice por rodada.
+DO $$
+DECLARE
+  v_function record;
+  v_definition text;
+BEGIN
+  FOR v_function IN
+    SELECT p.oid
+    FROM pg_proc AS p
+    JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prokind = 'f'
+      AND pg_get_functiondef(p.oid) LIKE '%ON CONFLICT (document_id, user_id, type)%'
+  LOOP
+    v_definition := replace(
+      pg_get_functiondef(v_function.oid),
+      'ON CONFLICT (document_id, user_id, type)',
+      'ON CONFLICT (document_id, user_id, type, round_id)'
+    );
+    EXECUTE v_definition;
+  END LOOP;
+
+  IF EXISTS (
+    SELECT 1
+    FROM pg_proc AS p
+    JOIN pg_namespace AS n ON n.oid = p.pronamespace
+    WHERE n.nspname = 'public'
+      AND p.prokind = 'f'
+      AND pg_get_functiondef(p.oid) LIKE '%ON CONFLICT (document_id, user_id, type)%'
+  ) THEN
+    RAISE EXCEPTION 'explicit rounds: funcao ainda usa conflito global de assignments';
+  END IF;
+END;
+$$;
+
 DROP INDEX public.assignments_one_active_comparacao_per_doc;
 CREATE UNIQUE INDEX assignments_one_active_comparacao_per_doc_round
   ON public.assignments (document_id, round_id)
@@ -146,7 +184,7 @@ CREATE OR REPLACE FUNCTION public.create_project_with_initial_round(
   p_automation_mode text DEFAULT 'auto_review_llm'
 ) RETURNS uuid
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = ''
 AS $$
 DECLARE
@@ -186,7 +224,7 @@ ALTER TABLE public.projects
 CREATE OR REPLACE FUNCTION public.fill_current_round_id()
 RETURNS trigger
 LANGUAGE plpgsql
-SECURITY INVOKER
+SECURITY DEFINER
 SET search_path = ''
 AS $$
 BEGIN
