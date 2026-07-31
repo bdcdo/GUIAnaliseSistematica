@@ -48,6 +48,7 @@ GATE_SUITES=(
   clerk_mapping_completion
   auto_review_assignment_sync
   atomic_replace_rpcs
+  explicit_assignment_rounds
   llm_rate_limit
   member_permission_rpcs
   project_members_column_guard
