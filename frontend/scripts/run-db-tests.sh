@@ -55,6 +55,7 @@ GATE_SUITES=(
   responses_one_latest_human
   auto_review_assignment_concurrency
   responses_latest_human_concurrency
+  response_round_serialization
   unmark_equivalence_atomic
   auto_review_reconciliation_outbox
   arbitration_reopen

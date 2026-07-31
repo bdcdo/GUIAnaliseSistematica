@@ -180,7 +180,6 @@ REVOKE ALL ON FUNCTION public.create_initial_project_round() FROM PUBLIC, anon, 
 CREATE OR REPLACE FUNCTION public.create_project_with_initial_round(
   p_name text,
   p_description text,
-  p_created_by uuid,
   p_automation_mode text DEFAULT 'auto_review_llm'
 ) RETURNS uuid
 LANGUAGE plpgsql
@@ -189,13 +188,19 @@ SET search_path = ''
 AS $$
 DECLARE
   v_project_id uuid;
+  v_created_by uuid;
 BEGIN
+  v_created_by := public.clerk_uid();
+  IF v_created_by IS NULL THEN
+    RAISE EXCEPTION 'identidade autenticada indisponivel' USING ERRCODE = '28000';
+  END IF;
+
   INSERT INTO public.projects (name, description, created_by, automation_mode)
-  VALUES (p_name, p_description, p_created_by, p_automation_mode)
+  VALUES (p_name, p_description, v_created_by, p_automation_mode)
   RETURNING id INTO v_project_id;
 
   INSERT INTO public.project_members (project_id, user_id, role)
-  VALUES (v_project_id, p_created_by, 'coordenador');
+  VALUES (v_project_id, v_created_by, 'coordenador');
 
   IF NOT EXISTS (
     SELECT 1 FROM public.projects
@@ -208,9 +213,9 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION public.create_project_with_initial_round(text, text, uuid, text)
+REVOKE ALL ON FUNCTION public.create_project_with_initial_round(text, text, text)
   FROM PUBLIC, anon, service_role;
-GRANT EXECUTE ON FUNCTION public.create_project_with_initial_round(text, text, uuid, text) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.create_project_with_initial_round(text, text, text) TO authenticated;
 
 ALTER TABLE public.projects
   DROP CONSTRAINT projects_round_strategy_check;
@@ -244,11 +249,162 @@ CREATE TRIGGER assignments_fill_current_round
 BEFORE INSERT ON public.assignments
 FOR EACH ROW EXECUTE FUNCTION public.fill_current_round_id();
 
-CREATE TRIGGER responses_fill_current_round
-BEFORE INSERT ON public.responses
-FOR EACH ROW EXECUTE FUNCTION public.fill_current_round_id();
-
 REVOKE ALL ON FUNCTION public.fill_current_round_id() FROM PUBLIC, anon, authenticated;
+
+-- Toda escrita de response se lineariza com a troca de rodada pelo mesmo row
+-- lock de projects. FOR SHARE permite saves concorrentes, mas conflita com o
+-- FOR UPDATE de apply_lottery_assignments. Assim, ou o save termina antes da
+-- ativacao, ou observa a nova rodada e falha; nunca grava no historico depois.
+CREATE OR REPLACE FUNCTION public.enforce_current_response_round_write()
+RETURNS trigger
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_current_round_id uuid;
+BEGIN
+  IF TG_OP = 'UPDATE'
+     AND (
+       NEW.project_id IS DISTINCT FROM OLD.project_id
+       OR NEW.round_id IS DISTINCT FROM OLD.round_id
+     ) THEN
+    RAISE EXCEPTION 'project_id e round_id da response sao imutaveis'
+      USING ERRCODE = '23514';
+  END IF;
+
+  SELECT project.current_round_id INTO v_current_round_id
+  FROM public.projects AS project
+  WHERE project.id = NEW.project_id
+  FOR SHARE;
+
+  IF NOT FOUND OR v_current_round_id IS NULL THEN
+    RAISE EXCEPTION 'projeto sem rodada atual' USING ERRCODE = 'P0002';
+  END IF;
+
+  -- Compatibilidade com a release imediatamente anterior. Clientes round-aware
+  -- sempre enviam o id exibido e, portanto, passam pela comparacao abaixo.
+  IF NEW.round_id IS NULL THEN
+    NEW.round_id := v_current_round_id;
+  ELSIF NEW.round_id IS DISTINCT FROM v_current_round_id THEN
+    RAISE EXCEPTION 'a rodada atual mudou; recarregue o formulario'
+      USING ERRCODE = '40001';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER responses_enforce_current_round_write
+BEFORE INSERT OR UPDATE ON public.responses
+FOR EACH ROW EXECUTE FUNCTION public.enforce_current_response_round_write();
+
+REVOKE ALL ON FUNCTION public.enforce_current_response_round_write()
+  FROM PUBLIC, anon, authenticated, service_role;
+
+-- Publicacao LLM antiga falha antes de tocar latest ou outbox. A ordem de
+-- locks projects -> documents acompanha apply_lottery_assignments e o trigger
+-- de reconciliacao, evitando o ciclo project->document / document->project.
+CREATE OR REPLACE FUNCTION public.publish_latest_llm_response(
+  p_response jsonb
+) RETURNS uuid
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_project_id uuid;
+  v_document_id uuid;
+  v_round_id uuid;
+  v_current_round_id uuid;
+  v_document_project_id uuid;
+  v_response_id uuid;
+  v_is_partial boolean;
+BEGIN
+  IF p_response IS NULL OR pg_catalog.jsonb_typeof(p_response) <> 'object' THEN
+    RAISE EXCEPTION 'p_response must be a JSON object';
+  END IF;
+  IF pg_catalog.jsonb_typeof(p_response->'answers') <> 'object'
+     OR (
+       p_response->'justifications' IS NOT NULL
+       AND p_response->'justifications' <> 'null'::jsonb
+       AND pg_catalog.jsonb_typeof(p_response->'justifications') <> 'object'
+     )
+     OR (
+       p_response->'answer_field_hashes' IS NOT NULL
+       AND p_response->'answer_field_hashes' <> 'null'::jsonb
+       AND pg_catalog.jsonb_typeof(p_response->'answer_field_hashes') <> 'object'
+     ) THEN
+    RAISE EXCEPTION 'LLM response answers, justifications, and field hashes must be JSON objects';
+  END IF;
+
+  v_project_id := (p_response->>'project_id')::uuid;
+  v_document_id := (p_response->>'document_id')::uuid;
+  v_round_id := NULLIF(p_response->>'round_id', '')::uuid;
+  v_is_partial := COALESCE((p_response->>'is_partial')::boolean, false);
+
+  IF v_round_id IS NULL THEN
+    RAISE EXCEPTION 'LLM response round_id is required' USING ERRCODE = '22023';
+  END IF;
+
+  SELECT project.current_round_id INTO v_current_round_id
+  FROM public.projects AS project
+  WHERE project.id = v_project_id
+  FOR SHARE;
+
+  IF NOT FOUND OR v_current_round_id IS DISTINCT FROM v_round_id THEN
+    RAISE EXCEPTION 'LLM response round is no longer current'
+      USING ERRCODE = '40001';
+  END IF;
+
+  SELECT document.project_id INTO v_document_project_id
+  FROM public.documents AS document
+  WHERE document.id = v_document_id
+  FOR UPDATE;
+
+  IF v_document_project_id IS NULL
+     OR v_document_project_id IS DISTINCT FROM v_project_id THEN
+    RAISE EXCEPTION 'LLM response document does not belong to project';
+  END IF;
+
+  DELETE FROM public.auto_review_reconciliation_requests AS request
+  WHERE request.document_id = v_document_id;
+
+  UPDATE public.responses AS response
+  SET is_latest = false
+  WHERE response.project_id = v_project_id
+    AND response.round_id = v_round_id
+    AND response.document_id = v_document_id
+    AND response.respondent_type = 'llm'
+    AND response.is_latest = true;
+
+  INSERT INTO public.responses (
+    project_id, document_id, respondent_id, respondent_type, respondent_name,
+    answers, justifications, is_latest, is_partial, pydantic_hash,
+    answer_field_hashes, llm_job_id, llm_error, schema_version_major,
+    schema_version_minor, schema_version_patch, version_inferred_from, round_id
+  ) VALUES (
+    v_project_id, v_document_id, NULL, 'llm', p_response->>'respondent_name',
+    COALESCE(p_response->'answers', '{}'::jsonb),
+    NULLIF(p_response->'justifications', 'null'::jsonb),
+    NOT v_is_partial, v_is_partial, p_response->>'pydantic_hash',
+    NULLIF(p_response->'answer_field_hashes', 'null'::jsonb),
+    NULLIF(p_response->>'llm_job_id', '')::uuid, p_response->>'llm_error',
+    COALESCE((p_response->>'schema_version_major')::integer, 0),
+    COALESCE((p_response->>'schema_version_minor')::integer, 1),
+    COALESCE((p_response->>'schema_version_patch')::integer, 0),
+    p_response->>'version_inferred_from', v_round_id
+  )
+  RETURNING id INTO v_response_id;
+
+  RETURN v_response_id;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.publish_latest_llm_response(jsonb)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.publish_latest_llm_response(jsonb)
+  TO service_role;
 
 -- Nova operacao atomica. `p_new_round_label IS NULL` opera na rodada atual;
 -- quando ha label, cria e ativa uma rodada antes do sorteio. Qualquer excecao,

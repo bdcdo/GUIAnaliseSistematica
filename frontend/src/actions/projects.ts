@@ -34,7 +34,6 @@ export async function createProject(_prev: unknown, formData: FormData) {
     {
       p_name: name,
       p_description: description || null,
-      p_created_by: user.id,
       p_automation_mode: automation_mode,
     },
   );

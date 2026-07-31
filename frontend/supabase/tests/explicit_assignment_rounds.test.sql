@@ -3,13 +3,34 @@
 BEGIN;
 
 INSERT INTO auth.users (id, email) VALUES
-  ('70000000-0000-0000-0000-000000000001', 'round-creator@example.test');
+  ('70000000-0000-0000-0000-000000000001', 'round-creator@example.test'),
+  ('70000000-0000-0000-0000-000000000002', 'round-victim@example.test');
+
+INSERT INTO public.clerk_user_mapping
+  (clerk_user_id, supabase_user_id, access_sync_version)
+VALUES
+  ('round-creator-clerk', '70000000-0000-0000-0000-000000000001', 1);
+
+SELECT set_config(
+  'request.jwt.claims',
+  '{"sub":"round-creator-clerk","supabase_uid":"70000000-0000-0000-0000-000000000001"}',
+  true
+);
+CREATE TEMP TABLE created_project_result (project_id uuid NOT NULL);
+GRANT INSERT ON created_project_result TO authenticated;
+SET LOCAL ROLE authenticated;
+
+INSERT INTO created_project_result
+SELECT public.create_project_with_initial_round(
+  'created atomically', NULL, 'auto_review_llm');
+
+RESET ROLE;
+SELECT set_config('request.jwt.claims', '{}', true);
 
 DO $$
 DECLARE v_project_id uuid;
 BEGIN
-  v_project_id := public.create_project_with_initial_round(
-    'created atomically', NULL, '70000000-0000-0000-0000-000000000001', 'auto_review_llm');
+  SELECT project_id INTO STRICT v_project_id FROM created_project_result;
   IF NOT EXISTS (
        SELECT 1 FROM public.project_members
        WHERE project_members.project_id = v_project_id
@@ -17,11 +38,37 @@ BEGIN
          AND role = 'coordenador'
      ) OR NOT EXISTS (
        SELECT 1 FROM public.projects
-       WHERE id = v_project_id AND current_round_id IS NOT NULL
+       WHERE id = v_project_id
+         AND created_by = '70000000-0000-0000-0000-000000000001'
+         AND current_round_id IS NOT NULL
+     ) OR EXISTS (
+       SELECT 1 FROM public.project_members
+       WHERE project_members.project_id = v_project_id
+         AND user_id = '70000000-0000-0000-0000-000000000002'
      ) THEN
-    RAISE EXCEPTION 'FALHOU: criacao atomica nao criou coordenador/rodada';
+    RAISE EXCEPTION 'FALHOU: criacao atomica aceitou identidade diferente do JWT';
+  END IF;
+  IF pg_catalog.to_regprocedure(
+       'public.create_project_with_initial_round(text,text,uuid,text)'
+     ) IS NOT NULL THEN
+    RAISE EXCEPTION 'FALHOU: assinatura vulneravel com p_created_by continua exposta';
   END IF;
   RAISE NOTICE 'OK: projeto, coordenador e rodada inicial criados atomicamente';
+END $$;
+
+DO $$
+DECLARE v_rejected boolean := false;
+BEGIN
+  BEGIN
+    PERFORM public.create_project_with_initial_round(
+      'sem identidade', NULL, 'auto_review_llm');
+  EXCEPTION WHEN invalid_authorization_specification THEN
+    v_rejected := true;
+  END;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'FALHOU: criacao sem identidade autenticada foi aceita';
+  END IF;
+  RAISE NOTICE 'OK: criacao sem identidade falha fechado';
 END $$;
 
 INSERT INTO public.projects (id, name) VALUES
@@ -133,6 +180,103 @@ BEGIN
   EXCEPTION WHEN unique_violation THEN NULL;
   END;
   RAISE NOTICE 'OK: FKs cross-project e comparacao ativa por rodada';
+END $$;
+
+-- Uma resposta humana ou LLM capturada na rodada anterior não pode tocar o
+-- histórico depois da ativação, mesmo usando service_role/postgres.
+DO $$
+DECLARE
+  v_old_round uuid;
+  v_current_round uuid;
+  v_current_llm uuid;
+  v_rejected boolean := false;
+BEGIN
+  SELECT current_round_id INTO v_current_round
+  FROM public.projects
+  WHERE id = '71000000-0000-0000-0000-000000000001';
+
+  SELECT id INTO v_old_round
+  FROM public.rounds
+  WHERE project_id = '71000000-0000-0000-0000-000000000001'
+    AND id <> v_current_round;
+
+  v_current_llm := public.publish_latest_llm_response(
+    pg_catalog.jsonb_build_object(
+      'project_id', '71000000-0000-0000-0000-000000000001',
+      'document_id', '72000000-0000-0000-0000-000000000001',
+      'round_id', v_current_round,
+      'respondent_name', 'test/current',
+      'answers', '{"q1":"current"}'::jsonb,
+      'is_partial', false
+    )
+  );
+
+  v_rejected := false;
+  BEGIN
+    PERFORM public.publish_latest_llm_response(
+      pg_catalog.jsonb_build_object(
+        'project_id', '71000000-0000-0000-0000-000000000001',
+        'document_id', '72000000-0000-0000-0000-000000000001',
+        'answers', '{}'::jsonb,
+        'is_partial', false
+      )
+    );
+  EXCEPTION WHEN invalid_parameter_value THEN
+    v_rejected := true;
+  END;
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'FALHOU: publicacao LLM sem round_id foi aceita';
+  END IF;
+
+  v_rejected := false;
+  BEGIN
+    PERFORM public.publish_latest_llm_response(
+      pg_catalog.jsonb_build_object(
+        'project_id', '71000000-0000-0000-0000-000000000001',
+        'document_id', '72000000-0000-0000-0000-000000000001',
+        'round_id', v_old_round,
+        'respondent_name', 'test/stale',
+        'answers', '{"q1":"stale"}'::jsonb,
+        'is_partial', false
+      )
+    );
+  EXCEPTION WHEN serialization_failure THEN
+    v_rejected := true;
+  END;
+
+  IF NOT v_rejected
+     OR NOT EXISTS (
+       SELECT 1 FROM public.responses
+       WHERE id = v_current_llm AND is_latest
+     )
+     OR EXISTS (
+       SELECT 1 FROM public.responses
+       WHERE project_id = '71000000-0000-0000-0000-000000000001'
+         AND round_id = v_old_round
+         AND respondent_type = 'llm'
+         AND answers = '{"q1":"stale"}'::jsonb
+     ) THEN
+    RAISE EXCEPTION 'FALHOU: publicacao LLM antiga alterou a rodada atual';
+  END IF;
+
+  v_rejected := false;
+  BEGIN
+    INSERT INTO public.responses (
+      project_id, document_id, respondent_type, answers, is_latest,
+      is_partial, round_id
+    ) VALUES (
+      '71000000-0000-0000-0000-000000000001',
+      '72000000-0000-0000-0000-000000000001',
+      'humano', '{}'::jsonb, true, true, v_old_round
+    );
+  EXCEPTION WHEN serialization_failure THEN
+    v_rejected := true;
+  END;
+
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'FALHOU: response humana entrou em rodada historica';
+  END IF;
+  RAISE NOTICE 'OK: responses humanas e LLM antigas falham sem alterar latest';
 END $$;
 
 ROLLBACK;

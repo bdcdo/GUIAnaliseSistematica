@@ -222,13 +222,17 @@ export function useAssignedCoding({
 
   const handleSubmit = useCallback(async () => {
     if (!currentDoc || Object.keys(docAnswers).length === 0) return;
+    if (!currentRoundId) {
+      toast.error("O projeto não possui uma rodada atual.");
+      return;
+    }
     if (savingRef.current) return;
     savingRef.current = true;
     setSubmitting(true);
     try {
       const result = await saveCodingResponse(projectId, currentDoc.id, docAnswers, {
         notes: docNotes,
-        ...(currentRoundId ? { expectedRoundId: currentRoundId } : {}),
+        expectedRoundId: currentRoundId,
       });
       if (!result.success) {
         toast.error(result.error);

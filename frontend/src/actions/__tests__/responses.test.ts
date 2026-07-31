@@ -4,6 +4,7 @@ import { isCodingComplete } from "@/lib/coding-completeness";
 import { responseQualifiesForVersion } from "@/lib/compare-version";
 import type { VersionedResponse } from "@/lib/compare-version";
 import type { AnswerFieldHashes, PydanticField } from "@/lib/types";
+import type { SaveResponseOpts } from "@/actions/responses";
 
 const drainAutoReviewReconciliationRequests = vi.hoisted(() => vi.fn(async () => ({
   processed: 1,
@@ -219,7 +220,17 @@ vi.mock("@/lib/supabase/server", () => ({
 }));
 
 async function loadSaveResponse() {
-  return (await import("@/actions/responses")).saveResponse;
+  const saveResponse = (await import("@/actions/responses")).saveResponse;
+  return (
+    projectId: string,
+    documentId: string,
+    answers: Record<string, unknown>,
+    opts: Partial<SaveResponseOpts> = {},
+  ) =>
+    saveResponse(projectId, documentId, answers, {
+      expectedRoundId: "round-1",
+      ...opts,
+    });
 }
 
 describe("saveResponse — gravação pelo envio explícito", () => {
@@ -776,6 +787,21 @@ describe("saveResponse — unicidade da resposta corrente (#609)", () => {
       error: "codificador não pode responder documento em comparação",
     });
     expect(state.existingReadCount).toBe(1);
+  });
+
+  it("rodada alterada atomicamente no banco devolve mensagem de recarga", async () => {
+    state.existingResponse = null;
+    state.responseInsertErrorQueue = [
+      { code: "40001", message: "a rodada atual mudou; recarregue o formulario" },
+    ];
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    expect(r).toEqual({
+      success: false,
+      error: "A rodada mudou enquanto este formulário estava aberto. Recarregue a página.",
+    });
+    expect(state.assignmentUpdatePayload).toBeNull();
   });
 
   it("conflito nas DUAS tentativas devolve erro explícito, sem girar", async () => {

@@ -127,13 +127,17 @@ export function useBrowseCoding({
   const handleBrowseSubmit = useCallback(
     async ({ answers, notes }: CodingDraft) => {
       if (!browseDocId || Object.keys(answers).length === 0) return;
+      if (!currentRoundId) {
+        toast.error("O projeto não possui uma rodada atual.");
+        return;
+      }
       if (browseSavingRef.current) return;
       browseSavingRef.current = true;
       setSubmitting(true);
       try {
         const result = await saveCodingResponse(projectId, browseDocId, answers, {
           notes,
-          ...(currentRoundId ? { expectedRoundId: currentRoundId } : {}),
+          expectedRoundId: currentRoundId,
         });
         if (result.success) {
           markClean(browseDocId);

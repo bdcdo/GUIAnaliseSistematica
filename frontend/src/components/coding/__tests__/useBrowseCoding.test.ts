@@ -66,6 +66,7 @@ function setDoc(over?: Partial<ReturnType<typeof useDocumentForCoding>>) {
 function setup(docParam: string | null, dirty = new Set<string>()) {
   const params = {
     projectId: "p1",
+    currentRoundId: "round-1",
     documents: [], // nenhum atribuído → docParam vira browseDocId
     fields: [],
     mode: "browse" as const,
@@ -105,7 +106,10 @@ describe("useBrowseCoding", () => {
       await view.result.current.handleBrowseSubmit({ answers: { q: "sim" }, notes: "n" });
     });
 
-    expect(mockSave).toHaveBeenCalledWith("p1", "b1", { q: "sim" }, { notes: "n" });
+    expect(mockSave).toHaveBeenCalledWith("p1", "b1", { q: "sim" }, {
+      notes: "n",
+      expectedRoundId: "round-1",
+    });
     expect(params.markClean).toHaveBeenCalledWith("b1");
     expect(markResponded).toHaveBeenCalledWith("b1");
     expect(invalidate).toHaveBeenCalledWith("b1");

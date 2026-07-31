@@ -17,7 +17,9 @@ describe("saveCodingResponse", () => {
   it("normaliza a rejeição de transporte para o contrato de falha", async () => {
     mockSave.mockRejectedValue(new Error("Failed to find Server Action"));
 
-    const result = await saveCodingResponse("p1", "d1", { q: "sim" });
+    const result = await saveCodingResponse("p1", "d1", { q: "sim" }, {
+      expectedRoundId: "round-1",
+    });
 
     expect(result).toEqual({
       success: false,
@@ -31,7 +33,9 @@ describe("saveCodingResponse", () => {
       error: "Documento removido do escopo do projeto",
     });
 
-    const result = await saveCodingResponse("p1", "d1", { q: "sim" });
+    const result = await saveCodingResponse("p1", "d1", { q: "sim" }, {
+      expectedRoundId: "round-1",
+    });
 
     expect(result).toEqual({
       success: false,

@@ -91,6 +91,13 @@ import { CodingPage } from "@/components/coding/CodingPage";
 import { codingDraftStorageKey, parseCodingDraft } from "@/lib/coding-draft";
 import { requestNavigation } from "@/lib/unsaved-work-guard";
 
+const ROUND_FILTER = {
+  currentRoundKey: "round-1",
+  currentRoundLabel: "Rodada inicial",
+  rounds: [],
+  selected: "round-1",
+};
+
 const USER = "user-teste";
 const PROJECT = "p1";
 const DOC = "d1";
@@ -126,6 +133,7 @@ function renderPage(
 ) {
   return render(
     <CodingPage
+      roundFilter={ROUND_FILTER}
       userId={USER}
       projectId={PROJECT}
       documents={documents}
@@ -374,6 +382,7 @@ describe("veredito do servidor chega ao painel (#608, critério 5)", () => {
     const user = userEvent.setup();
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId={USER}
         projectId={PROJECT}
         documents={[assignedDoc(DOC)]}
@@ -409,6 +418,7 @@ describe("veredito do servidor chega ao painel (#608, critério 5)", () => {
     const user = userEvent.setup();
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId={USER}
         projectId={PROJECT}
         documents={[assignedDoc(DOC)]}
