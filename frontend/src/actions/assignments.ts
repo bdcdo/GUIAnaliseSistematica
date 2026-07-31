@@ -269,6 +269,77 @@ async function promoteToComparison(
   return error ? { error: error.message } : {};
 }
 
+async function getCurrentRoundId(
+  supabase: SupabaseServerClient,
+  projectId: string,
+): Promise<string | null> {
+  const { data: project } = await supabase
+    .from("projects")
+    .select("current_round_id")
+    .eq("id", projectId)
+    .single();
+  return project?.current_round_id ?? null;
+}
+
+async function insertCodingAssignmentOrThrow(
+  supabase: SupabaseServerClient,
+  projectId: string,
+  documentId: string,
+  userId: string,
+): Promise<void> {
+  const { error } = await insertCodingAssignment(
+    supabase,
+    projectId,
+    documentId,
+    userId,
+  );
+  if (error) throw new Error(error);
+}
+
+async function promoteToComparisonOrThrow(
+  supabase: SupabaseServerClient,
+  assignmentId: string,
+): Promise<string | undefined> {
+  const { error, conflict } = await promoteToComparison(supabase, assignmentId);
+  if (conflict) return error;
+  if (error) throw new Error(error);
+  return undefined;
+}
+
+async function deleteAssignmentsOrThrow(
+  supabase: SupabaseServerClient,
+  assignmentIds: string[],
+): Promise<void> {
+  const { error } = await supabase.from("assignments").delete().in("id", assignmentIds);
+  if (error) throw new Error(error.message);
+}
+
+async function applyPendingAssignmentTransition(
+  supabase: SupabaseServerClient,
+  projectId: string,
+  documentId: string,
+  userId: string,
+  pendingCoding: { id: string } | undefined,
+  pendingComparison: { id: string } | undefined,
+): Promise<string | undefined> {
+  const transition = `${Number(Boolean(pendingCoding))}${Number(Boolean(pendingComparison))}`;
+  switch (transition) {
+    case "00":
+      await insertCodingAssignmentOrThrow(supabase, projectId, documentId, userId);
+      return undefined;
+    case "10":
+      return promoteToComparisonOrThrow(supabase, pendingCoding!.id);
+    case "01":
+      await deleteAssignmentsOrThrow(supabase, [pendingComparison!.id]);
+      return undefined;
+    case "11":
+      await deleteAssignmentsOrThrow(supabase, [pendingCoding!.id, pendingComparison!.id]);
+      return undefined;
+    default:
+      throw new Error("Transição de atribuição inválida");
+  }
+}
+
 /**
  * Cicla a atribuição de um par (documento, pesquisador) por três estados:
  *   vazio → codificacao → comparacao → vazio
@@ -284,12 +355,8 @@ export async function cycleAssignment(
   const gate = await requireCoordinator(projectId, "Apenas coordenadores podem alterar atribuições.");
   if (!gate.ok) return { error: gate.error };
   const supabase = await createSupabaseServer();
-  const { data: project } = await supabase
-    .from("projects")
-    .select("current_round_id")
-    .eq("id", projectId)
-    .single();
-  if (!project?.current_round_id) return { error: "O projeto não possui uma rodada atual." };
+  const currentRoundId = await getCurrentRoundId(supabase, projectId);
+  if (!currentRoundId) return { error: "O projeto não possui uma rodada atual." };
 
   const { data: existing } = await supabase
     .from("assignments")
@@ -297,7 +364,7 @@ export async function cycleAssignment(
     .eq("document_id", documentId)
     .eq("user_id", userId)
     .eq("project_id", projectId)
-    .eq("round_id", project.current_round_id);
+    .eq("round_id", currentRoundId);
 
   const rows = existing || [];
 
@@ -309,27 +376,15 @@ export async function cycleAssignment(
   const pendingComp = rows.find((r) => r.type === "comparacao");
 
   try {
-    if (!pendingCod && !pendingComp) {
-      // vazio → codificacao
-      const { error } = await insertCodingAssignment(supabase, projectId, documentId, userId);
-      if (error) throw new Error(error);
-    } else if (pendingCod && !pendingComp) {
-      // codificacao → comparacao
-      const { error, conflict } = await promoteToComparison(supabase, pendingCod.id);
-      if (conflict) return { error };
-      if (error) throw new Error(error);
-    } else if (pendingComp && !pendingCod) {
-      // comparacao → vazio
-      const { error } = await supabase.from("assignments").delete().eq("id", pendingComp.id);
-      if (error) throw new Error(error.message);
-    } else if (pendingCod && pendingComp) {
-      // "ambos" (vindo de sorteio): remover tudo para voltar ao vazio
-      const { error } = await supabase
-        .from("assignments")
-        .delete()
-        .in("id", [pendingCod.id, pendingComp.id]);
-      if (error) throw new Error(error.message);
-    }
+    const conflictError = await applyPendingAssignmentTransition(
+      supabase,
+      projectId,
+      documentId,
+      userId,
+      pendingCod,
+      pendingComp,
+    );
+    if (conflictError) return { error: conflictError };
   } catch (e) {
     return { error: errorMessage(e) || "Erro ao alterar a atribuição" };
   }
@@ -347,12 +402,8 @@ export async function clearPendingAssignments(
   const gate = await requireCoordinator(projectId, "Apenas coordenadores podem limpar atribuições.");
   if (!gate.ok) return { error: gate.error };
   const supabase = await createSupabaseServer();
-  const { data: project } = await supabase
-    .from("projects")
-    .select("current_round_id")
-    .eq("id", projectId)
-    .single();
-  if (!project?.current_round_id) return { error: "O projeto não possui uma rodada atual." };
+  const currentRoundId = await getCurrentRoundId(supabase, projectId);
+  if (!currentRoundId) return { error: "O projeto não possui uma rodada atual." };
 
   const { count, error } = await supabase
     .from("assignments")
@@ -360,7 +411,7 @@ export async function clearPendingAssignments(
     .eq("project_id", projectId)
     .eq("status", "pendente")
     .eq("type", type)
-    .eq("round_id", project.current_round_id);
+    .eq("round_id", currentRoundId);
 
   if (error) {
     return { error: error.message || "Erro ao limpar as atribuições pendentes" };
