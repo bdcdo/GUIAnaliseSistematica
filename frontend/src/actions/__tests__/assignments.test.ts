@@ -24,6 +24,7 @@ vi.mock("next/cache", () => ({
 }));
 vi.mock("@/lib/auth", () => ({
   getAuthUser: async () => ({ id: "user-1", isMaster: false }),
+  requireCoordinator: async () => ({ ok: true, user: { id: "user-1" } }),
 }));
 vi.mock("@/lib/supabase/server", () => ({
   createSupabaseServer: async () => {
@@ -92,7 +93,7 @@ describe("getLotteryDocStats", () => {
         data: [{ id: "b1", label: "Lote 1", created_at: "2026-01-01" }],
       },
       projects: {
-        data: { min_responses_for_comparison: 2, automation_mode: "compare_llm" },
+        data: { min_responses_for_comparison: 2, automation_mode: "compare_llm", current_round_id: "round-1" },
       },
     };
 
@@ -129,7 +130,7 @@ describe("getLotteryDocStats", () => {
     serverTableResults = {
       lottery_doc_stats: { data: [] },
       assignment_batches: { data: [] },
-      projects: { data: { min_responses_for_comparison: 2, automation_mode: null } },
+      projects: { data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" } },
     };
 
     await getLotteryDocStats("p1");
@@ -160,7 +161,7 @@ describe("previewLottery", () => {
         ],
       },
       assignment_batches: { data: [] },
-      projects: { data: { min_responses_for_comparison: 2, automation_mode: null } },
+      projects: { data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" } },
       assignments: { data: [] },
     };
 
@@ -209,7 +210,7 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
         ],
       },
       assignment_batches: { data: [] },
-      projects: { data: { min_responses_for_comparison: 2, automation_mode: null } },
+      projects: { data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" } },
       assignments: { data: assignments },
     };
   }
@@ -351,10 +352,7 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
     expect(rpc?.args).toMatchObject({ p_type: "comparacao" });
     expect((rpc?.args as { p_assignments: unknown[] }).p_assignments).toHaveLength(1);
 
-    const lote = writeCalls.find(
-      (c) => c.table === "assignment_batches" && c.op === "insert",
-    );
-    expect(lote?.payload).toMatchObject({ researchers_per_doc: 1 });
+    expect((rpc?.args as { p_batch: unknown }).p_batch).toMatchObject({ researchers_per_doc: 1 });
   });
 });
 
@@ -372,7 +370,7 @@ describe("status inicial do assignment de codificação (#521)", () => {
     automation_mode: null,
     pydantic_fields: FIELDS,
     round_strategy: "schema_version",
-    current_round_id: null,
+    current_round_id: "round-1",
     schema_version_major: 1,
     schema_version_minor: 0,
     schema_version_patch: 0,

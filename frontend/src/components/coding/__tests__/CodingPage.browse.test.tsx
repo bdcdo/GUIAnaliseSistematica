@@ -146,6 +146,13 @@ vi.mock("@/components/coding/FullscreenNav", () => ({
 
 import { CodingPage } from "@/components/coding/CodingPage";
 
+const ROUND_FILTER = {
+  currentRoundKey: "round-1",
+  currentRoundLabel: "Rodada inicial",
+  rounds: [],
+  selected: "round-1",
+};
+
 const FIELDS: PydanticField[] = [
   { name: "q1", type: "text", options: null, description: "" },
 ];
@@ -210,7 +217,7 @@ describe("CodingPage/Explorar — o veredito do servidor atravessa o BrowseDocCo
     });
 
     render(
-      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage roundFilter={ROUND_FILTER} userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
@@ -227,7 +234,7 @@ describe("CodingPage/Explorar — o veredito do servidor atravessa o BrowseDocCo
     saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
 
     render(
-      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage roundFilter={ROUND_FILTER} userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
@@ -249,7 +256,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
 
     render(
-      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage roundFilter={ROUND_FILTER} userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
@@ -276,7 +283,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     saveResponse.mockResolvedValue({ success: true, missingRequiredFields: [] });
 
     render(
-      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage roundFilter={ROUND_FILTER} userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     expect((await screen.findByTestId("count-d1")).textContent).toBe("0");
@@ -300,7 +307,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     );
 
     render(
-      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage roundFilter={ROUND_FILTER} userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
@@ -330,6 +337,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
 
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1")]}
@@ -351,7 +359,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     getDocumentForCoding.mockResolvedValue(codingResult("d1", null));
 
     render(
-      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage roundFilter={ROUND_FILTER} userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));
@@ -391,7 +399,7 @@ describe("CodingPage — modo Explorar (integração)", () => {
     );
 
     render(
-      <CodingPage userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
+      <CodingPage roundFilter={ROUND_FILTER} userId="user-teste" projectId="p1" documents={[]} fields={FIELDS} existingAnswers={{}} />,
     );
 
     await userEvent.click(await screen.findByText("pick-d1"));

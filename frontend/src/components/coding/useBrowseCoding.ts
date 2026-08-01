@@ -12,6 +12,7 @@ import type { AssignedDoc, PydanticField } from "@/lib/types";
 
 interface UseBrowseCodingParams {
   projectId: string;
+  currentRoundId?: string;
   /** Docs atribuídos — usados para excluir da seleção do modo Explorar. */
   documents: AssignedDoc[];
   /** Schema carregado no formulário — resolve o enunciado da pergunta pendente. */
@@ -40,6 +41,7 @@ interface UseBrowseCodingParams {
  */
 export function useBrowseCoding({
   projectId,
+  currentRoundId = "",
   documents,
   fields,
   mode,
@@ -125,12 +127,17 @@ export function useBrowseCoding({
   const handleBrowseSubmit = useCallback(
     async ({ answers, notes }: CodingDraft) => {
       if (!browseDocId || Object.keys(answers).length === 0) return;
+      if (!currentRoundId) {
+        toast.error("O projeto não possui uma rodada atual.");
+        return;
+      }
       if (browseSavingRef.current) return;
       browseSavingRef.current = true;
       setSubmitting(true);
       try {
         const result = await saveCodingResponse(projectId, browseDocId, answers, {
           notes,
+          expectedRoundId: currentRoundId,
         });
         if (result.success) {
           markClean(browseDocId);
@@ -168,6 +175,7 @@ export function useBrowseCoding({
     [
       browseDocId,
       projectId,
+      currentRoundId,
       fields,
       markClean,
       submitConfirmed,

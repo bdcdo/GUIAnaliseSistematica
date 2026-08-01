@@ -196,6 +196,7 @@ test("codificação: enviar respostas persiste response e conclui assignment", a
       // "current" esconde docs concluídos da rodada atual) e confere que os
       // valores persistidos voltam pré-preenchidos no formulário.
       await page.goto(`/projects/${projectId}/analyze/code?round=all`);
+      await page.getByRole("button", { name: new RegExp(DOC_TITLE) }).click();
       const reloaded = page.getByPlaceholder("Digite sua resposta...");
       await expect(reloaded.nth(0)).toHaveValue(RESUMO_VALUE, {
         timeout: 30_000,

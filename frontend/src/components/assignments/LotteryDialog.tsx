@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Separator } from "@/components/ui/separator";
+import { Checkbox } from "@/components/ui/checkbox";
 import type { LotteryMode } from "@/lib/lottery-utils";
 import type { LotteryMember } from "./lottery-dialog-types";
 import { useLotteryStats } from "./useLotteryStats";
@@ -37,8 +38,11 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
   const { stats, statsError } = useLotteryStats(projectId, open);
 
   const params = useLotteryParams();
-  const { type, setType, mode, setMode, label, setLabel, setPreviewState } =
-    params;
+  const {
+    type, setType, targetKind, setTargetKind, roundLabel, setRoundLabel,
+    confirmOpenWork, setConfirmOpenWork, mode, setMode, label, setLabel,
+    setPreviewState,
+  } = params;
 
   const {
     isComparacao,
@@ -99,7 +103,11 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
             <Label>Tipo</Label>
             <RadioGroup
               value={type}
-              onValueChange={(v) => setType(v as "codificacao" | "comparacao")}
+              onValueChange={(v) => {
+                const nextType = v as "codificacao" | "comparacao";
+                setType(nextType);
+                if (nextType === "comparacao") setTargetKind("current");
+              }}
               className="mt-2 flex gap-4"
             >
               <div className="flex items-center gap-2">
@@ -121,6 +129,58 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
                   ? "Elegíveis: documentos com ao menos 1 codificação humana e 1 resposta do LLM."
                   : `Elegíveis: documentos com ao menos ${stats?.minResponsesForComparison ?? 2} codificações humanas.`}
               </p>
+            )}
+          </div>
+
+          <Separator />
+
+          <div className="space-y-2">
+            <Label>Rodada</Label>
+            <RadioGroup
+              value={targetKind}
+              onValueChange={(value) => {
+                setTargetKind(value as "current" | "new");
+                setConfirmOpenWork(false);
+              }}
+              className="space-y-1"
+            >
+              <div className="flex items-center gap-2">
+                <RadioGroupItem value="current" id="round-current" />
+                <Label htmlFor="round-current" className="font-normal">
+                  Rodada atual{stats?.currentRoundLabel ? ` — ${stats.currentRoundLabel}` : ""}
+                </Label>
+              </div>
+              {!isComparacao && (
+                <div className="flex items-center gap-2">
+                  <RadioGroupItem value="new" id="round-new" />
+                  <Label htmlFor="round-new" className="font-normal">Iniciar nova rodada</Label>
+                </div>
+              )}
+            </RadioGroup>
+            {targetKind === "new" && (
+              <div className="space-y-2 pt-1">
+                <Input
+                  aria-label="Nome da nova rodada"
+                  placeholder="Ex: Segunda rodada"
+                  value={roundLabel}
+                  onChange={(event) => setRoundLabel(event.target.value)}
+                />
+                {(stats?.openAssignmentCount ?? 0) > 0 && (
+                  <div className="flex items-start gap-2 rounded-md border p-3">
+                    <Checkbox
+                      id="confirm-open-work"
+                      checked={confirmOpenWork}
+                      onCheckedChange={(checked) => setConfirmOpenWork(checked === true)}
+                    />
+                    <Label htmlFor="confirm-open-work" className="font-normal leading-snug">
+                      Confirmo iniciar a nova rodada apesar de {stats?.openAssignmentCount} atribuições em andamento ou pendentes na rodada atual.
+                    </Label>
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  As respostas anteriores ficam no histórico; os documentos começam sem respostas nesta rodada.
+                </p>
+              </div>
             )}
           </div>
 

@@ -577,6 +577,7 @@ DECLARE
 BEGIN
   v_first_id := public.publish_latest_llm_response(pg_catalog.jsonb_build_object(
     'project_id', 'b0000000-0000-0000-0000-000000000001',
+    'round_id', (SELECT current_round_id FROM public.projects WHERE id = 'b0000000-0000-0000-0000-000000000001'),
     'document_id', 'c0000000-0000-0000-0000-000000000001',
     'respondent_name', 'test/model',
     'answers', '{"q1":"llm-v2"}'::JSONB,
@@ -593,6 +594,7 @@ BEGIN
 
   v_second_id := public.publish_latest_llm_response(pg_catalog.jsonb_build_object(
     'project_id', 'b0000000-0000-0000-0000-000000000001',
+    'round_id', (SELECT current_round_id FROM public.projects WHERE id = 'b0000000-0000-0000-0000-000000000001'),
     'document_id', 'c0000000-0000-0000-0000-000000000001',
     'respondent_name', 'test/model',
     'answers', '{"q1":"llm-v3"}'::JSONB,
@@ -649,6 +651,7 @@ BEGIN
   BEGIN
     PERFORM public.publish_latest_llm_response(pg_catalog.jsonb_build_object(
       'project_id', 'b0000000-0000-0000-0000-000000000001',
+      'round_id', (SELECT current_round_id FROM public.projects WHERE id = 'b0000000-0000-0000-0000-000000000001'),
       'document_id', 'c0000000-0000-0000-0000-000000000001',
       'answers', '{"q1":"must-rollback"}'::JSONB,
       'is_partial', false,
@@ -670,6 +673,7 @@ BEGIN
 
   PERFORM public.publish_latest_llm_response(pg_catalog.jsonb_build_object(
     'project_id', 'b0000000-0000-0000-0000-000000000001',
+    'round_id', (SELECT current_round_id FROM public.projects WHERE id = 'b0000000-0000-0000-0000-000000000001'),
     'document_id', 'c0000000-0000-0000-0000-000000000001',
     'respondent_name', 'test/model',
     'answers', '{"q1":null}'::JSONB,

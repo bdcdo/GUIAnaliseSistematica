@@ -106,6 +106,13 @@ vi.mock("@/components/coding/FullscreenNav", () => ({
 
 import { CodingPage } from "@/components/coding/CodingPage";
 
+const ROUND_FILTER = {
+  currentRoundKey: "round-1",
+  currentRoundLabel: "Rodada inicial",
+  rounds: [],
+  selected: "round-1",
+};
+
 const FIELDS: PydanticField[] = [
   { name: "q1", type: "text", options: null, description: "" },
 ];
@@ -163,6 +170,7 @@ describe("CodingPage — documento inicial (#608)", () => {
   it("abre na primeira codificação incompleta, não no primeiro da lista", async () => {
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={TRES}
@@ -181,6 +189,7 @@ describe("CodingPage — documento inicial (#608)", () => {
     // ela mexeu, e pular dali quebraria "retomar de onde parei".
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={TRES}
@@ -200,6 +209,7 @@ describe("CodingPage — documento inicial (#608)", () => {
     urlParams.current = { doc: "a3" };
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={TRES}
@@ -216,6 +226,7 @@ describe("CodingPage — documento inicial (#608)", () => {
   it("sem statusByDoc (prop ausente) cai no índice 0 sem quebrar", async () => {
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={TRES}
@@ -245,6 +256,7 @@ describe("CodingPage — onSubmit devolve o veredito do servidor (#608)", () => 
     const user = userEvent.setup();
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={UM}
@@ -266,6 +278,7 @@ describe("CodingPage — onSubmit devolve o veredito do servidor (#608)", () => 
     const user = userEvent.setup();
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={UM}
@@ -306,6 +319,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
 
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1")]}
@@ -326,13 +340,14 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
       "p1",
       "a1",
       { q1: "sim" },
-      { notes: "" },
+      { notes: "", expectedRoundId: "round-1" },
     );
   });
 
   it("documento normal: renderiza o doc certo com as respostas existentes", async () => {
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1"), assignedDoc("a2")]}
@@ -351,6 +366,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
   it("fora do escopo habilitado no projeto: config chega ao QuestionsPanel com status normal", async () => {
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1")]}
@@ -376,6 +392,7 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
   it("fora do escopo com pendência do próprio usuário: status pending_mine com o motivo", async () => {
     render(
       <CodingPage
+        roundFilter={ROUND_FILTER}
         userId="user-teste"
         projectId="p1"
         documents={[assignedDoc("a1")]}

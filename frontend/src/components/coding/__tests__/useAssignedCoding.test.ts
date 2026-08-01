@@ -38,6 +38,7 @@ function setup(overrides?: {
   const dirty = overrides?.dirty ?? new Set<string>();
   const params = {
     projectId: "p1",
+    currentRoundId: "round-1",
     documents: DOCS,
     fields: overrides?.fields ?? [],
     sortedDocuments: DOCS,
@@ -93,6 +94,7 @@ describe("useAssignedCoding", () => {
     });
     expect(mockSave).toHaveBeenCalledWith("p1", "d1", { q1: "sim" }, {
       notes: "",
+      expectedRoundId: "round-1",
     });
     expect(params.markClean).toHaveBeenCalledWith("d1");
     expect(view.result.current.currentDoc?.id).toBe("d2");

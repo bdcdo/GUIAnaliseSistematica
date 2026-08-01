@@ -17,6 +17,7 @@ interface AssignmentTableProps {
   documents: Pick<Document, "id" | "external_id">[];
   researchers: (ProjectMember & { profiles: { first_name: string | null; email: string } })[];
   assignments: Assignment[];
+  readOnly?: boolean;
 }
 
 type CellState = {
@@ -59,6 +60,7 @@ function cycleOptimistic(
     type,
     batch_id: null,
     completed_at: null,
+    round_id: "optimistic",
   });
 
   if (!hasCod && !hasComp) return [...others, stub("codificacao")];
@@ -68,7 +70,7 @@ function cycleOptimistic(
   return others;
 }
 
-export function AssignmentTable({ projectId, documents, researchers, assignments }: AssignmentTableProps) {
+export function AssignmentTable({ projectId, documents, researchers, assignments, readOnly = false }: AssignmentTableProps) {
   const [isPending, startTransition] = useTransition();
 
   const [optimisticAssignments, applyOptimistic] = useOptimistic(
@@ -157,11 +159,11 @@ export function AssignmentTable({ projectId, documents, researchers, assignments
                     <button
                       type="button"
                       onClick={() => handleCycle(doc.id, r.user_id)}
-                      disabled={isNonRemovable || isPending}
+                      disabled={readOnly || isNonRemovable || isPending}
                       className={cn(
                         "relative size-6 rounded border transition-colors",
                         baseColor,
-                        (isNonRemovable || isPending) && "cursor-default",
+                        (readOnly || isNonRemovable || isPending) && "cursor-default",
                       )}
                       aria-label={
                         !hasAny

@@ -188,6 +188,7 @@ export interface Assignment {
   type: AssignmentType;
   batch_id: string | null;
   completed_at: string | null;
+  round_id: string;
 }
 
 /**

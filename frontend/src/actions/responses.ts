@@ -11,6 +11,8 @@ import type { AnswerFieldHashes, PydanticField } from "@/lib/types";
 
 export interface SaveResponseOpts {
   notes?: string;
+  /** Rodada exibida quando o formulário foi aberto; evita salvar aba obsoleta. */
+  expectedRoundId: string;
 }
 
 export type SaveResponseResult =
@@ -62,7 +64,17 @@ async function fetchSaveContext(
   projectId: string,
   documentId: string,
   effectiveId: string,
+  expectedRoundId: string,
 ) {
+  const existingQuery = supabase
+    .from("responses")
+    .select("id, is_partial, answers, answer_field_hashes")
+    .eq("project_id", projectId)
+    .eq("document_id", documentId)
+    .eq("respondent_id", effectiveId)
+    .eq("respondent_type", "humano")
+    .eq("round_id", expectedRoundId);
+
   const [
     { data: profile },
     { data: existing, error: existingErr },
@@ -74,19 +86,13 @@ async function fetchSaveContext(
       .select("first_name, last_name")
       .eq("id", effectiveId)
       .single(),
-    supabase
-      .from("responses")
-      .select("id, is_partial, answers, answer_field_hashes")
-      .eq("project_id", projectId)
-      .eq("document_id", documentId)
-      .eq("respondent_id", effectiveId)
-      .eq("respondent_type", "humano")
+    existingQuery
       .eq("is_latest", true)
       .maybeSingle<ExistingResponseRow>(),
     supabase
       .from("projects")
       .select(
-        "pydantic_hash, pydantic_fields, schema_version_major, schema_version_minor, schema_version_patch, round_strategy, current_round_id, automation_mode",
+        "pydantic_hash, pydantic_fields, schema_version_major, schema_version_minor, schema_version_patch, current_round_id, automation_mode",
       )
       .eq("id", projectId)
       .single(),
@@ -105,7 +111,6 @@ interface SaveResponseProjectFields {
   schema_version_major: number | null;
   schema_version_minor: number | null;
   schema_version_patch: number | null;
-  round_strategy: string | null;
   current_round_id: string | null;
 }
 
@@ -117,6 +122,7 @@ interface BuildResponsePayloadParams {
   stampsCurrentSchema: boolean;
   project: SaveResponseProjectFields | null | undefined;
   existing: { is_partial: boolean | null } | null | undefined;
+  roundId: string;
   notes?: string;
 }
 
@@ -183,12 +189,10 @@ function buildResponsePayload({
   stampsCurrentSchema,
   project,
   existing,
+  roundId,
   notes,
 }: BuildResponsePayloadParams) {
   const justifications = notes ? { _notes: notes } : null;
-
-  const roundIdToPersist =
-    project?.round_strategy === "manual" ? (project?.current_round_id ?? null) : null;
 
   // Para humanos is_partial descreve O QUE FOI GRAVADO: uma resposta só deixa
   // de ser parcial quando o conjunto gravado satisfaz a régua de completude.
@@ -219,7 +223,9 @@ function buildResponsePayload({
     justifications,
     answer_field_hashes: answerFieldHashes,
     ...resolveSchemaProvenance({ project, stampsCurrentSchema, existing }),
-    round_id: roundIdToPersist,
+    // O id vem da tela, não da releitura feita durante o save. O trigger do
+    // banco compara este valor sob lock com projects.current_round_id.
+    round_id: roundId,
     is_partial: isPartialToWrite,
     // Marca a codificacao do pesquisador no tempo — alimenta a ordenacao
     // "codificados recentemente" da navegacao da aba Codificar (issue #108).
@@ -236,6 +242,7 @@ interface PersistResponseRowParams {
   effectiveId: string;
   respondentName: string;
   payload: Record<string, unknown>;
+  roundId: string;
 }
 
 // "conflict" = outra sessão criou a resposta corrente entre o UPDATE e o
@@ -243,7 +250,7 @@ interface PersistResponseRowParams {
 type PersistOutcome =
   | { status: "ok" }
   | { status: "conflict" }
-  | { status: "error"; error: string };
+  | { status: "error"; error: string; code?: string };
 
 // O índice único parcial que sustenta o ramo de conflito abaixo. Conferir o
 // nome é o que separa "perdi a corrida, releia" de qualquer outra violação de
@@ -271,6 +278,7 @@ async function persistResponseRow({
   effectiveId,
   respondentName,
   payload,
+  roundId,
 }: PersistResponseRowParams): Promise<PersistOutcome> {
   // O payload não toca coluna-chave, então este UPDATE não dispara
   // enforce_comparison_response_actor_trigger, que só observa project_id,
@@ -282,9 +290,10 @@ async function persistResponseRow({
     .eq("document_id", documentId)
     .eq("respondent_id", effectiveId)
     .eq("respondent_type", "humano")
+    .eq("round_id", roundId)
     .eq("is_latest", true)
     .select("id");
-  if (updErr) return { status: "error", error: updErr.message };
+  if (updErr) return { status: "error", error: updErr.message, code: updErr.code };
   if (updated && updated.length > 0) return { status: "ok" };
 
   const { error: insErr } = await supabase.from("responses").insert({
@@ -303,7 +312,7 @@ async function persistResponseRow({
   ) {
     return { status: "conflict" };
   }
-  return { status: "error", error: insErr.message };
+  return { status: "error", error: insErr.message, code: insErr.code };
 }
 
 // Propaga o efeito do envio para as telas que leem a mesma resposta —
@@ -324,6 +333,7 @@ interface BuildSaveWriteParams {
   existing: ExistingResponseRow | null | undefined;
   project: SaveResponseProjectFields | null | undefined;
   answers: Record<string, unknown>;
+  roundId: string;
   notes?: string;
 }
 
@@ -336,6 +346,7 @@ function buildSaveWrite({
   existing,
   project,
   answers,
+  roundId,
   notes,
 }: BuildSaveWriteParams) {
   // O formulário devolve um snapshot sanitizado, não um patch. A reconciliação
@@ -369,6 +380,7 @@ function buildSaveWrite({
     stampsCurrentSchema: snapshot.stampsCurrentSchema,
     project,
     existing,
+    roundId,
     notes,
   });
 
@@ -413,6 +425,7 @@ interface SaveAttemptParams {
   userEmail: string;
   answers: Record<string, unknown>;
   notes?: string;
+  expectedRoundId: string;
 }
 
 // Uma tentativa completa de gravação: lê o contexto, monta o snapshot a partir
@@ -434,12 +447,29 @@ async function runSaveAttempt({
   userEmail,
   answers,
   notes,
+  expectedRoundId,
 }: SaveAttemptParams): Promise<SaveResponseResult | { conflict: true }> {
   const { profile, existing, existingErr, project, projErr, doc } =
-    await fetchSaveContext(supabase, projectId, documentId, effectiveId);
+    await fetchSaveContext(
+      supabase,
+      projectId,
+      documentId,
+      effectiveId,
+      expectedRoundId,
+    );
 
   const rejection = rejectedSaveContext({ projErr, existingErr, doc });
   if (rejection) return rejection;
+
+  if (!project?.current_round_id) {
+    return { success: false, error: "O projeto não possui uma rodada atual." };
+  }
+  if (project.current_round_id !== expectedRoundId) {
+    return {
+      success: false,
+      error: "A rodada mudou enquanto este formulário estava aberto. Recarregue a página.",
+    };
+  }
 
   const respondentName = resolveRespondentName(profile, userEmail);
 
@@ -449,6 +479,7 @@ async function runSaveAttempt({
     existing,
     project,
     answers,
+    roundId: expectedRoundId,
     notes,
   });
 
@@ -459,9 +490,17 @@ async function runSaveAttempt({
     effectiveId,
     respondentName,
     payload,
+    roundId: expectedRoundId,
   });
-  if (outcome.status === "error")
-    return { success: false, error: outcome.error };
+  if (outcome.status === "error") {
+    return {
+      success: false,
+      error:
+        outcome.code === "40001"
+          ? "A rodada mudou enquanto este formulário estava aberto. Recarregue a página."
+          : outcome.error,
+    };
+  }
   if (outcome.status === "conflict") return { conflict: true };
 
   const syncErr = await syncAssignmentAfterSave({
@@ -473,6 +512,7 @@ async function runSaveAttempt({
     project,
     existing,
     snapshot,
+    roundId: expectedRoundId,
   });
   if (syncErr) return { success: false, error: syncErr };
 
@@ -491,6 +531,7 @@ async function syncAssignmentAfterSave({
   project,
   existing,
   snapshot,
+  roundId,
 }: {
   supabase: SupabaseServerClient;
   projectId: string;
@@ -500,6 +541,7 @@ async function syncAssignmentAfterSave({
   project: { automation_mode?: string | null } | null | undefined;
   existing: { is_partial: boolean | null } | null | undefined;
   snapshot: { submittedAnswers: Record<string, unknown> };
+  roundId: string;
 }): Promise<string | undefined> {
   if (fields.length === 0) return undefined;
   const { error } = await syncCodingAssignmentStatus(supabase, {
@@ -513,6 +555,7 @@ async function syncAssignmentAfterSave({
     // agora", que é o que impede o rebaixamento descrito em
     // buildResponsePayload.
     hadCompletedResponse: existing?.is_partial === false,
+    roundId,
   });
   return error;
 }
@@ -541,9 +584,9 @@ export async function saveResponse(
   projectId: string,
   documentId: string,
   answers: Record<string, unknown>,
-  opts: SaveResponseOpts = {},
+  opts: SaveResponseOpts,
 ): Promise<SaveResponseResult> {
-  const { notes } = opts;
+  const { notes, expectedRoundId } = opts;
 
   try {
     const actor = await resolveProjectMemberActor(projectId);
@@ -561,6 +604,7 @@ export async function saveResponse(
         userEmail: user.email,
         answers,
         notes,
+        expectedRoundId,
       });
       if (!("conflict" in result)) return result;
 

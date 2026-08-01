@@ -42,6 +42,9 @@ export function useLotteryRun({
 
   const {
     type,
+    targetKind,
+    roundLabel,
+    confirmOpenWork,
     researchersPerDoc,
     docsPerResearcherEnabled,
     docsPerResearcher,
@@ -148,7 +151,16 @@ export function useLotteryRun({
   // Contagem de elegíveis ao vivo, com a mesma função pura do server
   const eligibleCount = useMemo(() => {
     if (!stats) return null;
-    let candidates = stats.docs;
+    let candidates = targetKind === "new"
+      ? stats.docs.map((doc) => ({
+          ...doc,
+          humanCodingCount: 0,
+          hasLlmResponse: false,
+          activeAssignments: { codificacao: 0, comparacao: 0 },
+          hasAnyAssignmentEver: false,
+          batchIds: [],
+        }))
+      : stats.docs;
     if (isComparacao) {
       candidates = filterComparisonEligible(
         candidates,
@@ -157,10 +169,18 @@ export function useLotteryRun({
       );
     }
     return filterEligibleDocs(candidates, type, filters).length;
-  }, [stats, type, isComparacao, filters]);
+  }, [stats, type, isComparacao, filters, targetKind]);
 
   const blockedMessage =
-    participantIds.length === 0
+    !stats?.currentRoundId
+      ? "O projeto não tem uma rodada atual."
+      : targetKind === "new" && type !== "codificacao"
+        ? "Uma nova rodada começa com um sorteio de codificação."
+        : targetKind === "new" && !roundLabel.trim()
+          ? "Informe o nome da nova rodada."
+        : targetKind === "new" && (stats.openAssignmentCount ?? 0) > 0 && !confirmOpenWork
+            ? "Confirme a abertura da nova rodada com trabalho ainda aberto."
+            : participantIds.length === 0
       ? "Nenhum participante selecionado."
       : eligibleCount === 0
         ? "Nenhum documento passa nos filtros atuais."
@@ -182,6 +202,17 @@ export function useLotteryRun({
       filters,
       participantIds,
       participantSettings,
+      target: targetKind === "new"
+        ? {
+            kind: "new" as const,
+            expectedRoundId: stats?.currentRoundId ?? "",
+            roundLabel: roundLabel.trim(),
+            confirmOpenWork,
+          }
+        : {
+            kind: "current" as const,
+            expectedRoundId: stats?.currentRoundId ?? "",
+          },
     };
     // A união discriminada não tem researchersPerDoc no braço de comparação —
     // um revisor por documento é a regra, não uma configuração.

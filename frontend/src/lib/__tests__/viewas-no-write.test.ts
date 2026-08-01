@@ -87,7 +87,7 @@ describe("saveResponse — escrita persiste o ator real, nunca o viewAs", () => 
           schema_version_minor: 0,
           schema_version_patch: 0,
           round_strategy: null,
-          current_round_id: null,
+          current_round_id: "round-1",
           automation_mode: null,
         },
       },
@@ -110,7 +110,7 @@ describe("saveResponse — escrita persiste o ator real, nunca o viewAs", () => 
       "project-1",
       "doc-1",
       {},
-      {},
+      { expectedRoundId: "round-1" },
       "member-viewed",
     );
 
@@ -135,7 +135,9 @@ describe("saveResponse — escrita persiste o ator real, nunca o viewAs", () => 
     );
     const { saveResponse } = await import("@/actions/responses");
 
-    const result = await saveResponse("project-1", "doc-1", {});
+    const result = await saveResponse("project-1", "doc-1", {}, {
+      expectedRoundId: "round-1",
+    });
 
     expect(result).toEqual({
       success: false,

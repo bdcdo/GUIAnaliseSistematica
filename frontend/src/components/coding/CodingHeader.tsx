@@ -192,20 +192,13 @@ function RoundSelect({ data }: { data: RoundFilterData }) {
           <SelectItem value={CURRENT_FILTER_VALUE}>
             Atual ({data.currentRoundLabel}): pendentes
           </SelectItem>
-          <SelectItem value="all">Todas as rodadas</SelectItem>
-          {data.strategy === "manual"
-            ? data.rounds
-                .filter((r) => r.id !== data.currentRoundKey)
-                .map((r) => (
-                  <SelectItem key={r.id} value={r.id}>
-                    {r.label}
-                  </SelectItem>
-                ))
-            : data.previousVersions.map((v) => (
-                <SelectItem key={v} value={v}>
-                  Versão {v}
-                </SelectItem>
-              ))}
+          {data.rounds
+            .filter((r) => r.id !== data.currentRoundKey)
+            .map((r) => (
+              <SelectItem key={r.id} value={r.id}>
+                {r.label}
+              </SelectItem>
+            ))}
         </SelectContent>
       </Select>
     </div>

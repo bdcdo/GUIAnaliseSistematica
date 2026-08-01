@@ -219,6 +219,11 @@ def _persist_run_snapshot(sb, job_id: str, project: dict, doc_count: int) -> Non
             "llm_model": project.get("llm_model"),
             "document_count": doc_count,
             "pydantic_code": project.get("pydantic_code"),
+            # A rodada é capturada junto do restante do snapshot da execução.
+            # Mesmo que o coordenador inicie outra rodada enquanto o provider
+            # processa os documentos, todas as respostas desta run continuam
+            # apontando para a rodada que estava ativa no início.
+            "round_id": project.get("current_round_id"),
         }
     ).eq("job_id", job_id).execute()
 
@@ -410,6 +415,7 @@ class _RunMetadata:
     """
 
     project_id: str
+    round_id: str
     llm_provider: str
     llm_model: str
     pydantic_hash: str
@@ -474,6 +480,7 @@ def _build_llm_response_row(
     """
     return {
         "project_id": run.project_id,
+        "round_id": run.round_id,
         "document_id": doc_id,
         "respondent_type": "llm",
         "respondent_name": f"{run.llm_provider}/{run.llm_model}",
@@ -1206,7 +1213,7 @@ async def run_llm(
         project = (
             sb.table("projects")
             .select(
-                "pydantic_code, prompt_template, llm_provider, llm_model, llm_kwargs, description, pydantic_fields, schema_version_major, schema_version_minor, schema_version_patch"
+                "pydantic_code, prompt_template, llm_provider, llm_model, llm_kwargs, description, pydantic_fields, schema_version_major, schema_version_minor, schema_version_patch, current_round_id"
             )
             .eq("id", project_id)
             .single()
@@ -1282,6 +1289,7 @@ async def run_llm(
 
         run_metadata = _RunMetadata(
             project_id=project_id,
+            round_id=project["current_round_id"],
             llm_provider=llm_provider,
             llm_model=llm_model,
             pydantic_hash=pydantic_hash,

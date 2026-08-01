@@ -19,7 +19,7 @@ export async function saveCodingResponse(
   projectId: string,
   documentId: string,
   answers: Record<string, unknown>,
-  opts: SaveResponseOpts = {},
+  opts: SaveResponseOpts,
 ): Promise<SaveResponseResult> {
   try {
     return await saveResponse(projectId, documentId, answers, opts);

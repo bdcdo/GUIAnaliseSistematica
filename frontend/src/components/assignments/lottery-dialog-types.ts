@@ -21,6 +21,9 @@ export interface LotteryStats {
   batches: { id: string; label: string | null; createdAt: string }[];
   minResponsesForComparison: number;
   automationMode: string | null;
+  currentRoundId?: string | null;
+  currentRoundLabel?: string | null;
+  openAssignmentCount?: number;
 }
 
 export type CodingsFilterMode = "all" | "none" | "atMost";
