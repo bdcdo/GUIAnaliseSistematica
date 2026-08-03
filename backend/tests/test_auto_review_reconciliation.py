@@ -1,5 +1,6 @@
 import asyncio
-from contextlib import suppress
+from datetime import UTC, datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -67,32 +68,120 @@ def test_wakeup_is_disabled_without_internal_url(monkeypatch) -> None:
     assert asyncio.run(reconciliation.wake_auto_review_reconciliation()) is False
 
 
-def test_periodic_loop_repeats_wakeup(monkeypatch) -> None:
-    calls: list[object] = []
-    called_twice = asyncio.Event()
+class _DueRequestQuery:
+    def __init__(self, data: list[dict[str, str]]) -> None:
+        self.data = data
+        self.calls: list[tuple[object, ...]] = []
+
+    def select(self, columns: str):
+        self.calls.append(("select", columns))
+        return self
+
+    def lte(self, column: str, value: str):
+        self.calls.append(("lte", column, value))
+        return self
+
+    def limit(self, count: int):
+        self.calls.append(("limit", count))
+        return self
+
+    def execute(self):
+        self.calls.append(("execute",))
+        return SimpleNamespace(data=self.data)
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [([], False), ([{"document_id": "document-1"}], True)],
+)
+def test_due_request_query_is_bounded_and_uses_database_deadline(
+    monkeypatch,
+    rows: list[dict[str, str]],
+    expected: bool,
+) -> None:
+    query = _DueRequestQuery(rows)
+
+    class Supabase:
+        def table(self, name: str):
+            assert name == "auto_review_reconciliation_requests"
+            return query
+
+    monkeypatch.setattr(reconciliation, "get_supabase", lambda: Supabase())
+    now = datetime(2026, 8, 3, 15, 30, tzinfo=UTC)
+
+    assert (
+        asyncio.run(reconciliation.has_due_auto_review_reconciliation_request(now=now))
+        is expected
+    )
+    assert query.calls == [
+        ("select", "document_id"),
+        ("lte", "next_attempt_at", "2026-08-03T15:30:00+00:00"),
+        ("limit", 1),
+        ("execute",),
+    ]
+
+
+class _StopLoop(Exception):
+    pass
+
+
+def _run_single_periodic_tick(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    due: bool | Exception,
+) -> list[object]:
+    wakeup_calls: list[object] = []
+
+    async def fake_has_due_request() -> bool:
+        if isinstance(due, Exception):
+            raise due
+        return due
 
     async def fake_wakeup(client=None) -> bool:
-        calls.append(client)
-        if len(calls) == 2:
-            called_twice.set()
+        wakeup_calls.append(client)
         return True
 
-    monkeypatch.setattr(reconciliation, "wake_auto_review_reconciliation", fake_wakeup)
+    async def stop_after_tick(_interval_seconds: float) -> None:
+        raise _StopLoop
 
-    async def scenario() -> None:
-        task = asyncio.create_task(
+    monkeypatch.setattr(
+        reconciliation,
+        "has_due_auto_review_reconciliation_request",
+        fake_has_due_request,
+    )
+    monkeypatch.setattr(reconciliation, "wake_auto_review_reconciliation", fake_wakeup)
+    monkeypatch.setattr(reconciliation.asyncio, "sleep", stop_after_tick)
+
+    with pytest.raises(_StopLoop):
+        asyncio.run(
             reconciliation.run_auto_review_reconciliation_wakeup_loop(
                 interval_seconds=0
             )
         )
-        await asyncio.wait_for(called_twice.wait(), timeout=1)
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
 
-    asyncio.run(scenario())
-    assert len(calls) >= 2
-    assert all(call is calls[0] for call in calls)
+    return wakeup_calls
+
+
+def test_periodic_loop_does_not_wake_frontend_without_due_work(monkeypatch) -> None:
+    assert _run_single_periodic_tick(monkeypatch, due=False) == []
+
+
+def test_periodic_loop_wakes_frontend_for_due_work(monkeypatch) -> None:
+    calls = _run_single_periodic_tick(monkeypatch, due=True)
+
+    assert len(calls) == 1
+
+
+def test_periodic_loop_wakes_conservatively_when_outbox_query_fails(
+    monkeypatch, caplog
+) -> None:
+    calls = _run_single_periodic_tick(
+        monkeypatch,
+        due=RuntimeError("database unavailable"),
+    )
+
+    assert len(calls) == 1
+    assert "Failed to inspect auto-review reconciliation outbox" in caplog.text
 
 
 def test_lifespan_starts_and_stops_periodic_wakeup(monkeypatch) -> None:

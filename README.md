@@ -110,7 +110,7 @@ fly secrets set SUPABASE_URL=https://xxx.supabase.co \
 # CORS_ORIGINS, CLERK_JWKS_URL e CLERK_JWT_ISSUER ficam em [env] no fly.toml:
 # nenhum é secret (o JWKS é endpoint público, o issuer é a URL da Frontend API),
 # e mantê-los no toml faz da troca de instância Clerk um diff revisável.
-fly deploy -c fly.toml -a gui-analise-sistematica-api   # fallback; o normal é via CI
+fly deploy -c fly.toml --ha=false -a gui-analise-sistematica-api   # fallback; o normal é via CI
 ```
 
 `CLERK_JWKS_URL` já existiu como secret deste app. Enquanto o secret existir, ele **sombreia o `[env]` homônimo** do `fly.toml` — o valor versionado é ignorado em silêncio (o mesmo já aconteceu aqui com `CORS_ORIGINS`). Depois do primeiro deploy que traz a variável para o `[env]`, remover o secret:
@@ -122,6 +122,8 @@ fly secrets unset CLERK_JWKS_URL -a gui-analise-sistematica-api
 Enquanto os dois valores forem idênticos a ordem deploy → unset não tem downtime; a inversa teria. O risco de deixar o secret para trás aparece na *próxima* troca de instância Clerk: o `fly.toml` apontaria para o JWKS novo, o secret continuaria servindo o antigo, e o par JWKS/issuer divergiria — exatamente o modo de falha que a validação de `iss` existe para tornar diagnosticável.
 
 Verificar: `curl https://gui-analise-sistematica-api.fly.dev/health`
+
+O backend opera com exatamente uma Machine `shared-cpu-1x` de 512 MB, sempre ligada. O workflow recusa deploy quando encontra mais de uma Machine e valida cardinalidade, região, tamanho e health depois da atualização; reduções remotas continuam sendo uma operação explícita, fora do deploy automático.
 
 ### 3. Frontend (Fly.io — `gui-analise-sistematica-frontend`)
 
