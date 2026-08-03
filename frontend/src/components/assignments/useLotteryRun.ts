@@ -7,6 +7,8 @@ import {
   resolveWeight,
   resolveCap,
   resolveResearchersPerDoc,
+  LOTTERY_EMPTY_MESSAGES,
+  type LotteryEmptyReason,
   type LotteryFilters,
 } from "@/lib/lottery-utils";
 import { toast } from "sonner";
@@ -17,6 +19,120 @@ import {
   isParticipant,
   weightValue,
 } from "./lottery-participant-values";
+
+function countEligibleDocs({
+  stats,
+  type,
+  targetKind,
+  filters,
+}: {
+  stats: LotteryStats | null;
+  type: "codificacao" | "comparacao";
+  targetKind: "current" | "new";
+  filters: LotteryFilters;
+}): number | null {
+  if (!stats) return null;
+  let candidates = targetKind === "new"
+    ? stats.docs.map((doc) => ({
+        ...doc,
+        humanCodingCount: 0,
+        hasLlmResponse: false,
+        activeAssignments: { codificacao: 0, comparacao: 0 },
+        hasAssignmentInCurrentRound: false,
+        batchIds: [],
+      }))
+    : stats.docs;
+  if (type === "comparacao") {
+    candidates = filterComparisonEligible(
+      candidates,
+      stats.automationMode,
+      stats.minResponsesForComparison,
+    );
+  }
+  return filterEligibleDocs(candidates, type, filters).length;
+}
+
+function getOpenWorkBlockedMessage({
+  stats,
+  confirmActiveWork,
+  confirmPendingScopeWork,
+}: {
+  stats: LotteryStats | null;
+  confirmActiveWork: boolean;
+  confirmPendingScopeWork: boolean;
+}): string | null {
+  const hasActiveWork = (stats?.activeOpenAssignmentCount ?? 0) > 0;
+  if (hasActiveWork && !confirmActiveWork) {
+    return "Confirme a abertura da nova rodada com trabalho ativo ainda aberto.";
+  }
+  const hasPendingScope = (stats?.pendingScopeAssignmentCount ?? 0) > 0;
+  if (hasPendingScope && !confirmPendingScopeWork) {
+    return "Confirme a abertura da nova rodada com documentos ainda em revisão de escopo.";
+  }
+  return null;
+}
+
+function getNewRoundBlockedMessage({
+  stats,
+  type,
+  targetKind,
+  roundLabel,
+  confirmActiveWork,
+  confirmPendingScopeWork,
+}: {
+  stats: LotteryStats | null;
+  type: "codificacao" | "comparacao";
+  targetKind: "current" | "new";
+  roundLabel: string;
+  confirmActiveWork: boolean;
+  confirmPendingScopeWork: boolean;
+}): string | null {
+  if (targetKind !== "new") return null;
+  if (type !== "codificacao") {
+    return "Uma nova rodada começa com um sorteio de codificação.";
+  }
+  if (!roundLabel.trim()) return "Informe o nome da nova rodada.";
+  return getOpenWorkBlockedMessage({
+    stats,
+    confirmActiveWork,
+    confirmPendingScopeWork,
+  });
+}
+
+function getLotteryBlockedMessage({
+  stats,
+  newRoundMessage,
+  participantCount,
+  eligibleCount,
+  emptyReason,
+}: {
+  stats: LotteryStats | null;
+  newRoundMessage: string | null;
+  participantCount: number;
+  eligibleCount: number | null;
+  emptyReason?: LotteryEmptyReason;
+}): string | null {
+  if (stats !== null && !stats.currentRoundId) {
+    return "O projeto não tem uma rodada atual.";
+  }
+  if (newRoundMessage) return newRoundMessage;
+  if (participantCount === 0) {
+    return "Nenhum participante selecionado.";
+  }
+  if (eligibleCount === 0) {
+    return "Nenhum documento passa nos filtros atuais.";
+  }
+  return emptyReason ? LOTTERY_EMPTY_MESSAGES[emptyReason] : null;
+}
+
+function isLotterySubmitEnabled(
+  stats: LotteryStats | null,
+  blockedMessage: string | null,
+  previewTotal: number | undefined,
+): boolean {
+  if (!stats || blockedMessage) return false;
+  return previewTotal !== 0;
+}
 
 // Derivações e ações do sorteio (elegibilidade, prévia, submit) sobre o
 // estado do formulário (useLotteryParams). Lê os campos de `params`
@@ -44,7 +160,8 @@ export function useLotteryRun({
     type,
     targetKind,
     roundLabel,
-    confirmOpenWork,
+    confirmActiveWork,
+    confirmPendingScopeWork,
     researchersPerDoc,
     docsPerResearcherEnabled,
     docsPerResearcher,
@@ -130,10 +247,13 @@ export function useLotteryRun({
   // Prévia + semente (research D13): a seed da última prévia é reaproveitada
   // ao sortear; a prévia é guardada junto da configuração que a gerou, então
   // qualquer mudança de configuração a invalida (e à seed) por derivação.
-  // O rótulo fica de fora: não afeta o resultado do sorteio, e é lido em
-  // buildParams na hora do submit
+  // O rótulo do lote fica de fora: não afeta o resultado e é lido em
+  // buildParams. O alvo e o nome da rodada entram porque mudam a operação.
   const configKey = JSON.stringify({
     type,
+    targetKind,
+    currentRoundId: stats?.currentRoundId ?? null,
+    roundLabel: targetKind === "new" ? roundLabel.trim() : null,
     researchersPerDoc: researchersPerDocEffective,
     docsPerResearcherEnabled,
     docsPerResearcher,
@@ -149,44 +269,32 @@ export function useLotteryRun({
   const seed = preview?.seed ?? null;
 
   // Contagem de elegíveis ao vivo, com a mesma função pura do server
-  const eligibleCount = useMemo(() => {
-    if (!stats) return null;
-    let candidates = targetKind === "new"
-      ? stats.docs.map((doc) => ({
-          ...doc,
-          humanCodingCount: 0,
-          hasLlmResponse: false,
-          activeAssignments: { codificacao: 0, comparacao: 0 },
-          hasAnyAssignmentEver: false,
-          batchIds: [],
-        }))
-      : stats.docs;
-    if (isComparacao) {
-      candidates = filterComparisonEligible(
-        candidates,
-        stats.automationMode,
-        stats.minResponsesForComparison,
-      );
-    }
-    return filterEligibleDocs(candidates, type, filters).length;
-  }, [stats, type, isComparacao, filters, targetKind]);
+  const eligibleCount = useMemo(
+    () => countEligibleDocs({ stats, type, targetKind, filters }),
+    [stats, type, filters, targetKind],
+  );
 
-  const blockedMessage =
-    !stats?.currentRoundId
-      ? "O projeto não tem uma rodada atual."
-      : targetKind === "new" && type !== "codificacao"
-        ? "Uma nova rodada começa com um sorteio de codificação."
-        : targetKind === "new" && !roundLabel.trim()
-          ? "Informe o nome da nova rodada."
-        : targetKind === "new" && (stats.openAssignmentCount ?? 0) > 0 && !confirmOpenWork
-            ? "Confirme a abertura da nova rodada com trabalho ainda aberto."
-            : participantIds.length === 0
-      ? "Nenhum participante selecionado."
-      : eligibleCount === 0
-        ? "Nenhum documento passa nos filtros atuais."
-        : null;
+  const newRoundMessage = getNewRoundBlockedMessage({
+    stats,
+    type,
+    targetKind,
+    roundLabel,
+    confirmActiveWork,
+    confirmPendingScopeWork,
+  });
+  const blockedMessage = getLotteryBlockedMessage({
+    stats,
+    newRoundMessage,
+    participantCount: participantIds.length,
+    eligibleCount,
+    emptyReason: preview?.emptyReason,
+  });
 
-  const canSubmit = !blockedMessage && stats !== null;
+  const canSubmit = isLotterySubmitEnabled(
+    stats,
+    blockedMessage,
+    preview?.totalNew,
+  );
 
   const buildParams = (withSeed: boolean): LotteryParams => {
     const base = {
@@ -207,7 +315,8 @@ export function useLotteryRun({
             kind: "new" as const,
             expectedRoundId: stats?.currentRoundId ?? "",
             roundLabel: roundLabel.trim(),
-            confirmOpenWork,
+            confirmActiveWork,
+            confirmPendingScopeWork,
           }
         : {
             kind: "current" as const,
@@ -236,6 +345,10 @@ export function useLotteryRun({
   };
 
   const handleRandomize = async () => {
+    if (blockedMessage) {
+      toast.error(blockedMessage);
+      return;
+    }
     setLoading(true);
     try {
       const result = await smartRandomize(buildParams(true));

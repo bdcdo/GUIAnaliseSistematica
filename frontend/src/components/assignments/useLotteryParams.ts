@@ -16,7 +16,8 @@ export function useLotteryParams() {
   const [type, setType] = useState<"codificacao" | "comparacao">("codificacao");
   const [targetKind, setTargetKind] = useState<"current" | "new">("current");
   const [roundLabel, setRoundLabel] = useState("");
-  const [confirmOpenWork, setConfirmOpenWork] = useState(false);
+  const [confirmActiveWork, setConfirmActiveWork] = useState(false);
+  const [confirmPendingScopeWork, setConfirmPendingScopeWork] = useState(false);
 
   // Distribuição
   const [researchersPerDoc, setResearchersPerDoc] = useState(2);
@@ -71,8 +72,10 @@ export function useLotteryParams() {
     setTargetKind,
     roundLabel,
     setRoundLabel,
-    confirmOpenWork,
-    setConfirmOpenWork,
+    confirmActiveWork,
+    setConfirmActiveWork,
+    confirmPendingScopeWork,
+    setConfirmPendingScopeWork,
     researchersPerDoc,
     setResearchersPerDoc,
     docsPerResearcherEnabled,

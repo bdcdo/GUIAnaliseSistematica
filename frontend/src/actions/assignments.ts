@@ -13,11 +13,13 @@ import {
   resolveWeight,
   resolveCap,
   resolveResearchersPerDoc,
+  LOTTERY_EMPTY_MESSAGES,
   type LotteryBalancing,
   type LotteryDocStats,
   type LotteryFilters,
   type LotteryMode,
   type LotteryParticipant,
+  type LotteryEmptyReason,
 } from "@/lib/lottery-utils";
 import { MEMBERS_TAG_PROFILE, membersTag } from "@/lib/cache";
 import { errorMessage } from "@/lib/utils";
@@ -28,6 +30,7 @@ import {
 import type { ResponseRoundFields, RoundContext } from "@/lib/rounds";
 import type { SupabaseServerClient } from "@/lib/supabase/server";
 import type { AnswerFieldHashes, PydanticField, Round } from "@/lib/types";
+import { z } from "zod";
 
 // --- Status inicial do assignment de codificação (issue #521) ---
 
@@ -88,13 +91,13 @@ interface InitialStatusInputs {
  * qualquer escrita.
  */
 function requireData<T>(
-  result: { data: T | null; error: { message: string } | null },
+  result: { data: T; error: { message: string } | null },
   context: string,
-): T {
-  if (result.error || !result.data) {
+): NonNullable<T> {
+  if (result.error || result.data == null) {
     throw new Error(`${context}: ${result.error?.message ?? "resposta vazia"}`);
   }
-  return result.data;
+  return result.data as NonNullable<T>;
 }
 
 async function loadRounds(
@@ -449,7 +452,8 @@ interface LotteryParamsBase {
         kind: "new";
         expectedRoundId: string;
         roundLabel: string;
-        confirmOpenWork: boolean;
+        confirmActiveWork: boolean;
+        confirmPendingScopeWork: boolean;
       };
 }
 
@@ -458,22 +462,133 @@ interface LotteryParamsBase {
  * construível — o braço `comparacao` não tem o campo. A regra é um revisor de
  * comparação por documento (ver COMPARISON_REVIEWERS_PER_DOC, issue #490).
  *
- * ATENÇÃO: isto é garantia de COMPILAÇÃO, para o client. Server Action é
- * endpoint HTTP público e o projeto não valida com zod — um payload forjado
- * chega com `{ type: "comparacao", researchersPerDoc: 5 }` sem passar por
- * type-check nenhum. As garantias de runtime são `resolveResearchersPerDoc` em
- * computeLottery (que ignora o valor recebido) e, no banco, o índice
- * assignments_one_active_comparacao_per_doc. O `researchersPerDoc?: never`
- * existe só para o excess property check pegar o literal no client.
+ * A união também é validada em runtime na fronteira da Server Action: um
+ * payload forjado de comparação com `researchersPerDoc` é recusado antes de
+ * qualquer leitura ou escrita. O índice do banco segue como última barreira.
  */
 export type LotteryParams =
   | (LotteryParamsBase & { type: "codificacao"; researchersPerDoc: number })
   | (LotteryParamsBase & { type: "comparacao"; researchersPerDoc?: never });
 
+const lotteryFiltersSchema = z
+  .object({
+    maxHumanCodings: z.number().int().nonnegative().optional(),
+    assignmentFilter: z.enum(["any", "noActiveOfType", "neverAssigned"]).optional(),
+    batchFilter: z
+      .object({
+        exclude: z.array(z.string().min(1)).optional(),
+        only: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    manualDocIds: z.array(z.string().min(1)).optional(),
+  })
+  .strict()
+  .superRefine((filters, ctx) => {
+    if (filters.batchFilter?.only && filters.batchFilter.exclude?.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Os filtros de lote são mutuamente exclusivos.",
+      });
+    }
+  });
+
+const lotteryTargetSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("current"),
+      expectedRoundId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("new"),
+      expectedRoundId: z.string().min(1),
+      roundLabel: z.string().trim().min(1),
+      confirmActiveWork: z.boolean(),
+      confirmPendingScopeWork: z.boolean(),
+    })
+    .strict(),
+]);
+
+const lotteryParamsBaseSchema = z
+  .object({
+    projectId: z.string().min(1),
+    mode: z.enum(["append", "replace"]),
+    balancing: z.enum(["round", "history"]),
+    seed: z.number().int().min(0).max(2 ** 31 - 1).optional(),
+    docsPerResearcher: z.number().int().positive().optional(),
+    docSubsetSize: z.number().int().positive().optional(),
+    label: z.string().optional(),
+    filters: lotteryFiltersSchema.optional(),
+    participantIds: z.array(z.string().min(1)).min(1),
+    participantSettings: z
+      .record(
+        z.string(),
+        z
+          .object({
+            weight: z.number().positive().optional(),
+            cap: z.number().int().positive().nullable().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
+    target: lotteryTargetSchema.optional(),
+  })
+  .strict();
+
+const lotteryParamsSchema = z.discriminatedUnion("type", [
+  lotteryParamsBaseSchema.extend({
+    type: z.literal("codificacao"),
+    researchersPerDoc: z.number().int().positive(),
+  }),
+  lotteryParamsBaseSchema.extend({
+    type: z.literal("comparacao"),
+    researchersPerDoc: z.never().optional(),
+  }),
+]);
+
+function validateLotteryParams(params: LotteryParams): LotteryParams {
+  const result = lotteryParamsSchema.safeParse(params);
+  if (!result.success) {
+    throw new Error(
+      `Configuração do sorteio inválida: ${result.error.issues[0]?.message ?? "revise os campos"}`,
+    );
+  }
+  return result.data as LotteryParams;
+}
+
+async function validateAndAuthorizeLottery(
+  params: LotteryParams,
+): Promise<
+  | { ok: true; params: LotteryParams }
+  | { ok: false; error: string }
+> {
+  let validatedParams: LotteryParams;
+  try {
+    validatedParams = validateLotteryParams(params);
+  } catch (error) {
+    return {
+      ok: false,
+      error: errorMessage(error) || "Configuração do sorteio inválida",
+    };
+  }
+
+  const gate = await requireCoordinator(
+    validatedParams.projectId,
+    "Apenas coordenadores podem sortear atribuições.",
+  );
+  return gate.ok
+    ? { ok: true, params: validatedParams }
+    : { ok: false, error: gate.error };
+}
+
 interface LotteryAssignment {
   document_id: string;
   user_id: string;
 }
+
+type NonEmptyLotteryAssignments = [LotteryAssignment, ...LotteryAssignment[]];
 
 export interface LotteryPreview {
   participants: { userId: string; existing: number; newDocs: number }[];
@@ -481,6 +596,10 @@ export interface LotteryPreview {
   totalPreserved: number;
   /** nº de docs elegíveis pós-filtros (pré-subset) */
   eligibleDocs: number;
+  /** vagas pedidas que não puderam ser preenchidas */
+  unfilledSlots: number;
+  /** presente somente quando nenhuma atribuição nova é possível */
+  emptyReason?: LotteryEmptyReason;
   /** semente usada; o dialog a reenvia em smartRandomize (research D13) */
   seed: number;
   targetRoundLabel?: string;
@@ -494,7 +613,8 @@ interface LotteryDocStatsResult {
   automationMode: string | null;
   currentRoundId: string | null;
   currentRoundLabel: string | null;
-  openAssignmentCount: number;
+  activeOpenAssignmentCount: number;
+  pendingScopeAssignmentCount: number;
 }
 
 interface LotteryData extends LotteryDocStatsResult {
@@ -510,39 +630,74 @@ interface LotteryData extends LotteryDocStatsResult {
 
 /**
  * Stats por documento a partir da view `lottery_doc_stats` (issue #182):
- * agrega humanCodingCount/hasLlmResponse/activeAssignments/hasAnyAssignmentEver/
+ * agrega humanCodingCount/hasLlmResponse/activeAssignments/atribuição na rodada/
  * batchIds em Postgres, bounded pelo nº de documentos ativos do projeto — sem
  * tocar responses/assignments crus.
  */
 async function fetchLotteryDocStats(projectId: string): Promise<LotteryDocStatsResult> {
   const supabase = await createSupabaseServer();
 
-  const [{ data: docs }, { data: batches }, { data: project }, { data: rounds }] = await Promise.all([
-    supabase
-      .from("lottery_doc_stats")
-      .select(
-        "id, external_id, title, human_coding_count, has_llm_response, active_codificacao, active_comparacao, has_any_assignment_ever, batch_ids"
-      )
-      .eq("project_id", projectId),
-    supabase
-      .from("assignment_batches")
-      .select("id, label, created_at, round_id")
-      .eq("project_id", projectId)
-      .order("created_at", { ascending: false }),
-    supabase
+  const project = requireData(
+    await supabase
       .from("projects")
       .select("min_responses_for_comparison, automation_mode, current_round_id")
       .eq("id", projectId)
       .single(),
+    "Erro ao ler a rodada atual do projeto",
+  );
+  const currentRoundId = project.current_round_id as string | null;
+  if (!currentRoundId) {
+    return {
+      docs: [],
+      batches: [],
+      minResponsesForComparison: project.min_responses_for_comparison ?? 2,
+      automationMode: project.automation_mode ?? null,
+      currentRoundId: null,
+      currentRoundLabel: null,
+      activeOpenAssignmentCount: 0,
+      pendingScopeAssignmentCount: 0,
+    };
+  }
+
+  const [docsResult, batchesResult, roundResult, workCountsResult] = await Promise.all([
+    supabase
+      .from("lottery_doc_stats")
+      .select(
+        "id, external_id, title, human_coding_count, has_llm_response, active_codificacao, active_comparacao, has_assignment_in_current_round, batch_ids"
+      )
+      .eq("project_id", projectId),
+    supabase
+      .from("assignment_batches")
+      .select("id, label, created_at")
+      .eq("project_id", projectId)
+      .eq("round_id", currentRoundId)
+      .order("created_at", { ascending: false }),
     supabase
       .from("rounds")
       .select("id, label")
       .eq("project_id", projectId)
+      .eq("id", currentRoundId)
+      .single(),
+    supabase
+      .from("lottery_round_work_counts")
+      .select("assignment_type, scope_state, open_count")
+      .eq("project_id", projectId)
+      .eq("round_id", currentRoundId),
   ]);
-  const currentRound = (rounds ?? []).find((round) => round.id === project?.current_round_id);
+  const docs = requireData(docsResult, "Erro ao ler os documentos do sorteio");
+  const batches = requireData(batchesResult, "Erro ao ler os lotes do sorteio");
+  const currentRound = requireData(roundResult, "Erro ao ler a rodada atual");
+  const workCounts = requireData(
+    workCountsResult,
+    "Erro ao contar o trabalho aberto da rodada",
+  );
+  const countByScope = (scopeState: "active" | "pending_scope") =>
+    workCounts
+      .filter((row) => row.scope_state === scopeState)
+      .reduce((total, row) => total + Number(row.open_count), 0);
 
   return {
-    docs: (docs || []).map((d) => ({
+    docs: docs.map((d) => ({
       id: d.id,
       externalId: d.external_id,
       title: d.title,
@@ -552,22 +707,20 @@ async function fetchLotteryDocStats(projectId: string): Promise<LotteryDocStatsR
         codificacao: d.active_codificacao,
         comparacao: d.active_comparacao,
       },
-      hasAnyAssignmentEver: d.has_any_assignment_ever,
+      hasAssignmentInCurrentRound: d.has_assignment_in_current_round,
       batchIds: d.batch_ids || [],
     })),
-    batches: (batches || []).filter((b) => b.round_id === project?.current_round_id).map((b) => ({
+    batches: batches.map((b) => ({
       id: b.id,
       label: b.label,
       createdAt: b.created_at,
     })),
-    minResponsesForComparison: project?.min_responses_for_comparison ?? 2,
-    automationMode: project?.automation_mode ?? null,
-    currentRoundId: project?.current_round_id ?? null,
-    currentRoundLabel: currentRound?.label ?? null,
-    openAssignmentCount: (docs || []).reduce(
-      (total, d) => total + d.active_codificacao + d.active_comparacao,
-      0,
-    ),
+    minResponsesForComparison: project.min_responses_for_comparison ?? 2,
+    automationMode: project.automation_mode ?? null,
+    currentRoundId,
+    currentRoundLabel: currentRound.label ?? null,
+    activeOpenAssignmentCount: countByScope("active"),
+    pendingScopeAssignmentCount: countByScope("pending_scope"),
   };
 }
 
@@ -581,7 +734,7 @@ async function fetchLotteryDocStats(projectId: string): Promise<LotteryDocStatsR
 async function fetchLotteryData(projectId: string): Promise<LotteryData> {
   const supabase = await createSupabaseServer();
 
-  const [stats, { data: assignments }, { data: humanCoders }] = await Promise.all([
+  const [stats, assignmentsResult, humanCodersResult] = await Promise.all([
     fetchLotteryDocStats(projectId),
     supabase
       .from("assignments")
@@ -603,17 +756,25 @@ async function fetchLotteryData(projectId: string): Promise<LotteryData> {
       .eq("is_latest", true)
       .not("respondent_id", "is", null),
   ]);
+  const assignments = requireData(
+    assignmentsResult,
+    "Erro ao ler as atribuições existentes do sorteio",
+  );
+  const humanCoders = requireData(
+    humanCodersResult,
+    "Erro ao ler as codificações humanas do sorteio",
+  );
 
   return {
     ...stats,
-    assignmentRows: (assignments || []).map((a) => ({
+    assignmentRows: assignments.map((a) => ({
       document_id: a.document_id,
       user_id: a.user_id,
       status: a.status,
       type: a.type,
       round_id: a.round_id ?? stats.currentRoundId ?? "",
     })),
-    humanCoderRows: (humanCoders || []).flatMap((r) =>
+    humanCoderRows: humanCoders.flatMap((r) =>
       r.respondent_id
         ? [
             {
@@ -650,11 +811,11 @@ export async function getLotteryDocStats(
   }
 }
 
-async function computeLottery(params: LotteryParams): Promise<{
-  newAssignments: LotteryAssignment[];
+interface LotteryComputationCommon {
   preservedCount: number;
   preservedByUser: Record<string, number>;
   eligibleCount: number;
+  unfilledSlots: number;
   seed: number;
   batchData: Record<string, unknown>;
   /** tipo normalizado aqui — quem grava reusa em vez de renormalizar */
@@ -662,31 +823,42 @@ async function computeLottery(params: LotteryParams): Promise<{
   /** fase 1 do status inicial (#521): responses humanas leves do projeto */
   humanCoderRows: HumanCoderRow[];
   target: NonNullable<LotteryParams["target"]>;
-}> {
+}
+
+type LotteryComputation =
+  | (LotteryComputationCommon & {
+      kind: "ready";
+      newAssignments: NonEmptyLotteryAssignments;
+    })
+  | (LotteryComputationCommon & {
+      kind: "empty";
+      newAssignments: [];
+      emptyReason: LotteryEmptyReason;
+    });
+
+async function computeLottery(params: LotteryParams): Promise<LotteryComputation> {
   const supabase = await createSupabaseServer();
-  // Normaliza em vez de confiar no literal: o payload chega por HTTP e não passa
-  // por zod. Qualquer coisa que não seja "comparacao" é codificação.
+  // `validateLotteryParams` tornou o discriminante confiável antes de chegar
+  // aqui; a normalização serve apenas para estreitar o tipo compartilhado.
   const assignmentType =
     params.type === "comparacao" ? "comparacao" : "codificacao";
-  // Para comparação o valor pedido é ignorado (sempre 1) — a união discriminada
-  // já proíbe o campo no client, e este é o guard para quem vem de fora dela.
   const researchersPerDoc = resolveResearchersPerDoc(
     assignmentType,
     (params as { researchersPerDoc?: number }).researchersPerDoc,
   );
   const filters = params.filters || {};
 
-  if (filters.batchFilter?.only && filters.batchFilter?.exclude?.length) {
-    throw new Error("Os filtros de lote são mutuamente exclusivos.");
-  }
-
-  const [{ data: members }, data] = await Promise.all([
+  const [membersResult, data] = await Promise.all([
     supabase
       .from("project_members")
       .select("user_id")
       .eq("project_id", params.projectId),
     fetchLotteryData(params.projectId),
   ]);
+  const members = requireData(
+    membersResult,
+    "Erro ao ler os participantes do sorteio",
+  );
 
   const target = params.target ?? {
     kind: "current" as const,
@@ -705,7 +877,7 @@ async function computeLottery(params: LotteryParams): Promise<{
 
   // Pool de participantes: deduplicado e validado contra project_members
   // (qualquer role) — defesa em profundidade além do RLS (research D5)
-  const memberIds = new Set((members || []).map((m) => m.user_id));
+  const memberIds = new Set(members.map((m) => m.user_id));
   const uniqueIds = [...new Set(params.participantIds)];
   const participantIds = uniqueIds.filter((id) => memberIds.has(id));
   if (!participantIds.length || participantIds.length !== uniqueIds.length) {
@@ -724,7 +896,7 @@ async function computeLottery(params: LotteryParams): Promise<{
         humanCodingCount: 0,
         hasLlmResponse: false,
         activeAssignments: { codificacao: 0, comparacao: 0 },
-        hasAnyAssignmentEver: false,
+        hasAssignmentInCurrentRound: false,
         batchIds: [],
       }))
     : data.docs;
@@ -756,9 +928,13 @@ async function computeLottery(params: LotteryParams): Promise<{
       ? ["pendente", "em_andamento", "concluido"]
       : ["em_andamento", "concluido"]
   );
+  const activeDocIds = new Set(data.docs.map((doc) => doc.id));
   const currentRoundRows = startsNewRound
     ? []
-    : data.assignmentRows.filter((a) => a.round_id === data.currentRoundId);
+    : data.assignmentRows.filter(
+        (a) =>
+          a.round_id === data.currentRoundId && activeDocIds.has(a.document_id),
+      );
   const preserved = currentRoundRows.filter(
     (a) => a.type === assignmentType && preservedStatuses.has(a.status),
   );
@@ -809,7 +985,9 @@ async function computeLottery(params: LotteryParams): Promise<{
   // que não ocupe mais a vaga do documento.
   const loadRows =
     params.balancing === "history"
-      ? data.assignmentRows.filter((a) => a.type === assignmentType)
+      ? data.assignmentRows.filter(
+          (a) => a.type === assignmentType && activeDocIds.has(a.document_id),
+        )
       : preserved;
   const preservedByUser: Record<string, number> = {};
   for (const a of loadRows) {
@@ -829,6 +1007,11 @@ async function computeLottery(params: LotteryParams): Promise<{
   if (params.docSubsetSize && params.docSubsetSize < eligibleDocIds.length) {
     eligibleDocIds = shuffleWithRng(eligibleDocIds, rng).slice(0, params.docSubsetSize);
   }
+  const requestedSlots = eligibleDocIds.reduce(
+    (total, documentId) =>
+      total + Math.max(0, researchersPerDoc - (docAssignedCount[documentId] || 0)),
+    0,
+  );
 
   // Matriz de co-ocorrência a partir do conjunto preservado
   const coOccurrence: Record<string, Record<string, number>> = {};
@@ -896,6 +1079,13 @@ async function computeLottery(params: LotteryParams): Promise<{
     label: params.label || null,
     mode: params.mode,
     balancing: params.balancing,
+    open_work_snapshot: {
+      active_count: data.activeOpenAssignmentCount,
+      pending_scope_count: data.pendingScopeAssignmentCount,
+      confirm_active: target.kind === "new" && target.confirmActiveWork,
+      confirm_pending_scope:
+        target.kind === "new" && target.confirmPendingScopeWork,
+    },
     filters: {
       ...filters,
       participantIds,
@@ -905,31 +1095,52 @@ async function computeLottery(params: LotteryParams): Promise<{
     },
   };
 
-  return {
-    newAssignments,
+  const common: LotteryComputationCommon = {
     preservedCount: preserved.length,
     preservedByUser,
     eligibleCount,
+    unfilledSlots: Math.max(0, requestedSlots - newAssignments.length),
     seed,
     batchData,
     assignmentType,
     humanCoderRows: data.humanCoderRows,
     target,
   };
+  if (newAssignments.length > 0) {
+    return {
+      ...common,
+      kind: "ready",
+      newAssignments: newAssignments as NonEmptyLotteryAssignments,
+    };
+  }
+
+  const emptyReason: LotteryEmptyReason =
+    eligibleDocIds.length === 0
+      ? "all_slots_filled"
+      : participants.every((participant) => participant.capacity <= 0)
+        ? "capacity_exhausted"
+        : "no_available_pairs";
+  return { ...common, kind: "empty", newAssignments: [], emptyReason };
 }
 
 export async function previewLottery(
   params: LotteryParams,
 ): Promise<{ preview?: LotteryPreview; error?: string }> {
-  const gate = await requireCoordinator(
-    params.projectId,
-    "Apenas coordenadores podem sortear atribuições.",
-  );
-  if (!gate.ok) return { error: gate.error };
+  const request = await validateAndAuthorizeLottery(params);
+  if (!request.ok) return { error: request.error };
+  const validatedParams = request.params;
 
   try {
-    const { newAssignments, preservedCount, preservedByUser, eligibleCount, seed, target } =
-      await computeLottery(params);
+    const computation = await computeLottery(validatedParams);
+    const {
+      newAssignments,
+      preservedCount,
+      preservedByUser,
+      eligibleCount,
+      unfilledSlots,
+      seed,
+      target,
+    } = computation;
 
     const newCounts: Record<string, number> = {};
     for (const a of newAssignments) {
@@ -938,7 +1149,7 @@ export async function previewLottery(
 
     return {
       preview: {
-        participants: [...new Set(params.participantIds)].map((userId) => ({
+        participants: [...new Set(validatedParams.participantIds)].map((userId) => ({
           userId,
           existing: preservedByUser[userId] || 0,
           newDocs: newCounts[userId] || 0,
@@ -946,6 +1157,9 @@ export async function previewLottery(
         totalNew: newAssignments.length,
         totalPreserved: preservedCount,
         eligibleDocs: eligibleCount,
+        unfilledSlots,
+        emptyReason:
+          computation.kind === "empty" ? computation.emptyReason : undefined,
         seed,
         targetRoundLabel:
           target.kind === "new"
@@ -961,11 +1175,9 @@ export async function previewLottery(
 export async function smartRandomize(
   params: LotteryParams,
 ): Promise<{ count?: number; preserved?: number; error?: string }> {
-  const gate = await requireCoordinator(
-    params.projectId,
-    "Apenas coordenadores podem sortear atribuições.",
-  );
-  if (!gate.ok) return { error: gate.error };
+  const request = await validateAndAuthorizeLottery(params);
+  if (!request.ok) return { error: request.error };
+  const validatedParams = request.params;
 
   const supabase = await createSupabaseServer();
 
@@ -975,8 +1187,12 @@ export async function smartRandomize(
   // Operação crítica: computeLottery + registro do lote + RPC transacional. Só
   // um erro aqui (nada gravado, ou gravação abortada) deve virar { error }.
   try {
+    const computation = await computeLottery(validatedParams);
+    if (computation.kind === "empty") {
+      return { error: LOTTERY_EMPTY_MESSAGES[computation.emptyReason] };
+    }
     const { newAssignments, preservedCount, batchData, assignmentType, humanCoderRows, target } =
-      await computeLottery(params);
+      computation;
 
     // Status inicial por linha (#521): um documento já codificado por completo
     // pelo próprio sorteado nasce 'concluido', não 'pendente'. Calculado ANTES
@@ -992,7 +1208,7 @@ export async function smartRandomize(
         ? new Map<string, InitialCodingStatus>()
         : await resolveInitialCodingStatuses(
             supabase,
-            params.projectId,
+            validatedParams.projectId,
             newAssignments.flatMap((a) => {
               const response = responsesByPair.get(pairKey(a.document_id, a.user_id));
               return response ? [response] : [];
@@ -1016,27 +1232,26 @@ export async function smartRandomize(
     const { data: result, error: rpcError } = await supabase.rpc(
       "apply_lottery_assignments",
       {
-        p_project_id: params.projectId,
+        p_project_id: validatedParams.projectId,
         p_type: assignmentType,
         p_expected_round_id: target.expectedRoundId,
         p_new_round_label:
           target.kind === "new" ? target.roundLabel.trim() : null,
         p_confirm_open_work:
-          target.kind === "new" && target.confirmOpenWork,
+          target.kind === "new" &&
+          target.confirmActiveWork &&
+          target.confirmPendingScopeWork,
         p_batch: batchData,
         p_assignments: assignmentRows,
-        p_replace: params.mode === "replace",
+        p_replace: validatedParams.mode === "replace",
       },
     );
     if (rpcError) {
       throw new Error(`Erro ao gravar as atribuições do sorteio: ${rpcError.message}`);
     }
 
-    // Contagem REAL do RPC, não o tamanho do que se pretendia gravar: o
-    // ON CONFLICT DO NOTHING pula linhas quando o gatilho automático cria a
-    // comparação do documento entre a leitura do computeLottery (fora da
-    // transação) e este INSERT. Reportar o pretendido faria o coordenador ver
-    // um número que não está no banco.
+    // A RPC exige correspondência exata entre proposta e inserção. Qualquer
+    // conflito concorrente reverte o lote inteiro com 40001.
     const rpcResult = result as { inserted?: number } | null;
     count = rpcResult?.inserted ?? newAssignments.length;
     preserved = preservedCount;
@@ -1051,7 +1266,7 @@ export async function smartRandomize(
     // Persiste o peso/limite usado por participante (decisão: editar no diálogo,
     // mas assumir continuidade no próximo sorteio). Uma falha aqui só afeta o
     // default da próxima vez.
-    const settingsEntries = Object.entries(params.participantSettings ?? {});
+    const settingsEntries = Object.entries(validatedParams.participantSettings ?? {});
     if (settingsEntries.length > 0) {
       const results = await Promise.all(
         settingsEntries.map(([userId, cfg]) =>
@@ -1061,7 +1276,7 @@ export async function smartRandomize(
               assignment_weight: resolveWeight(cfg.weight),
               assignment_cap: resolveCap(cfg.cap),
             })
-            .eq("project_id", params.projectId)
+            .eq("project_id", validatedParams.projectId)
             .eq("user_id", userId),
         ),
       );
@@ -1071,12 +1286,12 @@ export async function smartRandomize(
           `[lottery] falha ao persistir peso/limite por membro: ${failed.error.message}`,
         );
       }
-      revalidateTag(membersTag(params.projectId), MEMBERS_TAG_PROFILE);
+      revalidateTag(membersTag(validatedParams.projectId), MEMBERS_TAG_PROFILE);
     }
 
-    revalidatePath(`/projects/${params.projectId}/analyze/assignments`);
-    revalidatePath(`/projects/${params.projectId}/analyze/code`);
-    revalidatePath(`/projects/${params.projectId}/analyze/compare`);
+    revalidatePath(`/projects/${validatedParams.projectId}/analyze/assignments`);
+    revalidatePath(`/projects/${validatedParams.projectId}/analyze/code`);
+    revalidatePath(`/projects/${validatedParams.projectId}/analyze/compare`);
   } catch (e) {
     console.error(`[lottery] falha nos efeitos pós-sorteio: ${errorMessage(e)}`);
   }

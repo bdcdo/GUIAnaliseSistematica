@@ -166,19 +166,25 @@ BEGIN
     RAISE EXCEPTION 'FALHOU contrato: grants de replace_and_add_documents';
   END IF;
 
+  IF to_regprocedure(
+       'public.apply_lottery_assignments(uuid,text,uuid,jsonb,boolean)'
+     ) IS NOT NULL THEN
+    RAISE EXCEPTION 'FALHOU contrato: overload legada de apply_lottery_assignments ainda existe';
+  END IF;
+
   IF has_function_privilege(
        'anon',
-       'public.apply_lottery_assignments(uuid,text,uuid,jsonb,boolean)',
+       'public.apply_lottery_assignments(uuid,text,uuid,text,boolean,jsonb,jsonb,boolean)',
        'EXECUTE'
      )
      OR has_function_privilege(
        'service_role',
-       'public.apply_lottery_assignments(uuid,text,uuid,jsonb,boolean)',
+       'public.apply_lottery_assignments(uuid,text,uuid,text,boolean,jsonb,jsonb,boolean)',
        'EXECUTE'
      )
      OR NOT has_function_privilege(
        'authenticated',
-       'public.apply_lottery_assignments(uuid,text,uuid,jsonb,boolean)',
+       'public.apply_lottery_assignments(uuid,text,uuid,text,boolean,jsonb,jsonb,boolean)',
        'EXECUTE'
      ) THEN
     RAISE EXCEPTION 'FALHOU contrato: grants de apply_lottery_assignments';

@@ -2,6 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import type { LotteryPreview } from "@/actions/assignments";
+import { LOTTERY_EMPTY_MESSAGES } from "@/lib/lottery-utils";
 import type { LotteryMember } from "./lottery-dialog-types";
 
 // Seção "Prévia + Confirmar" do LotteryDialog: botão de prévia, tabela de
@@ -42,6 +43,16 @@ export function LotteryPreviewSection({
             {preview.totalNew} novas atribuições ·{" "}
             {preview.totalPreserved} preservadas
           </p>
+          {preview.emptyReason && (
+            <p className="text-xs text-destructive" role="alert">
+              {LOTTERY_EMPTY_MESSAGES[preview.emptyReason]}
+            </p>
+          )}
+          {!preview.emptyReason && preview.unfilledSlots > 0 && (
+            <p className="text-xs text-muted-foreground">
+              {preview.unfilledSlots} vagas não puderam ser preenchidas com os participantes e limites atuais.
+            </p>
+          )}
           <div className="max-h-40 overflow-y-auto">
             <table className="w-full text-xs">
               <thead>

@@ -6,6 +6,19 @@
 export type LotteryMode = "append" | "replace";
 export type LotteryBalancing = "round" | "history";
 export type AssignmentFilter = "any" | "noActiveOfType" | "neverAssigned";
+export type LotteryEmptyReason =
+  | "all_slots_filled"
+  | "capacity_exhausted"
+  | "no_available_pairs";
+
+export const LOTTERY_EMPTY_MESSAGES: Record<LotteryEmptyReason, string> = {
+  all_slots_filled:
+    "Todos os documentos selecionados já têm o número solicitado de atribuições nesta rodada. Para redistribuir o trabalho, inicie uma nova rodada.",
+  capacity_exhausted:
+    "Os participantes selecionados atingiram os limites de documentos configurados. Aumente ou remova os limites para continuar.",
+  no_available_pairs:
+    "Não há novos pares possíveis entre os documentos e participantes selecionados. Revise os participantes ou inicie uma nova rodada.",
+};
 
 export interface LotteryFilters {
   /** undefined = todos; 0 = sem nenhuma codificação; N = no máximo N */
@@ -26,7 +39,8 @@ export interface LotteryDocStats {
   hasLlmResponse: boolean;
   /** pendente + em_andamento, por tipo */
   activeAssignments: { codificacao: number; comparacao: number };
-  hasAnyAssignmentEver: boolean;
+  /** existe ao menos uma atribuição do documento na rodada atual */
+  hasAssignmentInCurrentRound: boolean;
   batchIds: string[];
 }
 
@@ -168,7 +182,7 @@ export function filterEligibleDocs(
   if (assignmentFilter === "noActiveOfType") {
     result = result.filter((d) => d.activeAssignments[type] === 0);
   } else if (assignmentFilter === "neverAssigned") {
-    result = result.filter((d) => !d.hasAnyAssignmentEver);
+    result = result.filter((d) => !d.hasAssignmentInCurrentRound);
   }
 
   if (filters.batchFilter?.only) {

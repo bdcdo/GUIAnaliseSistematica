@@ -34,6 +34,10 @@ INSERT INTO public.documents (id, project_id, external_id, title, text, text_has
 -- arquivo (a review logo abaixo e o assignment em seguida).
 INSERT INTO auth.users (id, email) VALUES
   ('77777777-7777-7777-7777-777777777777', 'atomic-replace-respondent@example.test');
+INSERT INTO public.clerk_user_mapping
+  (clerk_user_id, supabase_user_id, access_sync_version)
+VALUES
+  ('atomic-replace-clerk', '77777777-7777-7777-7777-777777777777', 1);
 
 INSERT INTO public.responses (id, project_id, document_id, respondent_id, respondent_type, answers) VALUES
   ('44444444-4444-4444-4444-444444444444', '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222', '77777777-7777-7777-7777-777777777777', 'humano', '{"campo":"x"}');
@@ -173,13 +177,22 @@ END $$;
 
 -- ----- #181: apply_lottery_assignments(replace) descarta pendentes do tipo + insere -----
 DO $$
-DECLARE n_pend int;
+DECLARE n_pend int; v_round_id uuid;
 BEGIN
+  PERFORM set_config(
+    'request.jwt.claims',
+    '{"sub":"atomic-replace-clerk","supabase_uid":"77777777-7777-7777-7777-777777777777"}',
+    true
+  );
+  SELECT current_round_id INTO v_round_id
+  FROM public.projects WHERE id = '11111111-1111-1111-1111-111111111111';
+
   -- Pendente antiga (em D2) que deve ser descartada pelo modo replace.
   INSERT INTO public.assignments (project_id, document_id, status, type)
     VALUES ('11111111-1111-1111-1111-111111111111', '33333333-3333-3333-3333-333333333333', 'pendente', 'codificacao');
   PERFORM public.apply_lottery_assignments(
-    '11111111-1111-1111-1111-111111111111'::uuid, 'codificacao', NULL,
+    '11111111-1111-1111-1111-111111111111'::uuid, 'codificacao', v_round_id,
+    NULL, false, '{}'::jsonb,
     '[{"document_id":"22222222-2222-2222-2222-222222222222","user_id":null}]'::jsonb,
     true
   );
@@ -195,14 +208,23 @@ END $$;
 -- ficava eternamente pendente na fila: nada promove um assignment criado DEPOIS
 -- da response.
 DO $$
-DECLARE r_status text; r_done timestamptz; r_default text; r_default_done timestamptz;
+DECLARE
+  r_status text;
+  r_done timestamptz;
+  r_default text;
+  r_default_done timestamptz;
+  v_round_id uuid;
 BEGIN
+  SELECT current_round_id INTO v_round_id
+  FROM public.projects WHERE id = '11111111-1111-1111-1111-111111111111';
+
   -- Este DELETE limpa a fixture de assignments dos blocos anteriores, então
   -- este bloco tem de continuar sendo o ÚLTIMO: um caso novo inserido abaixo
   -- herdaria a tabela vazia e passaria por vácuo, sem sinal nenhum.
   DELETE FROM public.assignments WHERE project_id = '11111111-1111-1111-1111-111111111111';
   PERFORM public.apply_lottery_assignments(
-    '11111111-1111-1111-1111-111111111111'::uuid, 'codificacao', NULL,
+    '11111111-1111-1111-1111-111111111111'::uuid, 'codificacao', v_round_id,
+    NULL, false, '{}'::jsonb,
     '[{"document_id":"22222222-2222-2222-2222-222222222222","user_id":null,
        "status":"concluido","completed_at":"2026-07-20T10:00:00Z"},
       {"document_id":"33333333-3333-3333-3333-333333333333","user_id":null}]'::jsonb,
