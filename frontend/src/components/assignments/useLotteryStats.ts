@@ -29,7 +29,8 @@ export function useLotteryStats(projectId: string, open: boolean) {
               automationMode: s.automationMode ?? null,
               currentRoundId: s.currentRoundId ?? null,
               currentRoundLabel: s.currentRoundLabel ?? null,
-              openAssignmentCount: s.openAssignmentCount ?? 0,
+              activeOpenAssignmentCount: s.activeOpenAssignmentCount ?? 0,
+              pendingScopeAssignmentCount: s.pendingScopeAssignmentCount ?? 0,
             },
             error: false,
           });

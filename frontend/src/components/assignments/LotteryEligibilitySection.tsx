@@ -137,7 +137,7 @@ export function LotteryEligibilitySection({
               {isComparacao ? "comparação" : "codificação"}
             </SelectItem>
             <SelectItem value="neverAssigned">
-              Nunca atribuído
+              Ainda não atribuído nesta rodada
             </SelectItem>
           </SelectContent>
         </Select>

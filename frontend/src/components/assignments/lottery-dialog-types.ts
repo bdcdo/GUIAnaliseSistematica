@@ -23,7 +23,8 @@ export interface LotteryStats {
   automationMode: string | null;
   currentRoundId?: string | null;
   currentRoundLabel?: string | null;
-  openAssignmentCount?: number;
+  activeOpenAssignmentCount?: number;
+  pendingScopeAssignmentCount?: number;
 }
 
 export type CodingsFilterMode = "all" | "none" | "atMost";

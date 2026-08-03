@@ -20,7 +20,7 @@ function doc(overrides: Partial<LotteryDocStats> & { id: string }): LotteryDocSt
     humanCodingCount: 0,
     hasLlmResponse: false,
     activeAssignments: { codificacao: 0, comparacao: 0 },
-    hasAnyAssignmentEver: false,
+    hasAssignmentInCurrentRound: false,
     batchIds: [],
     ...overrides,
   };
@@ -68,17 +68,17 @@ describe("filterEligibleDocs", () => {
       doc({
         id: "cod-ativa",
         activeAssignments: { codificacao: 1, comparacao: 0 },
-        hasAnyAssignmentEver: true,
+        hasAssignmentInCurrentRound: true,
       }),
       doc({
         id: "comp-ativa",
         activeAssignments: { codificacao: 0, comparacao: 1 },
-        hasAnyAssignmentEver: true,
+        hasAssignmentInCurrentRound: true,
       }),
       doc({
         id: "ja-teve",
         activeAssignments: { codificacao: 0, comparacao: 0 },
-        hasAnyAssignmentEver: true,
+        hasAssignmentInCurrentRound: true,
       }),
     ];
 
@@ -196,7 +196,7 @@ describe("filterEligibleDocs", () => {
         id: "ativa",
         humanCodingCount: 0,
         activeAssignments: { codificacao: 1, comparacao: 0 },
-        hasAnyAssignmentEver: true,
+        hasAssignmentInCurrentRound: true,
         batchIds: ["b2"],
       }),
       doc({ id: "lote-excluido", humanCodingCount: 0, batchIds: ["b1"] }),

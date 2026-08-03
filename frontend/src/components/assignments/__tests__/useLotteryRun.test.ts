@@ -3,7 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act, cleanup } from "@testing-library/react";
 import { previewLottery, smartRandomize } from "@/actions/assignments";
 import type { LotteryPreview } from "@/actions/assignments";
-import type { LotteryDocStats } from "@/lib/lottery-utils";
+import {
+  LOTTERY_EMPTY_MESSAGES,
+  type LotteryDocStats,
+} from "@/lib/lottery-utils";
 import { useLotteryParams } from "../useLotteryParams";
 import { useLotteryRun } from "../useLotteryRun";
 import type { LotteryMember, LotteryStats } from "../lottery-dialog-types";
@@ -25,7 +28,7 @@ function doc(id: string, overrides?: Partial<LotteryDocStats>): LotteryDocStats 
     humanCodingCount: 0,
     hasLlmResponse: false,
     activeAssignments: { codificacao: 0, comparacao: 0 },
-    hasAnyAssignmentEver: false,
+    hasAssignmentInCurrentRound: false,
     batchIds: [],
     ...overrides,
   };
@@ -44,7 +47,8 @@ const stats: LotteryStats = {
   automationMode: null,
   currentRoundId: "round-1",
   currentRoundLabel: "Rodada inicial",
-  openAssignmentCount: 0,
+  activeOpenAssignmentCount: 0,
+  pendingScopeAssignmentCount: 0,
 };
 
 const previewResult: LotteryPreview = {
@@ -52,12 +56,13 @@ const previewResult: LotteryPreview = {
   totalNew: 2,
   totalPreserved: 0,
   eligibleDocs: 3,
+  unfilledSlots: 0,
   seed: 4242,
 };
 
 // Integra useLotteryParams + useLotteryRun como no LotteryDialog real —
 // o contrato sob teste é o casamento prévia↔configuração (research D13).
-function setup(statsOverride: LotteryStats = stats) {
+function setup(statsOverride: LotteryStats | null = stats) {
   return renderHook(() => {
     const params = useLotteryParams();
     const run = useLotteryRun({
@@ -82,14 +87,23 @@ afterEach(() => {
 });
 
 describe("useLotteryRun", () => {
+  it("não confunde carregamento ou erro de stats com ausência de rodada", () => {
+    const { result } = setup(null);
+
+    expect(result.current.run.blockedMessage).toBeNull();
+    expect(result.current.run.canPreview).toBe(false);
+    expect(result.current.run.canSubmit).toBe(false);
+  });
+
   it("deriva contagens: pesquisadores participam por default, coordenador não", () => {
     const { result } = setup();
     expect(result.current.run.participantCount).toBe(2);
     expect(result.current.run.eligibleCount).toBe(3);
+    expect(result.current.run.canPreview).toBe(true);
     expect(result.current.run.canSubmit).toBe(true);
   });
 
-  it("bloqueia quando os filtros zeram os elegíveis", () => {
+  it("bloqueia prévia e submit quando os filtros zeram os elegíveis", async () => {
     const { result } = setup();
     act(() => {
       // "Sem nenhuma codificação" + docs com codificação → só d1 e d3;
@@ -100,7 +114,11 @@ describe("useLotteryRun", () => {
     expect(result.current.run.blockedMessage).toBe(
       "Nenhum documento passa nos filtros atuais.",
     );
+    expect(result.current.run.canPreview).toBe(false);
     expect(result.current.run.canSubmit).toBe(false);
+
+    await act(() => result.current.run.handlePreview());
+    expect(mockPreview).not.toHaveBeenCalled();
   });
 
   it("mudar a configuração invalida a prévia (e a seed) por derivação", async () => {
@@ -112,6 +130,76 @@ describe("useLotteryRun", () => {
       result.current.params.setResearchersPerDoc(3);
     });
     expect(result.current.run.preview).toBeNull();
+  });
+
+  it("permite recalcular uma prévia vazia e só libera o submit após encontrar vagas", async () => {
+    mockPreview.mockResolvedValueOnce({
+      preview: {
+        ...previewResult,
+        participants: [{ userId: "u1", existing: 1, newDocs: 0 }],
+        totalNew: 0,
+        unfilledSlots: 1,
+        emptyReason: "capacity_exhausted",
+      },
+    });
+    const { result } = setup();
+
+    await act(() => result.current.run.handlePreview());
+
+    expect(result.current.run.canSubmit).toBe(false);
+    expect(result.current.run.blockedMessage).toBe(
+      LOTTERY_EMPTY_MESSAGES.capacity_exhausted,
+    );
+    expect(result.current.run.canPreview).toBe(true);
+    await act(() => result.current.run.handleRandomize());
+    expect(mockRandomize).not.toHaveBeenCalled();
+
+    await act(() => result.current.run.handlePreview());
+
+    expect(mockPreview).toHaveBeenCalledTimes(2);
+    expect(result.current.run.preview).toEqual(previewResult);
+    expect(result.current.run.blockedMessage).toBeNull();
+    expect(result.current.run.canPreview).toBe(true);
+    expect(result.current.run.canSubmit).toBe(true);
+  });
+
+  it("trocar o alvo invalida a prévia e exige confirmações separadas", async () => {
+    const statsWithOpenWork: LotteryStats = {
+      ...stats,
+      activeOpenAssignmentCount: 2,
+      pendingScopeAssignmentCount: 3,
+    };
+    const { result } = setup(statsWithOpenWork);
+    await act(() => result.current.run.handlePreview());
+
+    act(() => {
+      result.current.params.setTargetKind("new");
+      result.current.params.setRoundLabel("Rodada 2");
+    });
+
+    expect(result.current.run.preview).toBeNull();
+    expect(result.current.run.blockedMessage).toBe(
+      "Confirme a abertura da nova rodada com trabalho ativo ainda aberto.",
+    );
+    act(() => result.current.params.setConfirmActiveWork(true));
+    expect(result.current.run.blockedMessage).toBe(
+      "Confirme a abertura da nova rodada com documentos ainda em revisão de escopo.",
+    );
+    act(() => result.current.params.setConfirmPendingScopeWork(true));
+    expect(result.current.run.blockedMessage).toBeNull();
+
+    await act(() => result.current.run.handleRandomize());
+    expect(mockRandomize).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        target: {
+          kind: "new",
+          expectedRoundId: "round-1",
+          roundLabel: "Rodada 2",
+          confirmActiveWork: true,
+          confirmPendingScopeWork: true,
+        },
+      }),
+    );
   });
 
   it("o rótulo não invalida a prévia, mas entra no submit", async () => {

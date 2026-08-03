@@ -40,7 +40,9 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
   const params = useLotteryParams();
   const {
     type, setType, targetKind, setTargetKind, roundLabel, setRoundLabel,
-    confirmOpenWork, setConfirmOpenWork, mode, setMode, label, setLabel,
+    confirmActiveWork, setConfirmActiveWork,
+    confirmPendingScopeWork, setConfirmPendingScopeWork,
+    mode, setMode, label, setLabel,
     setPreviewState,
   } = params;
 
@@ -49,6 +51,7 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
     participantCount,
     eligibleCount,
     blockedMessage,
+    canPreview,
     canSubmit,
     preview,
     estimatedPerParticipant,
@@ -140,7 +143,8 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
               value={targetKind}
               onValueChange={(value) => {
                 setTargetKind(value as "current" | "new");
-                setConfirmOpenWork(false);
+                setConfirmActiveWork(false);
+                setConfirmPendingScopeWork(false);
               }}
               className="space-y-1"
             >
@@ -165,15 +169,29 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
                   value={roundLabel}
                   onChange={(event) => setRoundLabel(event.target.value)}
                 />
-                {(stats?.openAssignmentCount ?? 0) > 0 && (
+                {(stats?.activeOpenAssignmentCount ?? 0) > 0 && (
                   <div className="flex items-start gap-2 rounded-md border p-3">
                     <Checkbox
-                      id="confirm-open-work"
-                      checked={confirmOpenWork}
-                      onCheckedChange={(checked) => setConfirmOpenWork(checked === true)}
+                      id="confirm-active-work"
+                      checked={confirmActiveWork}
+                      onCheckedChange={(checked) => setConfirmActiveWork(checked === true)}
                     />
-                    <Label htmlFor="confirm-open-work" className="font-normal leading-snug">
-                      Confirmo iniciar a nova rodada apesar de {stats?.openAssignmentCount} atribuições em andamento ou pendentes na rodada atual.
+                    <Label htmlFor="confirm-active-work" className="font-normal leading-snug">
+                      Confirmo iniciar a nova rodada apesar de {stats?.activeOpenAssignmentCount} atribuições ativas em andamento ou pendentes na rodada atual.
+                    </Label>
+                  </div>
+                )}
+                {(stats?.pendingScopeAssignmentCount ?? 0) > 0 && (
+                  <div className="flex items-start gap-2 rounded-md border p-3">
+                    <Checkbox
+                      id="confirm-pending-scope-work"
+                      checked={confirmPendingScopeWork}
+                      onCheckedChange={(checked) =>
+                        setConfirmPendingScopeWork(checked === true)
+                      }
+                    />
+                    <Label htmlFor="confirm-pending-scope-work" className="font-normal leading-snug">
+                      Confirmo iniciar a nova rodada apesar de {stats?.pendingScopeAssignmentCount} atribuições ligadas a documentos ainda em revisão de escopo. Se o pedido for rejeitado depois, esses documentos precisarão entrar em um novo sorteio da rodada atual.
                     </Label>
                   </div>
                 )}
@@ -255,6 +273,7 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
             run={{
               previewing,
               loading,
+              canPreview,
               canSubmit,
               onPreview: () => void handlePreview(),
               onRandomize: () => void handleRandomize(),

@@ -51,6 +51,12 @@ import {
   smartRandomize,
   type LotteryParams,
 } from "../assignments";
+import { LOTTERY_EMPTY_MESSAGES } from "@/lib/lottery-utils";
+
+const ROUND_RESULTS: TableResults = {
+  rounds: { data: { id: "round-1", label: "Rodada inicial" } },
+  lottery_round_work_counts: { data: [] },
+};
 
 beforeEach(() => {
   serverTableResults = undefined;
@@ -63,6 +69,7 @@ beforeEach(() => {
 describe("getLotteryDocStats", () => {
   it("mapeia as linhas da view lottery_doc_stats para LotteryDocStats[]", async () => {
     serverTableResults = {
+      ...ROUND_RESULTS,
       lottery_doc_stats: {
         data: [
           {
@@ -73,7 +80,7 @@ describe("getLotteryDocStats", () => {
             has_llm_response: true,
             active_codificacao: 1,
             active_comparacao: 0,
-            has_any_assignment_ever: true,
+            has_assignment_in_current_round: true,
             batch_ids: ["b1", "b2"],
           },
           {
@@ -84,7 +91,7 @@ describe("getLotteryDocStats", () => {
             has_llm_response: false,
             active_codificacao: 0,
             active_comparacao: 0,
-            has_any_assignment_ever: false,
+            has_assignment_in_current_round: false,
             batch_ids: null,
           },
         ],
@@ -108,7 +115,7 @@ describe("getLotteryDocStats", () => {
         humanCodingCount: 2,
         hasLlmResponse: true,
         activeAssignments: { codificacao: 1, comparacao: 0 },
-        hasAnyAssignmentEver: true,
+        hasAssignmentInCurrentRound: true,
         batchIds: ["b1", "b2"],
       },
       {
@@ -118,16 +125,45 @@ describe("getLotteryDocStats", () => {
         humanCodingCount: 0,
         hasLlmResponse: false,
         activeAssignments: { codificacao: 0, comparacao: 0 },
-        hasAnyAssignmentEver: false,
+        hasAssignmentInCurrentRound: false,
         batchIds: [],
       },
     ]);
     expect(result.minResponsesForComparison).toBe(2);
     expect(result.automationMode).toBe("compare_llm");
+    expect(result.currentRoundId).toBe("round-1");
+    expect(result.currentRoundLabel).toBe("Rodada inicial");
+    expect(result.activeOpenAssignmentCount).toBe(0);
+    expect(result.pendingScopeAssignmentCount).toBe(0);
+  });
+
+  it("separa trabalho ativo de documentos ainda em revisão de escopo", async () => {
+    serverTableResults = {
+      ...ROUND_RESULTS,
+      lottery_doc_stats: { data: [] },
+      assignment_batches: { data: [] },
+      projects: {
+        data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" },
+      },
+      lottery_round_work_counts: {
+        data: [
+          { assignment_type: "codificacao", scope_state: "active", open_count: 3 },
+          { assignment_type: "comparacao", scope_state: "active", open_count: 2 },
+          { assignment_type: "codificacao", scope_state: "pending_scope", open_count: 4 },
+        ],
+      },
+    };
+
+    const result = await getLotteryDocStats("p1");
+
+    expect(result.error).toBeUndefined();
+    expect(result.activeOpenAssignmentCount).toBe(5);
+    expect(result.pendingScopeAssignmentCount).toBe(4);
   });
 
   it("não consulta responses nem assignments crus (regressão da issue #182)", async () => {
     serverTableResults = {
+      ...ROUND_RESULTS,
       lottery_doc_stats: { data: [] },
       assignment_batches: { data: [] },
       projects: { data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" } },
@@ -136,6 +172,7 @@ describe("getLotteryDocStats", () => {
     await getLotteryDocStats("p1");
 
     expect(fromCalls).toContain("lottery_doc_stats");
+    expect(fromCalls).toContain("lottery_round_work_counts");
     expect(fromCalls).not.toContain("responses");
     expect(fromCalls).not.toContain("assignments");
   });
@@ -144,6 +181,7 @@ describe("getLotteryDocStats", () => {
 describe("previewLottery", () => {
   it("caminho feliz: distribui documentos elegíveis a partir da view + assignments brutos", async () => {
     serverTableResults = {
+      ...ROUND_RESULTS,
       project_members: { data: [{ user_id: "u1" }] },
       lottery_doc_stats: {
         data: [
@@ -155,7 +193,7 @@ describe("previewLottery", () => {
             has_llm_response: false,
             active_codificacao: 0,
             active_comparacao: 0,
-            has_any_assignment_ever: false,
+            has_assignment_in_current_round: false,
             batch_ids: [],
           },
         ],
@@ -163,6 +201,7 @@ describe("previewLottery", () => {
       assignment_batches: { data: [] },
       projects: { data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" } },
       assignments: { data: [] },
+      responses: { data: [] },
     };
 
     const result = await previewLottery({
@@ -183,6 +222,158 @@ describe("previewLottery", () => {
     expect(fromCalls).toContain("lottery_doc_stats");
     expect(fromCalls).toContain("assignments");
   });
+
+  it("falha fechado quando não consegue ler as atribuições existentes", async () => {
+    serverTableResults = {
+      ...ROUND_RESULTS,
+      project_members: { data: [{ user_id: "u1" }] },
+      lottery_doc_stats: {
+        data: [
+          {
+            id: "d1",
+            external_id: null,
+            title: "Doc 1",
+            human_coding_count: 0,
+            has_llm_response: false,
+            active_codificacao: 0,
+            active_comparacao: 0,
+            has_assignment_in_current_round: false,
+            batch_ids: [],
+          },
+        ],
+      },
+      assignment_batches: { data: [] },
+      projects: {
+        data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" },
+      },
+      assignments: { data: null, error: { message: "timeout" } },
+      responses: { data: [] },
+    };
+
+    const result = await previewLottery({
+      projectId: "p1",
+      type: "codificacao",
+      mode: "append",
+      balancing: "round",
+      researchersPerDoc: 1,
+      participantIds: ["u1"],
+    });
+
+    expect(result.error).toBe(
+      "Erro ao ler as atribuições existentes do sorteio: timeout",
+    );
+    expect(rpcCalls).toHaveLength(0);
+  });
+
+  it("explica quando a capacidade total dos participantes já acabou", async () => {
+    serverTableResults = {
+      ...ROUND_RESULTS,
+      project_members: { data: [{ user_id: "u1" }] },
+      lottery_doc_stats: {
+        data: [
+          {
+            id: "d1",
+            external_id: null,
+            title: "Doc 1",
+            human_coding_count: 0,
+            has_llm_response: false,
+            active_codificacao: 0,
+            active_comparacao: 0,
+            has_assignment_in_current_round: false,
+            batch_ids: [],
+          },
+          {
+            id: "d2",
+            external_id: null,
+            title: "Doc 2",
+            human_coding_count: 1,
+            has_llm_response: false,
+            active_codificacao: 1,
+            active_comparacao: 0,
+            has_assignment_in_current_round: true,
+            batch_ids: ["b0"],
+          },
+        ],
+      },
+      assignment_batches: { data: [] },
+      projects: {
+        data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" },
+      },
+      assignments: {
+        data: [
+          { document_id: "d2", user_id: "u1", status: "concluido", type: "codificacao", round_id: "round-1" },
+        ],
+      },
+      responses: { data: [] },
+    };
+
+    const result = await previewLottery({
+      projectId: "p1",
+      type: "codificacao",
+      mode: "append",
+      balancing: "round",
+      researchersPerDoc: 1,
+      docsPerResearcher: 1,
+      participantIds: ["u1"],
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.preview).toMatchObject({
+      totalNew: 0,
+      emptyReason: "capacity_exhausted",
+      unfilledSlots: 1,
+    });
+  });
+
+  it("atribuições de documentos fora do escopo não consomem capacidade", async () => {
+    serverTableResults = {
+      ...ROUND_RESULTS,
+      project_members: { data: [{ user_id: "u1" }] },
+      lottery_doc_stats: {
+        data: [
+          {
+            id: "active-doc",
+            external_id: null,
+            title: "Documento ativo",
+            human_coding_count: 0,
+            has_llm_response: false,
+            active_codificacao: 0,
+            active_comparacao: 0,
+            has_assignment_in_current_round: false,
+            batch_ids: [],
+          },
+        ],
+      },
+      assignment_batches: { data: [] },
+      projects: {
+        data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" },
+      },
+      assignments: {
+        data: [
+          { document_id: "excluded-doc", user_id: "u1", status: "em_andamento", type: "codificacao", round_id: "round-1" },
+          { document_id: "pending-scope-doc", user_id: "u1", status: "pendente", type: "codificacao", round_id: "round-1" },
+        ],
+      },
+      responses: { data: [] },
+    };
+
+    const result = await previewLottery({
+      projectId: "p1",
+      type: "codificacao",
+      mode: "append",
+      balancing: "history",
+      researchersPerDoc: 1,
+      docsPerResearcher: 1,
+      participantIds: ["u1"],
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.preview).toMatchObject({
+      totalNew: 1,
+      totalPreserved: 0,
+      participants: [{ userId: "u1", existing: 0, newDocs: 1 }],
+    });
+  });
 });
 
 // Regressão da issue #490: o sorteio de Comparação herdava o default 2 do
@@ -193,6 +384,7 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
   // número de revisores fosse honrado, sobrariam candidatos para uma 2ª vaga.
   function comparisonFixture(assignments: unknown[] = []): TableResults {
     return {
+      ...ROUND_RESULTS,
       project_members: { data: [{ user_id: "u1" }, { user_id: "u2" }, { user_id: "u3" }] },
       lottery_doc_stats: {
         data: [
@@ -204,7 +396,7 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
             has_llm_response: false,
             active_codificacao: 0,
             active_comparacao: 0,
-            has_any_assignment_ever: true,
+            has_assignment_in_current_round: true,
             batch_ids: [],
           },
         ],
@@ -212,10 +404,11 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
       assignment_batches: { data: [] },
       projects: { data: { min_responses_for_comparison: 2, automation_mode: null, current_round_id: "round-1" } },
       assignments: { data: assignments },
+      responses: { data: [] },
     };
   }
 
-  it("ignora researchersPerDoc forjado no payload e atribui um único revisor", async () => {
+  it("recusa researchersPerDoc forjado no payload de comparação antes de consultar o banco", async () => {
     serverTableResults = comparisonFixture();
 
     const result = await previewLottery({
@@ -223,19 +416,15 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
       type: "comparacao",
       mode: "append",
       balancing: "round",
-      // A união discriminada proíbe este campo no braço "comparacao": o cast é o
-      // teste. Server Action é endpoint HTTP público e o projeto não valida com
-      // zod — o contrato sob prova é o server IGNORAR o que o client pediu, e
-      // não confiar no type-check que só existe em tempo de compilação.
+      // A união discriminada proíbe este campo no braço "comparacao": o cast é
+      // o teste da validação runtime na fronteira da Server Action.
       researchersPerDoc: 2,
       participantIds: ["u1", "u2", "u3"],
     } as unknown as LotteryParams);
 
-    expect(result.error).toBeUndefined();
-    expect(result.preview?.totalNew).toBe(1);
-    expect(
-      result.preview?.participants.filter((p) => p.newDocs > 0),
-    ).toHaveLength(1);
+    expect(result.error).toContain("Configuração do sorteio inválida");
+    expect(fromCalls).toHaveLength(0);
+    expect(rpcCalls).toHaveLength(0);
   });
 
   it("comparação nunca sorteia o codificador do próprio documento", async () => {
@@ -314,10 +503,8 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
       type: "comparacao",
       mode: "append",
       balancing: "round",
-      // Forjado: é este pedido que, honrado, abriria a 2ª vaga do documento.
-      researchersPerDoc: 2,
       participantIds: ["u1", "u2", "u3"],
-    } as unknown as LotteryParams);
+    });
 
     // O documento passa nos filtros (o coordenador não filtrou nada), mas a vaga
     // está ocupada pela comparação ativa: a prévia mostra zero elegíveis em vez
@@ -325,6 +512,50 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
     expect(result.error).toBeUndefined();
     expect(result.preview?.eligibleDocs).toBe(0);
     expect(result.preview?.totalNew).toBe(0);
+    expect(result.preview?.emptyReason).toBe("all_slots_filled");
+  });
+
+  it("não chama a RPC quando todas as vagas já estão ocupadas", async () => {
+    serverTableResults = comparisonFixture([
+      { document_id: "d1", user_id: "u1", status: "pendente", type: "comparacao", round_id: "round-1" },
+    ]);
+
+    const result = await smartRandomize({
+      projectId: "p1",
+      type: "comparacao",
+      mode: "append",
+      balancing: "round",
+      participantIds: ["u1", "u2", "u3"],
+    });
+
+    expect(result.error).toBe(LOTTERY_EMPTY_MESSAGES.all_slots_filled);
+    expect(rpcCalls).toHaveLength(0);
+    expect(writeCalls).toHaveLength(0);
+  });
+
+  it("explica quando todos os pares disponíveis são vetados", async () => {
+    serverTableResults = {
+      ...comparisonFixture(),
+      project_members: { data: [{ user_id: "u1" }] },
+      responses: {
+        data: [{ document_id: "d1", respondent_id: "u1", round_id: "round-1" }],
+      },
+    };
+
+    const result = await previewLottery({
+      projectId: "p1",
+      type: "comparacao",
+      mode: "append",
+      balancing: "round",
+      participantIds: ["u1"],
+    });
+
+    expect(result.error).toBeUndefined();
+    expect(result.preview).toMatchObject({
+      totalNew: 0,
+      emptyReason: "no_available_pairs",
+      unfilledSlots: 1,
+    });
   });
 
   it("smartRandomize grava um assignment e registra researchers_per_doc 1 no lote", async () => {
@@ -334,16 +565,15 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
       // insert...select("id").single() do lote deste sorteio.
       assignment_batches: [{ data: [] }, { data: { id: "b1" } }],
     };
-    rpcResults = { apply_lottery_assignments: { data: 1 } };
+    rpcResults = { apply_lottery_assignments: { data: { inserted: 1 } } };
 
     const result = await smartRandomize({
       projectId: "p1",
       type: "comparacao",
       mode: "append",
       balancing: "round",
-      researchersPerDoc: 2, // forjado — a gravação tem de refletir o efetivo (1)
       participantIds: ["u1", "u2", "u3"],
-    } as unknown as LotteryParams);
+    });
 
     expect(result.error).toBeUndefined();
     expect(result.count).toBe(1);
@@ -353,6 +583,70 @@ describe("sorteio de comparação: um revisor por documento (#490)", () => {
     expect((rpc?.args as { p_assignments: unknown[] }).p_assignments).toHaveLength(1);
 
     expect((rpc?.args as { p_batch: unknown }).p_batch).toMatchObject({ researchers_per_doc: 1 });
+  });
+
+  it("nova rodada envia contagens e confirmações separadas no snapshot transacional", async () => {
+    serverTableResults = {
+      ...comparisonFixture(),
+      project_members: { data: [{ user_id: "u1" }] },
+      lottery_doc_stats: {
+        data: [
+          {
+            id: "d1",
+            external_id: "EXT-1",
+            title: "Doc 1",
+            human_coding_count: 2,
+            has_llm_response: false,
+            active_codificacao: 1,
+            active_comparacao: 0,
+            has_assignment_in_current_round: true,
+            batch_ids: ["old-batch"],
+          },
+        ],
+      },
+      lottery_round_work_counts: {
+        data: [
+          { assignment_type: "codificacao", scope_state: "active", open_count: 2 },
+          { assignment_type: "comparacao", scope_state: "pending_scope", open_count: 3 },
+        ],
+      },
+      responses: { data: [] },
+    };
+    rpcResults = {
+      apply_lottery_assignments: { data: { inserted: 1, round_id: "round-2" } },
+    };
+
+    const result = await smartRandomize({
+      projectId: "p1",
+      type: "codificacao",
+      mode: "append",
+      balancing: "round",
+      researchersPerDoc: 1,
+      participantIds: ["u1"],
+      target: {
+        kind: "new",
+        expectedRoundId: "round-1",
+        roundLabel: "Rodada 2",
+        confirmActiveWork: true,
+        confirmPendingScopeWork: true,
+      },
+    });
+
+    expect(result).toMatchObject({ count: 1 });
+    const rpc = rpcCalls.find((call) => call.fn === "apply_lottery_assignments");
+    expect(rpc?.args).toMatchObject({
+      p_expected_round_id: "round-1",
+      p_new_round_label: "Rodada 2",
+      p_confirm_open_work: true,
+      p_batch: {
+        open_work_snapshot: {
+          active_count: 2,
+          pending_scope_count: 3,
+          confirm_active: true,
+          confirm_pending_scope: true,
+        },
+      },
+    });
   });
 });
 
@@ -386,6 +680,11 @@ describe("status inicial do assignment de codificação (#521)", () => {
   // o mesmo par que já tem response humana.
   function codingFixture(responseRows: unknown[], answerRows: unknown[]): TableResults {
     return {
+      ...ROUND_RESULTS,
+      rounds: [
+        { data: { id: "round-1", label: "Rodada inicial" } },
+        { data: [{ id: "round-1", label: "Rodada inicial" }] },
+      ],
       project_members: { data: [{ user_id: "u1" }] },
       lottery_doc_stats: {
         data: [
@@ -397,7 +696,7 @@ describe("status inicial do assignment de codificação (#521)", () => {
             has_llm_response: false,
             active_codificacao: 0,
             active_comparacao: 0,
-            has_any_assignment_ever: false,
+            has_assignment_in_current_round: false,
             batch_ids: [],
           },
         ],
@@ -427,7 +726,7 @@ describe("status inicial do assignment de codificação (#521)", () => {
   }
 
   beforeEach(() => {
-    rpcResults = { apply_lottery_assignments: { data: 1 } };
+    rpcResults = { apply_lottery_assignments: { data: { inserted: 1 } } };
   });
 
   it("sorteio manda 'concluido' + completed_at quando o sorteado já codificou o documento", async () => {
