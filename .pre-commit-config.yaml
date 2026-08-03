@@ -67,6 +67,16 @@ repos:
         pass_filenames: false
         require_serial: true
 
+      # Contrato de custo/disponibilidade do backend no Fly: o workflow só
+      # converge de 0/1 para uma Machine e valida tamanho, região e health.
+      - id: backend-fly-machine-contract
+        name: backend Fly machine contract
+        entry: .github/scripts/test-backend-fly-machine-contract.sh
+        language: system
+        files: ^(\.github/(workflows/fly-deploy\.yml|scripts/(check|test)-backend-fly-machine.*\.sh)|backend/fly\.toml)$
+        pass_filenames: false
+        require_serial: true
+
       # react-doctor como gate local de qualidade React (estilo flake8/mypy).
       #
       # Por que --scope changed e nao --staged: o --staged escaneia o arquivo

@@ -15,6 +15,12 @@ kill_timeout = "5m"
   # o deploy automatico (fly-deploy.yml).
   strategy = "bluegreen"
 
+[[vm]]
+  # Fonte versionada do tamanho: `--ha=false` no workflow controla a
+  # cardinalidade; este bloco impede que um deploy recrie a Machine maior.
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
 [http_service]
   internal_port = 8000
   force_https = true

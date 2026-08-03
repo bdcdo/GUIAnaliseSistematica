@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from datetime import UTC, datetime
 
 import httpx
 
@@ -40,6 +41,32 @@ def assert_auto_review_reconciliation_capability() -> None:
         raise RuntimeError(
             "Database migration returned an invalid auto-review capability."
         )
+
+
+async def has_due_auto_review_reconciliation_request(
+    *, now: datetime | None = None
+) -> bool:
+    """Return whether the durable outbox has work eligible for this tick."""
+    due_before = (now or datetime.now(UTC)).isoformat()
+
+    def query_due_request() -> bool:
+        result = (
+            get_supabase()
+            .table("auto_review_reconciliation_requests")
+            .select("document_id")
+            .lte("next_attempt_at", due_before)
+            .limit(1)
+            .execute()
+        )
+        if not isinstance(result.data, list):
+            raise RuntimeError(
+                "Auto-review reconciliation outbox returned invalid data."
+            )
+        return bool(result.data)
+
+    # supabase-py is synchronous. Keep its network wait outside FastAPI's event
+    # loop so health checks and requests are not stalled by the periodic probe.
+    return await asyncio.to_thread(query_due_request)
 
 
 async def wake_auto_review_reconciliation(
@@ -82,8 +109,23 @@ async def wake_auto_review_reconciliation(
 async def run_auto_review_reconciliation_wakeup_loop(
     *, interval_seconds: float = _WAKEUP_INTERVAL_SECONDS
 ) -> None:
-    """Wake the frontend immediately and periodically until cancellation."""
+    """Wake the frontend only while the durable outbox has due work."""
     async with httpx.AsyncClient(timeout=_WAKEUP_TIMEOUT_SECONDS) as client:
         while True:
-            await wake_auto_review_reconciliation(client)
+            try:
+                has_due_request = await has_due_auto_review_reconciliation_request()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # A falha da sonda não prova que a outbox está vazia. Acordar o
+                # consumidor preserva o contrato durável em vez de atrasar jobs.
+                logger.warning(
+                    "Failed to inspect auto-review reconciliation outbox; "
+                    "waking frontend conservatively",
+                    exc_info=True,
+                )
+                has_due_request = True
+
+            if has_due_request:
+                await wake_auto_review_reconciliation(client)
             await asyncio.sleep(interval_seconds)
