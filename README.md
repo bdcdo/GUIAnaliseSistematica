@@ -136,12 +136,14 @@ fly secrets set CLERK_SECRET_KEY=sk_... \
   CLERK_WEBHOOK_SECRET=whsec_... \
   AUTO_REVIEW_RECONCILIATION_SECRET=the-same-long-random-secret \
   -a gui-analise-sistematica-frontend
-fly deploy -c fly.toml -a gui-analise-sistematica-frontend   # fallback; o normal é via CI
+fly deploy -c fly.toml --ha=false -a gui-analise-sistematica-frontend   # fallback; o normal é via CI
 ```
 
 O endpoint de webhook do Clerk em produção é `https://dataframeit.com.br/api/webhooks/clerk`. Ele deve assinar e entregar `user.created`, `user.updated` e `user.deleted`; o signing secret correspondente fica em `CLERK_WEBHOOK_SECRET`. Ao ativar uma rota nova de reconciliação, configure esses três eventos somente depois que o frontend compatível estiver no ar e confirme uma entrega `2xx` de cada tipo — uma rota antiga pode responder `2xx` sem processar eventos que ainda não conhece.
 
 Mudanças que dependem de RPCs, constraints ou colunas novas seguem ordem estrita: backup e preflight, reparo de dados incompatíveis, migrations, verificação de pós-condições, deploy do frontend do mesmo SHA e smokes autenticados. Depois que o schema novo recebe escritas, o rollback suportado é roll-forward; não edite uma migration já registrada.
+
+O frontend opera com uma Machine `shared-cpu-1x` de 512 MB e 512 MB de swap. Quando fica ociosa, a Machine para; a primeira requisição seguinte a reinicia. O workflow recusa mais de uma Machine antes do deploy e valida cardinalidade, região, tamanho e health depois da atualização.
 
 ### Variáveis de ambiente
 

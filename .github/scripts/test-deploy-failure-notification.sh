@@ -49,7 +49,7 @@ ruby -ryaml -e '
     abort("caller não usa workflow canônico: #{path}") unless caller["uses"] == "./.github/workflows/notify-deploy-failure.yml"
     abort("caller precisa somente de issues: write: #{path}") unless caller.fetch("permissions") == { "issues" => "write" }
 
-    expected_app = path.include?("frontend-") ? "gui-analise-sistematica-frontend" : "gui-analise-sistematica-api"
+    expected_app = File.basename(path).start_with?("frontend-") ? "gui-analise-sistematica-frontend" : "gui-analise-sistematica-api"
     abort("caller precisa passar somente a aplicação: #{path}") unless caller.fetch("with") == { "deploy_app" => expected_app }
 
     trigger = workflow["on"] || workflow[true]

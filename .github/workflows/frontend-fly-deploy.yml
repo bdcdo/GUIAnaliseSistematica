@@ -6,6 +6,7 @@ on:
     paths:
       - 'frontend/**'
       - '.github/workflows/frontend-fly-deploy.yml'
+      - '.github/scripts/check-frontend-fly-machines.sh'
   workflow_dispatch:
 
 permissions:
@@ -25,6 +26,10 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       # Pin a SHA (tag 1.6) por supply-chain safety — @master é floating ref.
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - name: Recusar cardinalidade divergente antes do deploy
+        run: bash .github/scripts/check-frontend-fly-machines.sh pre
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_FRONTEND }}
       - name: flyctl deploy
         working-directory: frontend
         env:
@@ -38,6 +43,7 @@ jobs:
         run: |
           deploy_args=(
             --remote-only
+            --ha=false
             -a gui-analise-sistematica-frontend
             --build-arg "NEXT_DEPLOYMENT_ID=${GITHUB_SHA}"
             --build-secret "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY}"
@@ -59,6 +65,10 @@ jobs:
           done
           echo "flyctl deploy falhou apos 3 tentativas"
           exit 1
+      - name: Verificar topologia e health depois do deploy
+        run: bash .github/scripts/check-frontend-fly-machines.sh post
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_FRONTEND }}
 
   # Criar ou comentar uma issue nao dispara este workflow, que escuta apenas
   # push e workflow_dispatch; portanto a notificacao nao forma loop recursivo.
