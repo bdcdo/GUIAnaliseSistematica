@@ -77,6 +77,16 @@ repos:
         pass_filenames: false
         require_serial: true
 
+      # O frontend pode escalar a zero, mas cada deploy deve convergir para uma
+      # unica Machine saudavel antes de o proxy poder para-la por ociosidade.
+      - id: frontend-fly-machine-contract
+        name: frontend Fly machine contract
+        entry: .github/scripts/test-frontend-fly-machine-contract.sh
+        language: system
+        files: ^(\.github/(workflows/frontend-fly-deploy\.yml|scripts/(check|test)-frontend-fly-machine.*\.sh)|frontend/fly\.toml)$
+        pass_filenames: false
+        require_serial: true
+
       # react-doctor como gate local de qualidade React (estilo flake8/mypy).
       #
       # Por que --scope changed e nao --staged: o --staged escaneia o arquivo

@@ -24,19 +24,18 @@ swap_size_mb = 512
     NEXT_PUBLIC_CLERK_AFTER_SIGN_IN_URL = "/dashboard"
 
 [deploy]
-  # Rolling (nao bluegreen): com min_machines_running = 1 e always-on, rolling
-  # reinicia a unica maquina no lugar. Tradeoff aceito (#194 A3): blip curto
-  # possivel no deploy, em troca de manter o frontend sempre ligado.
-  strategy = "rolling"
+  # A nova Machine precisa passar no health check antes de receber trafego; a
+  # antiga so e removida depois, evitando indisponibilidade durante o deploy.
+  strategy = "bluegreen"
 
 [http_service]
   internal_port = 3000
   force_https = true
-  # Always-on (#194 A3): como dominio de producao, o frontend nao escala a
-  # zero — evita cold start na primeira request e espelha o backend. auto_stop
-  # = "off" + min = 1 garantem ao menos uma maquina sempre rodando.
-  auto_stop_machines = "off"
-  min_machines_running = 1
+  # O backend so acorda esta aplicacao quando ha trabalho vencido na outbox.
+  # Fora disso, o proxy pode parar a unica Machine e reinicia-la sob demanda.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
 
   [[http_service.checks]]
     grace_period = "10s"
@@ -49,6 +48,5 @@ swap_size_mb = 512
   # 512 MB persiste o `fly scale memory 512` de 2026-07-02: sem esta secao,
   # um `fly deploy` futuro recriaria as maquinas com o default de 256 MB e
   # o OOM-kill do next-server voltaria.
+  size = "shared-cpu-1x"
   memory = "512mb"
-  cpu_kind = "shared"
-  cpus = 1
