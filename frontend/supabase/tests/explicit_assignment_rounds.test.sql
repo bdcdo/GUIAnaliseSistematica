@@ -233,6 +233,7 @@ DECLARE
   v_active_coding integer;
   v_active_comparison integer;
   v_has_assignment boolean;
+  v_has_assignment_legacy boolean;
 BEGIN
   SELECT round.id INTO STRICT v_initial_round
   FROM public.rounds AS round
@@ -283,13 +284,15 @@ BEGIN
     stats.has_llm_response,
     stats.active_codificacao,
     stats.active_comparacao,
-    stats.has_assignment_in_current_round
+    stats.has_assignment_in_current_round,
+    stats.has_any_assignment_ever
   INTO
     v_human_count,
     v_has_llm,
     v_active_coding,
     v_active_comparison,
-    v_has_assignment
+    v_has_assignment,
+    v_has_assignment_legacy
   FROM public.lottery_doc_stats AS stats
   WHERE stats.id = '72000000-0000-0000-0000-000000000003';
 
@@ -297,6 +300,11 @@ BEGIN
      OR v_active_comparison <> 0 OR NOT v_has_assignment THEN
     RAISE EXCEPTION 'FALHOU: lottery_doc_stats misturou rodadas: human=%, llm=%, coding=%, comparison=%, assigned=%',
       v_human_count, v_has_llm, v_active_coding, v_active_comparison, v_has_assignment;
+  END IF;
+  IF v_has_assignment_legacy IS DISTINCT FROM v_has_assignment THEN
+    RAISE EXCEPTION
+      'FALHOU: alias legado divergiu da ocupacao canonica: legado=%, canonico=%',
+      v_has_assignment_legacy, v_has_assignment;
   END IF;
   IF EXISTS (
     SELECT 1 FROM public.lottery_doc_stats
@@ -307,7 +315,7 @@ BEGIN
   ) THEN
     RAISE EXCEPTION 'FALHOU: lottery_doc_stats expos documento pendente ou excluido';
   END IF;
-  RAISE NOTICE 'OK: contagens por escopo e estatisticas por rodada usam o contrato canonico';
+  RAISE NOTICE 'OK: estatisticas por rodada e alias legado usam o contrato canonico';
 END $$;
 
 DO $$
@@ -598,6 +606,7 @@ GRANT INSERT ON authenticated_lottery_result TO authenticated;
 -- O Supabase local nao reproduz os default privileges CRUD do remoto (limite
 -- ja documentado em rls_audit.test.sql). Conceder apenas o necessario dentro
 -- desta transacao permite testar as policies e o SECURITY INVOKER reais.
+GRANT SELECT, UPDATE ON public.projects TO authenticated;
 GRANT SELECT, UPDATE ON public.documents TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.assignment_batches TO authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.assignments TO authenticated;

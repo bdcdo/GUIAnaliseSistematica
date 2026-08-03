@@ -99,18 +99,16 @@ function getNewRoundBlockedMessage({
   });
 }
 
-function getLotteryBlockedMessage({
+function getLotteryConfigBlockedMessage({
   stats,
   newRoundMessage,
   participantCount,
   eligibleCount,
-  emptyReason,
 }: {
   stats: LotteryStats | null;
   newRoundMessage: string | null;
   participantCount: number;
   eligibleCount: number | null;
-  emptyReason?: LotteryEmptyReason;
 }): string | null {
   if (stats !== null && !stats.currentRoundId) {
     return "O projeto não tem uma rodada atual.";
@@ -122,6 +120,21 @@ function getLotteryBlockedMessage({
   if (eligibleCount === 0) {
     return "Nenhum documento passa nos filtros atuais.";
   }
+  return null;
+}
+
+function isLotteryPreviewEnabled(
+  stats: LotteryStats | null,
+  configBlockedMessage: string | null,
+): boolean {
+  return stats !== null && configBlockedMessage === null;
+}
+
+function getLotteryBlockedMessage(
+  configBlockedMessage: string | null,
+  emptyReason: LotteryEmptyReason | undefined,
+): string | null {
+  if (configBlockedMessage) return configBlockedMessage;
   return emptyReason ? LOTTERY_EMPTY_MESSAGES[emptyReason] : null;
 }
 
@@ -132,6 +145,29 @@ function isLotterySubmitEnabled(
 ): boolean {
   if (!stats || blockedMessage) return false;
   return previewTotal !== 0;
+}
+
+async function runLotteryAction({
+  enabled,
+  blockedMessage,
+  setRunning,
+  action,
+}: {
+  enabled: boolean;
+  blockedMessage: string | null;
+  setRunning: (running: boolean) => void;
+  action: () => Promise<void>;
+}): Promise<void> {
+  if (!enabled) {
+    if (blockedMessage) toast.error(blockedMessage);
+    return;
+  }
+  setRunning(true);
+  try {
+    await action();
+  } finally {
+    setRunning(false);
+  }
 }
 
 // Derivações e ações do sorteio (elegibilidade, prévia, submit) sobre o
@@ -282,14 +318,18 @@ export function useLotteryRun({
     confirmActiveWork,
     confirmPendingScopeWork,
   });
-  const blockedMessage = getLotteryBlockedMessage({
+  const configBlockedMessage = getLotteryConfigBlockedMessage({
     stats,
     newRoundMessage,
     participantCount: participantIds.length,
     eligibleCount,
-    emptyReason: preview?.emptyReason,
   });
+  const blockedMessage = getLotteryBlockedMessage(
+    configBlockedMessage,
+    preview?.emptyReason,
+  );
 
+  const canPreview = isLotteryPreviewEnabled(stats, configBlockedMessage);
   const canSubmit = isLotterySubmitEnabled(
     stats,
     blockedMessage,
@@ -330,41 +370,39 @@ export function useLotteryRun({
       : { ...base, type: "codificacao", researchersPerDoc: researchersPerDocEffective };
   };
 
-  const handlePreview = async () => {
-    setPreviewing(true);
-    try {
-      const result = await previewLottery(buildParams(false));
-      if (result.error) {
-        toast.error(result.error);
-      } else if (result.preview) {
-        setPreviewState({ key: configKey, preview: result.preview });
-      }
-    } finally {
-      setPreviewing(false);
-    }
-  };
+  const handlePreview = () =>
+    runLotteryAction({
+      enabled: canPreview,
+      blockedMessage: configBlockedMessage,
+      setRunning: setPreviewing,
+      action: async () => {
+        const result = await previewLottery(buildParams(false));
+        if (result.error) {
+          toast.error(result.error);
+        } else if (result.preview) {
+          setPreviewState({ key: configKey, preview: result.preview });
+        }
+      },
+    });
 
-  const handleRandomize = async () => {
-    if (blockedMessage) {
-      toast.error(blockedMessage);
-      return;
-    }
-    setLoading(true);
-    try {
-      const result = await smartRandomize(buildParams(true));
-      if (result.error) {
-        toast.error(result.error);
-      } else {
-        toast.success(
-          `${result.count} novas atribuições criadas! (${result.preserved} preservadas)`
-        );
-        setPreviewState(null);
-        onLotteryDone();
-      }
-    } finally {
-      setLoading(false);
-    }
-  };
+  const handleRandomize = () =>
+    runLotteryAction({
+      enabled: canSubmit,
+      blockedMessage,
+      setRunning: setLoading,
+      action: async () => {
+        const result = await smartRandomize(buildParams(true));
+        if (result.error) {
+          toast.error(result.error);
+        } else {
+          toast.success(
+            `${result.count} novas atribuições criadas! (${result.preserved} preservadas)`
+          );
+          setPreviewState(null);
+          onLotteryDone();
+        }
+      },
+    });
 
   const docsConsidered =
     eligibleCount === null
@@ -385,6 +423,7 @@ export function useLotteryRun({
     participantCount: participantIds.length,
     eligibleCount,
     blockedMessage,
+    canPreview,
     canSubmit,
     preview,
     estimatedPerParticipant,

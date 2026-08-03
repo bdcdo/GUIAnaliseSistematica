@@ -51,6 +51,7 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
     participantCount,
     eligibleCount,
     blockedMessage,
+    canPreview,
     canSubmit,
     preview,
     estimatedPerParticipant,
@@ -272,6 +273,7 @@ export function LotteryDialog({ projectId, members }: LotteryDialogProps) {
             run={{
               previewing,
               loading,
+              canPreview,
               canSubmit,
               onPreview: () => void handlePreview(),
               onRandomize: () => void handleRandomize(),

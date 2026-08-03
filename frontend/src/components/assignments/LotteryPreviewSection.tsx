@@ -18,6 +18,7 @@ export function LotteryPreviewSection({
   run: {
     previewing: boolean;
     loading: boolean;
+    canPreview: boolean;
     canSubmit: boolean;
     onPreview: () => void;
     onRandomize: () => void;
@@ -31,7 +32,7 @@ export function LotteryPreviewSection({
       <Button
         variant="outline"
         onClick={run.onPreview}
-        disabled={run.previewing || !run.canSubmit}
+        disabled={run.previewing || !run.canPreview}
         className="w-full"
       >
         {run.previewing ? "Calculando..." : "Visualizar prévia"}

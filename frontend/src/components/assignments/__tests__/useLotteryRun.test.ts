@@ -91,6 +91,7 @@ describe("useLotteryRun", () => {
     const { result } = setup(null);
 
     expect(result.current.run.blockedMessage).toBeNull();
+    expect(result.current.run.canPreview).toBe(false);
     expect(result.current.run.canSubmit).toBe(false);
   });
 
@@ -98,10 +99,11 @@ describe("useLotteryRun", () => {
     const { result } = setup();
     expect(result.current.run.participantCount).toBe(2);
     expect(result.current.run.eligibleCount).toBe(3);
+    expect(result.current.run.canPreview).toBe(true);
     expect(result.current.run.canSubmit).toBe(true);
   });
 
-  it("bloqueia quando os filtros zeram os elegíveis", () => {
+  it("bloqueia prévia e submit quando os filtros zeram os elegíveis", async () => {
     const { result } = setup();
     act(() => {
       // "Sem nenhuma codificação" + docs com codificação → só d1 e d3;
@@ -112,7 +114,11 @@ describe("useLotteryRun", () => {
     expect(result.current.run.blockedMessage).toBe(
       "Nenhum documento passa nos filtros atuais.",
     );
+    expect(result.current.run.canPreview).toBe(false);
     expect(result.current.run.canSubmit).toBe(false);
+
+    await act(() => result.current.run.handlePreview());
+    expect(mockPreview).not.toHaveBeenCalled();
   });
 
   it("mudar a configuração invalida a prévia (e a seed) por derivação", async () => {
@@ -126,7 +132,7 @@ describe("useLotteryRun", () => {
     expect(result.current.run.preview).toBeNull();
   });
 
-  it("prévia vazia bloqueia o submit e não chama a Server Action", async () => {
+  it("permite recalcular uma prévia vazia e só libera o submit após encontrar vagas", async () => {
     mockPreview.mockResolvedValueOnce({
       preview: {
         ...previewResult,
@@ -144,8 +150,17 @@ describe("useLotteryRun", () => {
     expect(result.current.run.blockedMessage).toBe(
       LOTTERY_EMPTY_MESSAGES.capacity_exhausted,
     );
+    expect(result.current.run.canPreview).toBe(true);
     await act(() => result.current.run.handleRandomize());
     expect(mockRandomize).not.toHaveBeenCalled();
+
+    await act(() => result.current.run.handlePreview());
+
+    expect(mockPreview).toHaveBeenCalledTimes(2);
+    expect(result.current.run.preview).toEqual(previewResult);
+    expect(result.current.run.blockedMessage).toBeNull();
+    expect(result.current.run.canPreview).toBe(true);
+    expect(result.current.run.canSubmit).toBe(true);
   });
 
   it("trocar o alvo invalida a prévia e exige confirmações separadas", async () => {
