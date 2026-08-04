@@ -163,6 +163,29 @@ const invariants: Invariant[] = [
     },
   },
   {
+    name: "response-is-latest-na-rodada-corrente",
+    motivation:
+      "a troca de rodada (#642/#645) arquiva a rodada anterior com is_latest = false no mesmo passo em que ativa a nova. Até 2026-08-04 esse UPDATE abortava com 42501 — SECURITY INVOKER contra o WITH CHECK de \"Users manage own responses\", que exige autoria do chamador — e nenhuma transição chegou a commitar. Com o arquivamento movido para start_project_round (SECURITY DEFINER), FAIL aqui = transição parcial: rodada nova ativa e resposta da anterior ainda corrente, que é o estado que faria a Comparação ler a rodada errada",
+    run: async () => {
+      const projects = await fetchAll<{ id: string; current_round_id: string | null }>(
+        "projects",
+        "id, current_round_id",
+      );
+      const currentRoundOf = new Map(projects.map((p) => [p.id, p.current_round_id]));
+      const rows = await fetchAll<{ id: string; project_id: string; round_id: string | null }>(
+        "responses",
+        "id, project_id, round_id",
+        (q) => q.eq("is_latest", true),
+      );
+      return rows
+        .filter((r) => r.round_id !== currentRoundOf.get(r.project_id))
+        .map((r) => ({
+          key: r.id,
+          detail: `is_latest na rodada ${r.round_id ?? "NULL"}; corrente do projeto ${r.project_id} é ${currentRoundOf.get(r.project_id) ?? "NULL"}`,
+        }));
+    },
+  },
+  {
     name: "comparacao-ativa-unica-por-documento",
     motivation:
       "invariante do índice assignments_one_active_comparacao_per_doc (#490/PR #496); FAIL aqui = índice dropado ou canal de escrita que o contorna",
