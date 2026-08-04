@@ -28,6 +28,9 @@
 -- decompostas — em vez do jsonb cru de `open_work_snapshot` — evita repetir
 -- aqui a validacao de forma que o chamador faz, e mantem a checagem de trabalho
 -- aberto valendo tambem para quem chame esta funcao direto pelo PostgREST.
+-- A contrapartida e que a validacao de forma no chamador precisa recusar
+-- contagem nula: NULL aqui desliga a checagem de concorrencia otimista, entao
+-- so pode chegar de fotografia ausente, nunca de fotografia malformada.
 CREATE OR REPLACE FUNCTION public.start_project_round(
   p_project_id uuid,
   p_expected_round_id uuid,
@@ -64,9 +67,13 @@ BEGIN
     RAISE EXCEPTION 'nome da rodada nao pode ser vazio' USING ERRCODE = '22023';
   END IF;
 
-  -- Relock: no-op quando `apply_lottery_assignments` ja travou a linha nesta
-  -- transacao, e o que mantem a funcao correta se chamada isolada. A ordem
-  -- global de locks (projects -> documents) fica preservada nos dois casos.
+  -- Relock dos dois niveis: no-op quando `apply_lottery_assignments` ja travou
+  -- as mesmas linhas nesta transacao, e o que mantem a funcao correta se
+  -- chamada isolada pelo PostgREST — sem o lock de `documents`, a contagem
+  -- abaixo leria um escopo que outra transacao ainda pode mudar, e a
+  -- confirmacao dada sobre N trabalhos autorizaria silenciosamente outro N (a
+  -- corrida que o #645 fechou para o caminho da UI). A ordem global de locks
+  -- (projects -> documents) e a mesma nos dois casos.
   SELECT project.current_round_id INTO v_current_round_id
   FROM public.projects AS project
   WHERE project.id = p_project_id
@@ -78,6 +85,13 @@ BEGIN
   IF v_current_round_id IS DISTINCT FROM p_expected_round_id THEN
     RAISE EXCEPTION 'a rodada atual mudou; recarregue o sorteio' USING ERRCODE = '40001';
   END IF;
+
+  PERFORM 1
+  FROM public.documents AS document
+  WHERE document.project_id = p_project_id
+    AND document.excluded_at IS NULL
+  ORDER BY document.id
+  FOR UPDATE;
 
   SELECT
     COALESCE(sum(work.open_count) FILTER (WHERE work.scope_state = 'active'), 0)::integer,
@@ -118,6 +132,9 @@ BEGIN
   -- rodada antiga e o que faz estas linhas passarem. O
   -- `archive_review_dependencies_on_response_change` (20260717120000) dispara
   -- aqui e arquiva equivalencias, auto-revisoes e arbitragens dependentes.
+  -- Esse trigger casa por (project_id, document_id) SEM filtro de rodada, entao
+  -- o arquivamento tambem precisa preceder a criacao das atribuicoes da rodada
+  -- nova: inverter as duas apagaria arbitragens recem-criadas.
   UPDATE public.responses
   SET is_latest = false
   WHERE project_id = p_project_id
@@ -192,10 +209,16 @@ BEGIN
 
   v_open_work_snapshot := p_batch->'open_work_snapshot';
   IF v_open_work_snapshot IS NOT NULL THEN
+    -- Checar o tipo, e nao a presenca da chave: `jsonb ? 'k'` responde TRUE
+    -- para {"k": null}, e o cast de um JSON null devolve NULL, que
+    -- `start_project_round` interpreta como "sem fotografia" e usa para pular a
+    -- checagem de concorrencia otimista. Presenca da chave nao distingue
+    -- fotografia malformada de fotografia ausente; o tipo distingue.
     IF jsonb_typeof(v_open_work_snapshot) IS DISTINCT FROM 'object'
-       OR NOT (v_open_work_snapshot ? 'active_count')
-       OR NOT (v_open_work_snapshot ? 'pending_scope_count') THEN
-      RAISE EXCEPTION 'open_work_snapshot deve informar active_count e pending_scope_count'
+       OR jsonb_typeof(v_open_work_snapshot->'active_count') IS DISTINCT FROM 'number'
+       OR jsonb_typeof(v_open_work_snapshot->'pending_scope_count') IS DISTINCT FROM 'number' THEN
+      RAISE EXCEPTION
+        'open_work_snapshot deve informar active_count e pending_scope_count numericos'
         USING ERRCODE = '22023';
     END IF;
 

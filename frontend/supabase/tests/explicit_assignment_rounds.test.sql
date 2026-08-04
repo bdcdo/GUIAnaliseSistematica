@@ -749,10 +749,15 @@ BEGIN
     RAISE EXCEPTION 'FALHOU: rodada nova nao foi criada: %', v_result;
   END IF;
 
+  -- `round_strategy` acompanha a ativacao: iniciar rodada pela mao tira o
+  -- projeto do versionamento automatico por schema. As duas colunas sao
+  -- escritas pelo mesmo UPDATE, entao afirmar so uma deixaria a outra livre
+  -- para sumir num refactor.
   IF NOT EXISTS (
     SELECT 1 FROM public.projects
     WHERE id = '71000000-0000-0000-0000-000000000006'
       AND current_round_id = v_new_round
+      AND round_strategy = 'manual'
   ) THEN
     RAISE EXCEPTION 'FALHOU: rodada nova nao foi ativada no projeto';
   END IF;
@@ -819,6 +824,131 @@ BEGIN
     RAISE EXCEPTION 'FALHOU: pesquisador iniciou rodada por chamada direta';
   END IF;
   RAISE NOTICE 'OK: start_project_round nega pesquisador com gate proprio';
+END $$;
+
+-- O gate tem dois bracos e todo caso acima autoriza pelo primeiro (membership
+-- 'coordenador'). O segundo — criador do projeto, ainda que sem membership —
+-- so existe porque a policy "Coordinators manage rounds" tambem o tem: o gate
+-- foi escrito para reproduzi-la inteira, e metade dela nao era exercitada por
+-- caso nenhum. Projeto sem `project_members` de proposito; a rodada inicial vem
+-- do trigger `projects_create_initial_round`.
+INSERT INTO public.projects (id, name, created_by) VALUES (
+  '71000000-0000-0000-0000-000000000007',
+  'creator round switch',
+  '70000000-0000-0000-0000-000000000001'
+);
+INSERT INTO public.documents (id, project_id, text) VALUES (
+  '72000000-0000-0000-0000-000000000009',
+  '71000000-0000-0000-0000-000000000007',
+  'creator switch doc'
+);
+-- Resposta de LLM: o arquivamento sob DEFINER precisa valer igual neste braco,
+-- e e ela que reprovaria no WITH CHECK se a transicao voltasse a ser INVOKER.
+INSERT INTO public.responses (
+  project_id, document_id, respondent_id, respondent_type, answers, is_latest,
+  is_partial, round_id
+)
+SELECT
+  '71000000-0000-0000-0000-000000000007',
+  '72000000-0000-0000-0000-000000000009',
+  NULL,
+  'llm',
+  '{"q1":"a"}'::jsonb,
+  true,
+  false,
+  project.current_round_id
+FROM public.projects AS project
+WHERE project.id = '71000000-0000-0000-0000-000000000007';
+
+CREATE TEMP TABLE creator_round_result (result jsonb NOT NULL);
+GRANT INSERT ON creator_round_result TO authenticated;
+
+SET LOCAL ROLE authenticated;
+INSERT INTO creator_round_result
+SELECT public.apply_lottery_assignments(
+  '71000000-0000-0000-0000-000000000007',
+  'codificacao',
+  (
+    SELECT current_round_id
+    FROM public.projects
+    WHERE id = '71000000-0000-0000-0000-000000000007'
+  ),
+  'Rodada do criador',
+  false,
+  '{"open_work_snapshot":{"active_count":0,"pending_scope_count":0,"confirm_active":true,"confirm_pending_scope":true}}'::jsonb,
+  '[{"document_id":"72000000-0000-0000-0000-000000000009","user_id":"70000000-0000-0000-0000-000000000001"}]'::jsonb,
+  false
+);
+RESET ROLE;
+
+DO $$
+DECLARE
+  v_result jsonb;
+  v_new_round uuid;
+BEGIN
+  SELECT result INTO STRICT v_result FROM creator_round_result;
+  v_new_round := (v_result->>'round_id')::uuid;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM public.projects
+    WHERE id = '71000000-0000-0000-0000-000000000007'
+      AND current_round_id = v_new_round
+      AND round_strategy = 'manual'
+  ) THEN
+    RAISE EXCEPTION 'FALHOU: criador nao ativou a rodada nova: %', v_result;
+  END IF;
+
+  IF EXISTS (
+    SELECT 1 FROM public.responses
+    WHERE project_id = '71000000-0000-0000-0000-000000000007'
+      AND round_id <> v_new_round
+      AND is_latest
+  ) THEN
+    RAISE EXCEPTION 'FALHOU: response de LLM da rodada anterior segue is_latest';
+  END IF;
+
+  RAISE NOTICE 'OK: criador sem membership troca de rodada pelo segundo braco do gate';
+END $$;
+
+-- `p_expected_active` NULL significa "sem fotografia" e desliga a checagem de
+-- concorrencia otimista. Quem decide se ha fotografia e a validacao de forma em
+-- `apply_lottery_assignments` — e `jsonb ? 'chave'` responde TRUE para
+-- {"chave": null}, entao uma fotografia com contagem nula atravessaria a
+-- validacao e chegaria como ausencia de fotografia, desligando em silencio a
+-- guarda que o #645 criou. O caso abaixo fixa que contagem nula e payload
+-- invalido, nao ausencia.
+DO $$
+DECLARE
+  v_rejected boolean := false;
+  v_rounds_before integer;
+BEGIN
+  SELECT count(*) INTO v_rounds_before
+  FROM public.rounds WHERE project_id = '71000000-0000-0000-0000-000000000006';
+
+  BEGIN
+    PERFORM public.apply_lottery_assignments(
+      '71000000-0000-0000-0000-000000000006',
+      'codificacao',
+      (SELECT current_round_id FROM public.projects
+       WHERE id = '71000000-0000-0000-0000-000000000006'),
+      'Rodada de fotografia nula',
+      false,
+      '{"open_work_snapshot":{"active_count":null,"pending_scope_count":0,"confirm_active":true,"confirm_pending_scope":true}}'::jsonb,
+      '[{"document_id":"72000000-0000-0000-0000-000000000008","user_id":"70000000-0000-0000-0000-000000000002"}]'::jsonb,
+      false
+    );
+  EXCEPTION WHEN invalid_parameter_value THEN
+    v_rejected := true;
+  END;
+
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'FALHOU: fotografia com contagem nula foi aceita como ausencia de fotografia';
+  END IF;
+  IF (SELECT count(*) FROM public.rounds
+      WHERE project_id = '71000000-0000-0000-0000-000000000006') <> v_rounds_before THEN
+    RAISE EXCEPTION 'FALHOU: payload invalido deixou rodada gravada';
+  END IF;
+  RAISE NOTICE 'OK: contagem nula na fotografia e payload invalido, nao ausencia';
 END $$;
 
 ROLLBACK;
