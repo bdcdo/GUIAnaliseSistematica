@@ -75,6 +75,20 @@ INSERT INTO public.projects (id, name) VALUES
   ('71000000-0000-0000-0000-000000000001', 'round test A'),
   ('71000000-0000-0000-0000-000000000002', 'round test B');
 
+-- Os casos abaixo rodam como owner para isolar atomicidade das policies, mas a
+-- troca de rodada tem gate proprio dentro de `start_project_round`
+-- (20260804120000) — SECURITY DEFINER ignora RLS, entao a autorizacao e checada
+-- em codigo e vale para qualquer role. Sem membership o ator do JWT nao seria
+-- coordenador de projeto nenhum e todos os casos de rodada nova parariam no
+-- gate. A fixture apenas passa a declarar o que o caminho de producao sempre
+-- exigiu; a isolacao das policies continua valendo, porque o owner segue
+-- ignorando a RLS.
+INSERT INTO public.project_members (project_id, user_id, role) VALUES
+  ('71000000-0000-0000-0000-000000000001',
+   '70000000-0000-0000-0000-000000000001', 'coordenador'),
+  ('71000000-0000-0000-0000-000000000002',
+   '70000000-0000-0000-0000-000000000001', 'coordenador');
+
 INSERT INTO public.documents (id, project_id, text) VALUES
   ('72000000-0000-0000-0000-000000000001', '71000000-0000-0000-0000-000000000001', 'doc A'),
   ('72000000-0000-0000-0000-000000000002', '71000000-0000-0000-0000-000000000002', 'doc B');
@@ -169,6 +183,9 @@ END $$;
 -- view do dialogo considera somente a rodada atual e documentos ativos.
 INSERT INTO public.projects (id, name) VALUES
   ('71000000-0000-0000-0000-000000000003', 'scope work contract');
+INSERT INTO public.project_members (project_id, user_id, role) VALUES
+  ('71000000-0000-0000-0000-000000000003',
+   '70000000-0000-0000-0000-000000000001', 'coordenador');
 
 INSERT INTO public.documents
   (id, project_id, text, exclusion_pending_at, excluded_at)
@@ -643,6 +660,165 @@ BEGIN
     RAISE EXCEPTION 'FALHOU: RPC autenticada nao gravou lote/autoria esperados: %', v_result;
   END IF;
   RAISE NOTICE 'OK: RPC nova executa como authenticated sob RLS';
+END $$;
+
+-- Troca de rodada como authenticated. O caso acima roda com
+-- `p_new_round_label` NULL e so exercita a rodada corrente; o ramo de rodada
+-- nova escreve em `rounds` e `responses`, cujas policies nunca foram
+-- atravessadas por nenhum caso deste arquivo (os demais rodam como owner, que
+-- ignora RLS). Foi por essa fresta que o 42501 do #642/#645 chegou a producao.
+--
+-- O elemento discriminante e a resposta DE TERCEIRO e a DE LLM: o WITH CHECK de
+-- "Users manage own responses" exige `respondent_type = 'humano'` e autoria do
+-- chamador, entao um caso com apenas a resposta do proprio coordenador passaria
+-- mesmo sem o conserto e nao provaria nada.
+INSERT INTO public.projects (id, name) VALUES
+  ('71000000-0000-0000-0000-000000000006', 'authenticated round switch');
+INSERT INTO public.project_members (project_id, user_id, role) VALUES
+  ('71000000-0000-0000-0000-000000000006',
+   '70000000-0000-0000-0000-000000000001', 'coordenador'),
+  ('71000000-0000-0000-0000-000000000006',
+   '70000000-0000-0000-0000-000000000002', 'pesquisador');
+INSERT INTO public.documents (id, project_id, text) VALUES (
+  '72000000-0000-0000-0000-000000000008',
+  '71000000-0000-0000-0000-000000000006',
+  'round switch doc'
+);
+INSERT INTO public.responses (
+  project_id, document_id, respondent_id, respondent_type, answers, is_latest,
+  is_partial, round_id
+)
+SELECT
+  '71000000-0000-0000-0000-000000000006',
+  '72000000-0000-0000-0000-000000000008',
+  respondent.id,
+  respondent.kind,
+  '{"q1":"a"}'::jsonb,
+  true,
+  false,
+  project.current_round_id
+FROM public.projects AS project
+CROSS JOIN (VALUES
+  ('70000000-0000-0000-0000-000000000001'::uuid, 'humano'),
+  ('70000000-0000-0000-0000-000000000002'::uuid, 'humano'),
+  (NULL::uuid, 'llm')
+) AS respondent(id, kind)
+WHERE project.id = '71000000-0000-0000-0000-000000000006';
+
+CREATE TEMP TABLE authenticated_round_result (result jsonb NOT NULL);
+GRANT INSERT ON authenticated_round_result TO authenticated;
+-- Em producao `authenticated` tem os default privileges CRUD sobre as duas
+-- tabelas e so a RLS decide. Sem estes GRANTs o teste local falharia por
+-- privilegio de tabela ausente e nunca chegaria a avaliar a policy.
+GRANT SELECT, INSERT ON public.rounds TO authenticated;
+GRANT SELECT, UPDATE ON public.responses TO authenticated;
+
+SET LOCAL ROLE authenticated;
+INSERT INTO authenticated_round_result
+SELECT public.apply_lottery_assignments(
+  '71000000-0000-0000-0000-000000000006',
+  'codificacao',
+  (
+    SELECT current_round_id
+    FROM public.projects
+    WHERE id = '71000000-0000-0000-0000-000000000006'
+  ),
+  'Rodada 2',
+  false,
+  '{"open_work_snapshot":{"active_count":0,"pending_scope_count":0,"confirm_active":true,"confirm_pending_scope":true}}'::jsonb,
+  '[{"document_id":"72000000-0000-0000-0000-000000000008","user_id":"70000000-0000-0000-0000-000000000001"}]'::jsonb,
+  false
+);
+RESET ROLE;
+
+DO $$
+DECLARE
+  v_result jsonb;
+  v_new_round uuid;
+  v_stale integer;
+BEGIN
+  SELECT result INTO STRICT v_result FROM authenticated_round_result;
+  v_new_round := (v_result->>'round_id')::uuid;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM public.rounds
+    WHERE id = v_new_round
+      AND project_id = '71000000-0000-0000-0000-000000000006'
+      AND label = 'Rodada 2'
+  ) THEN
+    RAISE EXCEPTION 'FALHOU: rodada nova nao foi criada: %', v_result;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM public.projects
+    WHERE id = '71000000-0000-0000-0000-000000000006'
+      AND current_round_id = v_new_round
+  ) THEN
+    RAISE EXCEPTION 'FALHOU: rodada nova nao foi ativada no projeto';
+  END IF;
+
+  -- O coracao do #642: arquivar a rodada anterior. Antes do conserto esta
+  -- contagem nunca chegava a ser feita — a RPC abortava com 42501.
+  SELECT count(*) INTO v_stale
+  FROM public.responses
+  WHERE project_id = '71000000-0000-0000-0000-000000000006'
+    AND round_id <> v_new_round
+    AND is_latest;
+  IF v_stale <> 0 THEN
+    RAISE EXCEPTION
+      'FALHOU: % responses da rodada anterior seguem is_latest', v_stale;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM public.assignments
+    WHERE project_id = '71000000-0000-0000-0000-000000000006'
+      AND round_id = v_new_round
+      AND document_id = '72000000-0000-0000-0000-000000000008'
+  ) THEN
+    RAISE EXCEPTION 'FALHOU: atribuicao nao caiu na rodada nova';
+  END IF;
+
+  RAISE NOTICE 'OK: coordenador troca de rodada arquivando responses alheias e de LLM';
+END $$;
+
+-- O gate de `start_project_round` nao pode depender da RLS das tabelas que ela
+-- escreve: SECURITY DEFINER as ignora. Um membro nao-coordenador do projeto
+-- (portanto capaz de enxerga-lo) deve receber 42501 da propria funcao. O
+-- mapping abaixo e o que faz a negativa vir do PAPEL: sem ele `clerk_uid()`
+-- seria NULL e o teste passaria por identidade ausente, discriminando outra
+-- coisa.
+INSERT INTO public.clerk_user_mapping
+  (clerk_user_id, supabase_user_id, access_sync_version)
+VALUES
+  ('round-researcher-clerk', '70000000-0000-0000-0000-000000000002', 1);
+
+DO $$
+DECLARE v_denied boolean := false;
+BEGIN
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claims',
+    '{"sub":"round-researcher-clerk","supabase_uid":"70000000-0000-0000-0000-000000000002"}',
+    true
+  );
+  BEGIN
+    PERFORM public.start_project_round(
+      '71000000-0000-0000-0000-000000000006',
+      (SELECT current_round_id FROM public.projects
+       WHERE id = '71000000-0000-0000-0000-000000000006'),
+      'Rodada 3', NULL, NULL, true, true
+    );
+  EXCEPTION WHEN insufficient_privilege THEN
+    v_denied := true;
+  END;
+  PERFORM pg_catalog.set_config(
+    'request.jwt.claims',
+    '{"sub":"round-creator-clerk","supabase_uid":"70000000-0000-0000-0000-000000000001"}',
+    true
+  );
+  IF NOT v_denied THEN
+    RAISE EXCEPTION 'FALHOU: pesquisador iniciou rodada por chamada direta';
+  END IF;
+  RAISE NOTICE 'OK: start_project_round nega pesquisador com gate proprio';
 END $$;
 
 ROLLBACK;
