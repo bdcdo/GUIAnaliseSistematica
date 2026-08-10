@@ -1,4 +1,3 @@
-import { unstable_cache } from "next/cache";
 import { createSupabaseServer } from "@/lib/supabase/server";
 import { createSupabaseAdmin } from "@/lib/supabase/admin";
 import { getProjectAccessContext } from "@/lib/auth";
@@ -18,27 +17,27 @@ import {
   type MemberActivationLink,
 } from "@/components/members/member-list-utils";
 
-function getCachedDocuments(projectId: string) {
-  return unstable_cache(
-    async () => {
-      const supabase = createSupabaseAdmin();
-      const { data, error } = await supabase
-        .from("documents")
-        .select("id, external_id, title")
-        .eq("project_id", projectId)
-        .is("excluded_at", null)
-        .is("exclusion_pending_at", null)
-        .order("created_at", { ascending: true });
-      if (error) {
-        console.error(
-          `[assignments] getCachedDocuments falhou (projeto ${projectId}): ${error.message}`,
-        );
-      }
-      return data || [];
-    },
-    [`assignments-docs-${projectId}`],
-    { tags: [`project-${projectId}-documents`], revalidate: 300 },
-  )();
+// Leitura direta, sem unstable_cache: o cache do Next vive no processo, e o
+// revalidateTag da Server Action só invalida a instância que a atendeu. Com
+// duas Machines (#664), a outra continuaria servindo a lista antiga por até
+// 5 min — um documento excluído seguiria aparecendo como atribuível. A query
+// lê três colunas com filtro indexado por project_id; não cachear custa menos
+// que servir dado errado.
+async function listAssignableDocuments(projectId: string) {
+  const supabase = createSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("documents")
+    .select("id, external_id, title")
+    .eq("project_id", projectId)
+    .is("excluded_at", null)
+    .is("exclusion_pending_at", null)
+    .order("created_at", { ascending: true });
+  if (error) {
+    console.error(
+      `[assignments] listAssignableDocuments falhou (projeto ${projectId}): ${error.message}`,
+    );
+  }
+  return data || [];
 }
 
 function requireQueryRows<T>(result: {
@@ -106,7 +105,7 @@ export default async function AssignmentsPage({
   const supabase = await createSupabaseServer();
 
   const [documents, memberState, { data: project }, { data: rounds }] = await Promise.all([
-    getCachedDocuments(id),
+    listAssignableDocuments(id),
     getMembers(supabase, id),
     supabase.from("projects").select("current_round_id").eq("id", id).single(),
     supabase.from("rounds").select("id, label, created_at").eq("project_id", id).order("created_at", { ascending: false }),

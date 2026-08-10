@@ -136,14 +136,17 @@ fly secrets set CLERK_SECRET_KEY=sk_... \
   CLERK_WEBHOOK_SECRET=whsec_... \
   AUTO_REVIEW_RECONCILIATION_SECRET=the-same-long-random-secret \
   -a gui-analise-sistematica-frontend
-fly deploy -c fly.toml --ha=false -a gui-analise-sistematica-frontend   # fallback; o normal é via CI
+fly deploy -c fly.toml -a gui-analise-sistematica-frontend   # fallback; o normal é via CI
+fly scale count 2 --region gru -a gui-analise-sistematica-frontend   # só se o fallback rodar com menos de duas
 ```
 
 O endpoint de webhook do Clerk em produção é `https://dataframeit.com.br/api/webhooks/clerk`. Ele deve assinar e entregar `user.created`, `user.updated` e `user.deleted`; o signing secret correspondente fica em `CLERK_WEBHOOK_SECRET`. Ao ativar uma rota nova de reconciliação, configure esses três eventos somente depois que o frontend compatível estiver no ar e confirme uma entrega `2xx` de cada tipo — uma rota antiga pode responder `2xx` sem processar eventos que ainda não conhece.
 
 Mudanças que dependem de RPCs, constraints ou colunas novas seguem ordem estrita: backup e preflight, reparo de dados incompatíveis, migrations, verificação de pós-condições, deploy do frontend do mesmo SHA e smokes autenticados. Depois que o schema novo recebe escritas, o rollback suportado é roll-forward; não edite uma migration já registrada.
 
-O frontend opera com uma Machine `shared-cpu-1x` de 512 MB e 512 MB de swap. Quando fica ociosa, a Machine para; a primeira requisição seguinte a reinicia. O workflow recusa mais de uma Machine antes do deploy e valida cardinalidade, região, tamanho e health depois da atualização.
+O frontend opera com duas Machines `shared-cpu-1x` de 512 MB e 512 MB de swap cada, sempre ligadas. A segunda existe porque uma Machine única fica presa a um host: em 2026-08-10 o host de `gru` ficou sem CPU livre, a Machine não conseguiu voltar e o site ficou fora do ar até ser recriada à mão em outro host. O workflow converge a topologia com `flyctl scale count 2` depois do preflight, recusa mais de duas Machines antes do deploy e valida cardinalidade, região, tamanho e health **de cada uma** depois da atualização.
+
+A separação entre hosts é *best-effort* do scheduler do Fly e não é verificável pela CLI (nem `machine list --json` nem `machine status` expõem o host), então o contrato automatizado cobre a cardinalidade e a saúde, não a anti-afinidade. As duas Machines seguem em `gru`: isto não protege contra queda de região.
 
 ### Variáveis de ambiente
 

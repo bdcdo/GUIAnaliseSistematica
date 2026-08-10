@@ -94,7 +94,7 @@ Para aplicar migrations pendentes: `npx supabase db push`
 
 ## Deploy
 
-Deploy e automatico a partir de merge no branch `main`. Frontend: em migracao Vercel → Fly.io (app `gui-analise-sistematica-frontend`); enquanto o cutover de dominio nao ocorre, Vercel ainda e a producao. Backend: Fly.io (app `gui-analise-sistematica-api`) via workflow quando ha mudanca em `backend/**`. A partir de 2026-04-20, **preferir branch + PR** ao push direto na main. Fluxo recomendado:
+Deploy e automatico a partir de merge no branch `main`. Frontend: Fly.io (app `gui-analise-sistematica-frontend`), servindo `dataframeit.com.br` — o cutover de dominio ja ocorreu, e foi a queda dessa app que tirou o site do ar em 2026-08-10. Backend: Fly.io (app `gui-analise-sistematica-api`) via workflow quando ha mudanca em `backend/**`. A partir de 2026-04-20, **preferir branch + PR** ao push direto na main. Fluxo recomendado:
 
 1. **Criar git worktree isolado** para a tarefa (ver secao "Workspace isolado" abaixo) — nao trabalhar no diretorio principal
 2. Criar branch descritiva (`feat/...`, `fix/...`, `perf/...`) na worktree

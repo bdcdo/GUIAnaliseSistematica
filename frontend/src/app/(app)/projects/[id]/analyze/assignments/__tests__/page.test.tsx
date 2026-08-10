@@ -22,10 +22,6 @@ function makeClient() {
   };
 }
 
-vi.mock("next/cache", () => ({
-  unstable_cache: (callback: () => unknown) => callback,
-}));
-
 vi.mock("next/navigation", () => ({
   notFound: () => {
     throw new Error("NEXT_NOT_FOUND");

@@ -27,14 +27,33 @@ exit 0
 EOF
 chmod +x "$tmp_dir/bin/sleep"
 
+# O id é parametrizado porque CHECKS_JSON é indexado por id: com dois elementos
+# de id igual, o caso "uma Machine saudável e outra não" seria indistinguível de
+# "as duas saudáveis" e o teste de health passaria a ser vácuo.
 machine() {
-  local state="${1:-started}"
-  local region="${2:-gru}"
-  local cpu_kind="${3:-shared}"
-  local cpus="${4:-1}"
-  local memory_mb="${5:-512}"
-  printf '[{"id":"machine-1","state":"%s","region":"%s","config":{"guest":{"cpu_kind":"%s","cpus":%s,"memory_mb":%s}}}]' \
-    "$state" "$region" "$cpu_kind" "$cpus" "$memory_mb"
+  local id="${1:-machine-1}"
+  local state="${2:-started}"
+  local region="${3:-gru}"
+  local cpu_kind="${4:-shared}"
+  local cpus="${5:-1}"
+  local memory_mb="${6:-512}"
+  printf '{"id":"%s","state":"%s","region":"%s","config":{"guest":{"cpu_kind":"%s","cpus":%s,"memory_mb":%s}}}' \
+    "$id" "$state" "$region" "$cpu_kind" "$cpus" "$memory_mb"
+}
+
+machines() {
+  local IFS=','
+  printf '[%s]' "$*"
+}
+
+# Mapa machine_id -> checks, na forma que `flyctl checks list --json` devolve.
+checks_for() {
+  local out='{}' id
+  for id in "$@"; do
+    out="$(jq -c --arg id "$id" \
+      '.[$id] = [{"name":"servicecheck-00-http-3000","status":"passing"}]' <<<"$out")"
+  done
+  printf '%s' "$out"
 }
 
 run_checker() {
@@ -54,35 +73,72 @@ expect_failure() {
 
 bash -n "$checker" "$0"
 
-MACHINES_JSON='[]'
+two_machines="$(machines "$(machine machine-1)" "$(machine machine-2)")"
+two_healthy="$(checks_for machine-1 machine-2)"
+
+# Preflight aceita 0..2: o `flyctl scale count 2` do workflow roda depois dele e
+# converge, então recusar 1 impediria o deploy de se auto-curar depois de perder
+# uma Machine. Acima do contrato, recusa.
 CHECKS_JSON='{}'
+MACHINES_JSON='[]'
 run_checker pre >/dev/null
-MACHINES_JSON="$(machine)"
+MACHINES_JSON="$(machines "$(machine machine-1)")"
 run_checker pre >/dev/null
-MACHINES_JSON="[$(machine | sed 's/^\[//; s/\]$//'),$(machine | sed 's/^\[//; s/\]$//')]"
+MACHINES_JSON="$two_machines"
+run_checker pre >/dev/null
+MACHINES_JSON="$(machines "$(machine machine-1)" "$(machine machine-2)" "$(machine machine-3)")"
 expect_failure run_checker pre
 MACHINES_JSON='{"unexpected":"shape"}'
 expect_failure run_checker pre
 
-MACHINES_JSON="$(machine)"
-CHECKS_JSON='{"machine-1":[{"name":"servicecheck-00-http-3000","status":"passing"}]}'
+MACHINES_JSON="$two_machines"
+CHECKS_JSON="$two_healthy"
 run_checker post >/dev/null
 
+# Cardinalidade: uma só deixou de bastar (#664), três também não.
+MACHINES_JSON="$(machines "$(machine machine-1)")"
+CHECKS_JSON="$(checks_for machine-1)"
+expect_failure run_checker post
+MACHINES_JSON="$(machines "$(machine machine-1)" "$(machine machine-2)" "$(machine machine-3)")"
+CHECKS_JSON="$(checks_for machine-1 machine-2 machine-3)"
+expect_failure run_checker post
+
+# Forma inválida na SEGUNDA Machine: prova que a validação quantifica sobre
+# todas em vez de inspecionar .[0].
+CHECKS_JSON="$two_healthy"
 for invalid_machine in \
-  "$(machine stopped)" \
-  "$(machine started iad)" \
-  "$(machine started gru performance)" \
-  "$(machine started gru shared 2)" \
-  "$(machine started gru shared 1 1024)"
+  "$(machine machine-2 stopped)" \
+  "$(machine machine-2 started iad)" \
+  "$(machine machine-2 started gru performance)" \
+  "$(machine machine-2 started gru shared 2)" \
+  "$(machine machine-2 started gru shared 1 1024)"
 do
-  MACHINES_JSON="$invalid_machine"
+  MACHINES_JSON="$(machines "$(machine machine-1)" "$invalid_machine")"
   expect_failure run_checker post
 done
 
-MACHINES_JSON="$(machine)"
+# ...e o espelho na primeira, para que trocar .[0] por .[1] também seja pego.
+for invalid_machine in \
+  "$(machine machine-1 stopped)" \
+  "$(machine machine-1 started iad)"
+do
+  MACHINES_JSON="$(machines "$invalid_machine" "$(machine machine-2)")"
+  expect_failure run_checker post
+done
+
+# Health por id. O caso decisivo é o mapa que cobre só a primeira Machine: é o
+# único que reprova uma implementação que leia o id de .[0] e nunca olhe a
+# segunda.
+MACHINES_JSON="$two_machines"
+CHECKS_JSON="$(checks_for machine-1)"
+expect_failure run_checker post
 CHECKS_JSON='{}'
 expect_failure run_checker post
-CHECKS_JSON='{"machine-1":[{"name":"servicecheck-00-http-3000","status":"critical"}]}'
+CHECKS_JSON="$(jq -c '.["machine-2"] = []' <<<"$two_healthy")"
+expect_failure run_checker post
+CHECKS_JSON="$(jq -c '.["machine-2"] = [{"name":"servicecheck-00-http-3000","status":"critical"}]' <<<"$two_healthy")"
+expect_failure run_checker post
+CHECKS_JSON="$(jq -c '.["machine-1"] = [{"name":"servicecheck-00-http-3000","status":"critical"}]' <<<"$two_healthy")"
 expect_failure run_checker post
 
 ruby -ryaml -e '
@@ -93,9 +149,16 @@ ruby -ryaml -e '
   steps = workflow.fetch("jobs").fetch("deploy").fetch("steps")
   runs = steps.filter_map { |step| step["run"] }
   pre = runs.index { |run| run.include?("check-frontend-fly-machines.sh pre") }
-  deploy = runs.index { |run| run.include?("flyctl deploy") && run.include?("--ha=false") }
+  scale = runs.index { |run| run.include?("flyctl scale count 2") }
+  deploy = runs.index { |run| run.include?("flyctl deploy") }
   post = runs.index { |run| run.include?("check-frontend-fly-machines.sh post") }
-  abort("workflow sem ordem preflight -> deploy -> postflight") unless pre && deploy && post && pre < deploy && deploy < post
+  # O scale fica entre preflight e deploy: `flyctl deploy` não cria a segunda
+  # Machine sozinho, e `scale count` destrói excedentes — antes do preflight,
+  # apagaria a divergência que ele existe para recusar.
+  abort("workflow sem ordem preflight -> scale -> deploy -> postflight") unless pre && scale && deploy && post && pre < scale && scale < deploy && deploy < post
+  # --ha=false trava a cardinalidade em 1 do lado do flyctl e reintroduziria o
+  # ponto único de falha do #664 sem tocar em nada que os outros gates leem.
+  abort("--ha=false trava a cardinalidade em 1") if runs.any? { |run| run.include?("--ha=false") }
 ' "$workflow"
 
 grep -Fq 'strategy = "bluegreen"' "$fly_config"
@@ -105,7 +168,7 @@ grep -Fq 'strategy = "bluegreen"' "$fly_config"
 # reacendê-la. Reintroduzir "stop"/0 tem que passar por esta linha.
 grep -Fq 'auto_stop_machines = "off"' "$fly_config"
 grep -Fq 'auto_start_machines = true' "$fly_config"
-grep -Fq 'min_machines_running = 1' "$fly_config"
+grep -Fq 'min_machines_running = 2' "$fly_config"
 grep -Fq 'swap_size_mb = 512' "$fly_config"
 grep -Fq 'size = "shared-cpu-1x"' "$fly_config"
 grep -Fq 'memory = "512mb"' "$fly_config"

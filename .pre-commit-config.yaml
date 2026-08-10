@@ -77,8 +77,9 @@ repos:
         pass_filenames: false
         require_serial: true
 
-      # O frontend pode escalar a zero, mas cada deploy deve convergir para uma
-      # unica Machine saudavel antes de o proxy poder para-la por ociosidade.
+      # O frontend roda com duas Machines sempre ligadas (#664): cada deploy
+      # deve convergir para essa cardinalidade e validar a saúde das duas, não
+      # só da primeira.
       - id: frontend-fly-machine-contract
         name: frontend Fly machine contract
         entry: .github/scripts/test-frontend-fly-machine-contract.sh

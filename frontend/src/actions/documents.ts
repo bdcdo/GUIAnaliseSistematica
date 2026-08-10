@@ -8,8 +8,6 @@ import {
   resolveProjectMemberActor,
 } from "@/lib/auth";
 import { revalidatePath, revalidateTag } from "next/cache";
-
-const TAG_PROFILE = Object.freeze({ expire: 300 });
 import { createHash } from "crypto";
 import { sanitizeStoredAnswers } from "@/lib/response-snapshot";
 import type { DocumentMetadata, PydanticField } from "@/lib/types";
@@ -232,7 +230,9 @@ async function filterActiveExternalIdConflicts<
 export async function revalidateProjectDocumentsCache(projectId: string) {
   try {
     revalidatePath(`/projects/${projectId}/config/documents`);
-    revalidateTag(`project-${projectId}-documents`, TAG_PROFILE);
+    // A tag `project-${projectId}-documents` saiu junto com o unstable_cache da
+    // página de Atribuições (#664): sem produtor, revalidá-la seria invalidar
+    // nada e sugerir uma garantia que não existe.
     revalidateTag(`project-${projectId}-progress`, { expire: 60 });
   } catch (e) {
     console.error("[revalidateProjectDocuments] falha ao revalidar cache", e);
