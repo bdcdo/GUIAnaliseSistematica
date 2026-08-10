@@ -30,6 +30,10 @@ chmod +x "$tmp_dir/bin/sleep"
 # O id é parametrizado porque CHECKS_JSON é indexado por id: com dois elementos
 # de id igual, o caso "uma Machine saudável e outra não" seria indistinguível de
 # "as duas saudáveis" e o teste de health passaria a ser vácuo.
+#
+# autostop/autostart sao emitidos como JSON cru (nao entre aspas) porque o
+# flyctl serializa "off" como o booleano false; passar a string "stop" aqui
+# reproduz a outra forma que a API aceita para o mesmo campo.
 machine() {
   local id="${1:-machine-1}"
   local state="${2:-started}"
@@ -37,8 +41,10 @@ machine() {
   local cpu_kind="${4:-shared}"
   local cpus="${5:-1}"
   local memory_mb="${6:-512}"
-  printf '{"id":"%s","state":"%s","region":"%s","config":{"guest":{"cpu_kind":"%s","cpus":%s,"memory_mb":%s}}}' \
-    "$id" "$state" "$region" "$cpu_kind" "$cpus" "$memory_mb"
+  local autostop="${7:-false}"
+  local autostart="${8:-true}"
+  printf '{"id":"%s","state":"%s","region":"%s","config":{"guest":{"cpu_kind":"%s","cpus":%s,"memory_mb":%s},"services":[{"internal_port":3000,"autostop":%s,"autostart":%s}]}}' \
+    "$id" "$state" "$region" "$cpu_kind" "$cpus" "$memory_mb" "$autostop" "$autostart"
 }
 
 machines() {
@@ -119,7 +125,13 @@ for invalid_machine in \
   "$(machine machine-2 started iad)" \
   "$(machine machine-2 started gru performance)" \
   "$(machine machine-2 started gru shared 2)" \
-  "$(machine machine-2 started gru shared 1 1024)"
+  "$(machine machine-2 started gru shared 1 1024)" \
+  "$(machine machine-2 started gru shared 1 512 true)" \
+  "$(machine machine-2 started gru shared 1 512 '"stop"')" \
+  "$(machine machine-2 started gru shared 1 512 '"suspend"')" \
+  "$(machine machine-2 started gru shared 1 512 false false)" \
+  "$(machine machine-2 | jq -c '.config.services = []')" \
+  "$(machine machine-2 | jq -c 'del(.config.services)')"
 do
   MACHINES_JSON="$(machines "$(machine machine-1)" "$invalid_machine")"
   expect_failure run_checker post
@@ -128,7 +140,8 @@ done
 # ...e o espelho na primeira, para que trocar .[0] por .[1] também seja pego.
 for invalid_machine in \
   "$(machine machine-1 stopped)" \
-  "$(machine machine-1 started iad)"
+  "$(machine machine-1 started iad)" \
+  "$(machine machine-1 started gru shared 1 512 true)"
 do
   MACHINES_JSON="$(machines "$invalid_machine" "$(machine machine-2)")"
   expect_failure run_checker post
@@ -178,16 +191,30 @@ ruby -ryaml -e '
   abort("--ha=false trava a cardinalidade em 1") if runs.any? { |run| run.include?("--ha=false") }
 ' "$workflow"
 
-grep -Fq 'strategy = "bluegreen"' "$fly_config"
+# A comparação é por linha inteira e sobre o fly.toml já sem comentários: o
+# arquivo documenta em prosa os valores que estas asserções rejeitam (o bloco
+# do always-on cita "min_machines_running = 1" como o valor anterior), então um
+# grep de substring passaria a casar a documentação em vez da diretiva e
+# aprovaria justamente a mudança que deveria barrar. O -Fx também dispensa
+# escapar os metacaracteres de regex que aparecem nos valores.
+fly_directives="$(sed 's/#.*//; s/[[:space:]]*$//; s/^[[:space:]]*//' "$fly_config")"
+
+assert_directive() {
+  grep -Fxq "$1" <<<"$fly_directives" && return 0
+  echo "frontend/fly.toml sem a diretiva esperada: $1" >&2
+  exit 1
+}
+
+assert_directive 'strategy = "bluegreen"'
 # Always-on é asserido aqui, e não só documentado no fly.toml, porque a volta
 # silenciosa do scale-to-zero foi o que tirou o site do ar em 2026-08-10: a
 # Machine parou por ociosidade e o host de gru não tinha CPU livre para
 # reacendê-la. Reintroduzir "stop"/0 tem que passar por esta linha.
-grep -Fq 'auto_stop_machines = "off"' "$fly_config"
-grep -Fq 'auto_start_machines = true' "$fly_config"
-grep -Fq 'min_machines_running = 2' "$fly_config"
-grep -Fq 'swap_size_mb = 512' "$fly_config"
-grep -Fq 'size = "shared-cpu-1x"' "$fly_config"
-grep -Fq 'memory = "512mb"' "$fly_config"
+assert_directive 'auto_stop_machines = "off"'
+assert_directive 'auto_start_machines = true'
+assert_directive 'min_machines_running = 2'
+assert_directive 'swap_size_mb = 512'
+assert_directive 'size = "shared-cpu-1x"'
+assert_directive 'memory = "512mb"'
 
 echo "Contrato de Machines do frontend validado."

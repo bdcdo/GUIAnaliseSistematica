@@ -77,9 +77,11 @@ repos:
         pass_filenames: false
         require_serial: true
 
-      # O frontend roda com duas Machines sempre ligadas (#664): cada deploy
-      # deve convergir para essa cardinalidade e validar a saúde das duas, não
-      # só da primeira.
+      # O frontend e always-on desde 2026-08-10, quando a Machine parou por
+      # ociosidade e nao voltou (o host de gru estava sem CPU livre), e roda
+      # com duas Machines desde o #664, para que perder um host nao derrube a
+      # producao. Cada deploy deve convergir para essa cardinalidade e validar
+      # saude e autostop desligado das DUAS — no fly.toml e na config aplicada.
       - id: frontend-fly-machine-contract
         name: frontend Fly machine contract
         entry: .github/scripts/test-frontend-fly-machine-contract.sh
