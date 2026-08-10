@@ -99,9 +99,13 @@ ruby -ryaml -e '
 ' "$workflow"
 
 grep -Fq 'strategy = "bluegreen"' "$fly_config"
-grep -Fq 'auto_stop_machines = "stop"' "$fly_config"
+# Always-on é asserido aqui, e não só documentado no fly.toml, porque a volta
+# silenciosa do scale-to-zero foi o que tirou o site do ar em 2026-08-10: a
+# Machine parou por ociosidade e o host de gru não tinha CPU livre para
+# reacendê-la. Reintroduzir "stop"/0 tem que passar por esta linha.
+grep -Fq 'auto_stop_machines = "off"' "$fly_config"
 grep -Fq 'auto_start_machines = true' "$fly_config"
-grep -Fq 'min_machines_running = 0' "$fly_config"
+grep -Fq 'min_machines_running = 1' "$fly_config"
 grep -Fq 'swap_size_mb = 512' "$fly_config"
 grep -Fq 'size = "shared-cpu-1x"' "$fly_config"
 grep -Fq 'memory = "512mb"' "$fly_config"
