@@ -8,8 +8,6 @@ import {
   resolveProjectMemberActor,
 } from "@/lib/auth";
 import { revalidatePath, revalidateTag } from "next/cache";
-
-const TAG_PROFILE = Object.freeze({ expire: 300 });
 import { createHash } from "crypto";
 import { sanitizeStoredAnswers } from "@/lib/response-snapshot";
 import type { DocumentMetadata, PydanticField } from "@/lib/types";
@@ -213,9 +211,9 @@ async function filterActiveExternalIdConflicts<
   return { rows: safe, skippedExisting, skippedInBatch };
 }
 
-// Revalida o cache de documentos do projeto: o path dinâmico de config, a tag
-// da página cacheada de assignments e a tag de progresso (contagens de docs) —
-// o mesmo conjunto que excludeDocuments/restoreDocuments/hardDeleteDocuments
+// Revalida o cache de documentos do projeto: os paths dinâmicos de config e de
+// Atribuições, mais a tag de progresso (contagens de docs) — o mesmo conjunto
+// que excludeDocuments/restoreDocuments/hardDeleteDocuments
 // revalidam. Fonte única usada tanto pelo último chunk de uploadDocuments quanto
 // pelo recovery do hook quando um upload em chunks falha no meio.
 // Best-effort: uma falha de revalidação de cache não pode propagar como erro da
@@ -232,7 +230,13 @@ async function filterActiveExternalIdConflicts<
 export async function revalidateProjectDocumentsCache(projectId: string) {
   try {
     revalidatePath(`/projects/${projectId}/config/documents`);
-    revalidateTag(`project-${projectId}-documents`, TAG_PROFILE);
+    // A tag `project-${projectId}-documents` saiu junto com o unstable_cache da
+    // página de Atribuições (#664): sem produtor, revalidá-la seria invalidar
+    // nada e sugerir uma garantia que não existe. A rota entra aqui pelo path,
+    // e não pela tag: a lista passou a ser lida direto do banco, mas o Router
+    // Cache do cliente ainda pode servir uma renderização anterior — é o que
+    // faria um documento recém-excluído seguir aparecendo como atribuível.
+    revalidatePath(`/projects/${projectId}/analyze/assignments`);
     revalidateTag(`project-${projectId}-progress`, { expire: 60 });
   } catch (e) {
     console.error("[revalidateProjectDocuments] falha ao revalidar cache", e);

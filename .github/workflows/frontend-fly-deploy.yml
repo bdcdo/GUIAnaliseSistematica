@@ -30,6 +30,20 @@ jobs:
         run: bash .github/scripts/check-frontend-fly-machines.sh pre
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_FRONTEND }}
+      - name: Convergir para duas Machines
+        working-directory: frontend
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN_FRONTEND }}
+        # `flyctl deploy` não escala 1 -> 2 em app existente, então a segunda
+        # Machine precisa nascer de um passo declarativo — do contrário o
+        # postflight dependeria de alguém ter lembrado de rodar um comando.
+        # Idempotente: com as duas criadas, é no-op.
+        #
+        # Roda DEPOIS do preflight de propósito: `scale count` destrói
+        # excedentes, então antes dele apagaria em silêncio a divergência que o
+        # preflight existe para recusar — inclusive uma Machine clonada à mão
+        # durante um incidente, que foi o que restaurou o site em 2026-08-10.
+        run: flyctl scale count 2 --region gru --yes -a gui-analise-sistematica-frontend
       - name: flyctl deploy
         working-directory: frontend
         env:
@@ -43,7 +57,6 @@ jobs:
         run: |
           deploy_args=(
             --remote-only
-            --ha=false
             -a gui-analise-sistematica-frontend
             --build-arg "NEXT_DEPLOYMENT_ID=${GITHUB_SHA}"
             --build-secret "NEXT_SERVER_ACTIONS_ENCRYPTION_KEY=${NEXT_SERVER_ACTIONS_ENCRYPTION_KEY}"

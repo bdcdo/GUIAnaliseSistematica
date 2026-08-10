@@ -118,8 +118,10 @@ export async function requestDocumentExclusion(
   // O doc some imediatamente das filas de codificação e da Comparação.
   revalidatePath(`/projects/${projectId}/analyze/code`);
   revalidatePath(`/projects/${projectId}/analyze/compare`);
-  // Fila de Assignments é lida via unstable_cache tagged (5min TTL) — sem
-  // isto o coordenador vê o doc como atribuível por até 5min após o pedido.
+  // A fila de Assignments é lida direto do banco (#664), mas a rota continua
+  // precisando de revalidatePath — que `revalidateProjectDocumentsCache` faz
+  // explicitamente pelo path — para o coordenador não ver o doc como atribuível
+  // a partir de uma renderização já em cache do Router.
   await revalidateProjectDocumentsCache(projectId);
   return { success: true };
 }

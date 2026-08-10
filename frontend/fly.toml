@@ -46,17 +46,38 @@ swap_size_mb = 512
   # depender da capacidade do host no instante de acordar. Com a Machine
   # sempre ligada, esse instante deixa de existir no caminho crítico.
   #
+=======
+  # Always-on: rollback do scale-to-zero habilitado no #644, na forma que
+  # aquele PR já previa ("restaurar auto_stop_machines = off e
+  # min_machines_running = 1, mantendo uma única Machine").
+  #
+  # Em 2026-08-10 a Machine parou por ociosidade e não conseguiu voltar: cada
+  # tentativa de acordá-la falhou com "could not reserve resource for machine:
+  # insufficient CPUs available to fulfill request on the current host" — o
+  # host de gru onde ela estava alocada ficou sem CPU livre. Como o proxy só
+  # tenta reacender sob demanda, o resultado foi um loop de start/crash e o
+  # site inteiro fora do ar até a Machine ser recriada em outro host.
+  #
+  # O custo do scale-to-zero, portanto, não é apenas o cold start medido: é
+  # depender da capacidade do host no instante de acordar. Com a Machine
+  # sempre ligada, esse instante deixa de existir no caminho crítico.
+  #
   # auto_start_machines segue true de propósito: é a rede que reacende a
   # Machine se ela parar por outro motivo (restart, manutenção do host).
   #
-  # Quem sustenta a disponibilidade aqui é o auto_stop_machines sozinho.
-  # min_machines_running só é honrado quando o autostop está ligado — ele diz
-  # quantas Machines a lógica de parada por ociosidade preserva, e com "off"
-  # ninguém para nada. Fica em 1 como intenção declarada para o dia em que o
-  # autostop voltar, não como piso ativo de Machines.
   auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 1
+  # Duas Machines (#664). Manter a Machine acesa tira o "acordar" do caminho
+  # crítico, mas não desfaz a dependência de um único host: se ele reiniciar,
+  # entrar em manutenção ou ficar sem CPU no instante em que a Machine precise
+  # ser recriada, a produção cai de novo e não volta sozinha.
+  #
+  # Com auto_stop_machines = "off" este valor é inerte — min_machines_running
+  # só age quando o autostop está ligado. Ele fica aqui como declaração de
+  # intenção e como trava contra um retorno silencioso do scale-to-zero com
+  # cardinalidade 1. Quem de fato cria e mantém as duas é o `flyctl scale
+  # count 2` do workflow, verificado pelo postflight fail-closed.
+  min_machines_running = 2
 
   [[http_service.checks]]
     grace_period = "10s"
