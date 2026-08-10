@@ -77,8 +77,10 @@ repos:
         pass_filenames: false
         require_serial: true
 
-      # O frontend pode escalar a zero, mas cada deploy deve convergir para uma
-      # unica Machine saudavel antes de o proxy poder para-la por ociosidade.
+      # O frontend e always-on desde 2026-08-10, quando a Machine parou por
+      # ociosidade e nao voltou (o host de gru estava sem CPU livre). Cada
+      # deploy deve convergir para uma unica Machine saudavel e com o autostop
+      # desligado — tanto no fly.toml quanto na config aplicada.
       - id: frontend-fly-machine-contract
         name: frontend Fly machine contract
         entry: .github/scripts/test-frontend-fly-machine-contract.sh

@@ -46,6 +46,25 @@ if ! jq -e '
   exit 1
 fi
 
+# O autostop é conferido na config APLICADA, e não só no fly.toml, porque foi
+# por aí que o site caiu em 2026-08-10 e por aí que ele voltou: a Machine foi
+# recriada com `machine clone` (que herda a config da origem, ainda com
+# autostop ligado) e só depois corrigida com `machine update --autostop=off`,
+# tudo fora do fluxo de deploy. O grep do fly.toml prova a intenção declarada;
+# esta asserção prova o que a Machine de fato tem.
+#
+# `== false` é fail-closed de propósito: o flyctl serializa "off" como booleano
+# false, então as formas string ("stop", "suspend"), o true e o campo ausente
+# (null) reprovam todos.
+if ! jq -e '
+  (.[0].config.services | type) == "array"
+  and (.[0].config.services | length) > 0
+  and all(.[0].config.services[]; .autostop == false and .autostart == true)
+' >/dev/null <<<"$machines_json"; then
+  echo "Deploy inválido: a Machine precisa estar com autostop desligado e autostart ligado." >&2
+  exit 1
+fi
+
 machine_id="$(jq -er '.[0].id | select(type == "string" and length > 0)' <<<"$machines_json")"
 readonly health_attempts=12
 readonly health_interval_seconds=10
