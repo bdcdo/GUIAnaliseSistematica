@@ -20,6 +20,24 @@ default_install_hook_types: [pre-commit, pre-push, post-checkout]
 default_stages: [pre-commit]
 
 repos:
+  # Marcador de conflito nao resolvido em qualquer arquivo versionado. Entrou
+  # depois de 2026-08-10: a resolucao de um merge deixou um `=======` orfao em
+  # frontend/fly.toml e nada barrou — o contrato de Machines le so as diretivas
+  # (com os comentarios removidos por sed), entao passou verde, e o defeito so
+  # apareceu no deploy, quando o `flyctl` recusou a config com "row 49 column 1".
+  # Fail-closed na producao funcionou (o preflight abortou antes de mutar nada),
+  # mas o custo foi um deploy vermelho por algo que um grep pega no commit.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # --assume-in-merge porque o default so inspeciona quando o repo esta em
+      # estado de merge (MERGE_HEAD presente), e o marcador sobrevive ao commit
+      # de merge: quem o carrega adiante e o commit seguinte, ja fora desse
+      # estado. Um `=======` de exatamente sete sinais sozinho na linha e o
+      # padrao — colide com titulo setext de Markdown, que nao usamos.
+      - id: check-merge-conflict
+        args: [--assume-in-merge]
+
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.30.1
     hooks:
