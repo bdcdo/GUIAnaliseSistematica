@@ -30,11 +30,17 @@ const hoisted = vi.hoisted(() => ({
   resolveMemberUserId: vi.fn<(projectId: string) => Promise<string>>(
     async () => "canonical-member",
   ),
+  // Espiões, e não no-ops: QUAIS rotas são revalidadas é contrato observável —
+  // a fila de Atribuições depende do path para não servir do Router Cache um
+  // documento já excluído (#664).
+  revalidatePath: vi.fn<(path: string) => void>(),
+  revalidateTag: vi.fn<(tag: string, profile?: unknown) => void>(),
 }));
 
 vi.mock("next/cache", () => ({
-  revalidatePath: () => {},
-  revalidateTag: () => {},
+  revalidatePath: (path: string) => hoisted.revalidatePath(path),
+  revalidateTag: (tag: string, profile?: unknown) =>
+    hoisted.revalidateTag(tag, profile),
 }));
 vi.mock("@/lib/auth", () => ({
   getAuthUser: () => hoisted.getUser(),
@@ -90,6 +96,8 @@ beforeEach(() => {
   hoisted.isCoord.mockResolvedValue(true);
   hoisted.resolveMemberUserId.mockReset();
   hoisted.resolveMemberUserId.mockResolvedValue("canonical-member");
+  hoisted.revalidatePath.mockClear();
+  hoisted.revalidateTag.mockClear();
 });
 
 async function loadUpload() {
@@ -118,6 +126,10 @@ async function loadHardDelete() {
 
 async function loadBrowse() {
   return (await import("@/actions/documents")).getDocumentsForBrowse;
+}
+
+async function loadRevalidateCache() {
+  return (await import("@/actions/documents")).revalidateProjectDocumentsCache;
 }
 
 function insertedExternalIds(): (string | null)[] {
@@ -657,5 +669,39 @@ describe("hardDeleteDocuments", () => {
 
     expect(r).toEqual({ count: 1 });
     expect(writeCalls[0]).toMatchObject({ table: "documents", op: "delete" });
+  });
+});
+
+// A fila de Atribuições deixou de ter unstable_cache (#664) e passou a ser lida
+// direto do banco, mas o Router Cache do cliente ainda pode servir a
+// renderização anterior — sem revalidar o path, um documento recém-excluído
+// seguiria aparecendo como atribuível para o coordenador. Asserir a rota aqui,
+// e não só confiar no efeito colateral de qualquer revalidatePath invalidar o
+// Router Cache inteiro, é o que dá vermelho se a chamada for removida ou
+// trocada por uma revalidação de escopo mais estreito.
+describe("revalidateProjectDocumentsCache — rotas invalidadas", () => {
+  it("revalida config, Atribuições e a tag de progresso", async () => {
+    const revalidateProjectDocumentsCache = await loadRevalidateCache();
+
+    await revalidateProjectDocumentsCache("proj-1");
+
+    expect(hoisted.revalidatePath.mock.calls.map(([p]) => p)).toEqual([
+      "/projects/proj-1/config/documents",
+      "/projects/proj-1/analyze/assignments",
+    ]);
+    expect(hoisted.revalidateTag).toHaveBeenCalledWith(
+      "project-proj-1-progress",
+      { expire: 60 },
+    );
+  });
+
+  it("não revalida a tag `-documents`, que perdeu o produtor com o unstable_cache", async () => {
+    const revalidateProjectDocumentsCache = await loadRevalidateCache();
+
+    await revalidateProjectDocumentsCache("proj-1");
+
+    expect(hoisted.revalidateTag.mock.calls.map(([t]) => t)).not.toContain(
+      "project-proj-1-documents",
+    );
   });
 });

@@ -10,6 +10,10 @@ mode="${1:-}"
 # recupera sozinha — em 2026-08-10 o host de gru ficou sem CPU livre e foi
 # preciso `machine clone` manual para outro host.
 readonly expected_machines=2
+# Região contratada, declarada aqui uma vez porque os dois modos dependem dela:
+# o postflight exige que as Machines estejam nela, e o preflight precisa recusar
+# o que estiver fora (ver a verificação logo abaixo).
+readonly expected_region="gru"
 
 if [[ "$mode" != "pre" && "$mode" != "post" ]]; then
   echo "uso: $0 pre|post" >&2
@@ -23,6 +27,18 @@ if ! machine_count="$(jq -er '
   end
 ' <<<"$machines_json")"; then
   echo "Não foi possível interpretar a lista de Machines do frontend." >&2
+  exit 1
+fi
+
+# Vale para os DOIS modos. No preflight não é redundante com a contagem: o
+# `flyctl machine list` enxerga todas as regiões, mas o `flyctl scale count` do
+# workflow é escopado em `--region $expected_region`. Uma Machine em gru mais
+# uma fora passaria pela contagem (2 <= 2) e a escala levaria gru de 1 para 2,
+# totalizando 3 — divergência criada DEPOIS do gate que existe para recusá-la, e
+# que travaria todo deploy seguinte no preflight. Recusar aqui custa exigir que
+# um `machine clone` de incidente fora de gru seja resolvido antes do deploy.
+if ! jq -e --arg region "$expected_region" 'all(.[]; .region == $region)' >/dev/null <<<"$machines_json"; then
+  echo "Deploy recusado: há Machine do frontend fora de $expected_region; a escala do workflow é escopada nessa região e não convergiria a cardinalidade total." >&2
   exit 1
 fi
 
@@ -46,18 +62,17 @@ fi
 
 # `all` quantifica sobre TODAS as Machines em vez de inspecionar .[0]: com mais
 # de uma, validar só a primeira aprovaria um deploy em que a segunda subiu
-# parada, em outra região ou com outro tamanho. O `length` não é redundante —
-# `all` sobre array vazio é true.
-if ! jq -e --argjson expected "$expected_machines" '
-  length == $expected
-  and all(.[];
+# parada ou com outro tamanho. A região não entra aqui — já foi verificada
+# acima, para os dois modos, e repeti-la abriria espaço para as duas definições
+# divergirem.
+if ! jq -e '
+  all(.[];
     .state == "started"
-    and .region == "gru"
     and .config.guest.cpu_kind == "shared"
     and .config.guest.cpus == 1
     and .config.guest.memory_mb == 512)
 ' >/dev/null <<<"$machines_json"; then
-  echo "Deploy inválido: todas as Machines devem estar iniciadas em gru com shared-cpu-1x e 512 MB." >&2
+  echo "Deploy inválido: todas as Machines devem estar iniciadas com shared-cpu-1x e 512 MB." >&2
   exit 1
 fi
 
@@ -83,7 +98,7 @@ for ((attempt = 1; attempt <= health_attempts; attempt += 1)); do
       and ($checks | length) > 0
       and all($checks[]; .status == "passing"))
   ' >/dev/null <<<"$checks_json"; then
-    echo "Postflight Fly aprovado: $expected_machines Machines saudáveis em gru, shared-cpu-1x/512 MB."
+    echo "Postflight Fly aprovado: $expected_machines Machines saudáveis em $expected_region, shared-cpu-1x/512 MB."
     exit 0
   fi
 

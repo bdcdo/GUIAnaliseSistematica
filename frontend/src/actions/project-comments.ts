@@ -119,8 +119,9 @@ export async function requestDocumentExclusion(
   revalidatePath(`/projects/${projectId}/analyze/code`);
   revalidatePath(`/projects/${projectId}/analyze/compare`);
   // A fila de Assignments é lida direto do banco (#664), mas a rota continua
-  // precisando de revalidatePath para o coordenador não ver o doc como
-  // atribuível a partir de uma renderização já em cache do Router.
+  // precisando de revalidatePath — que `revalidateProjectDocumentsCache` faz
+  // explicitamente pelo path — para o coordenador não ver o doc como atribuível
+  // a partir de uma renderização já em cache do Router.
   await revalidateProjectDocumentsCache(projectId);
   return { success: true };
 }

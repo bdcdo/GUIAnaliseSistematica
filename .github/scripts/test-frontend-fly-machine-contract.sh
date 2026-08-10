@@ -90,6 +90,14 @@ MACHINES_JSON="$(machines "$(machine machine-1)" "$(machine machine-2)" "$(machi
 expect_failure run_checker pre
 MACHINES_JSON='{"unexpected":"shape"}'
 expect_failure run_checker pre
+# Machine fora de gru dentro do teto de contagem: o preflight não pode aprovar.
+# O `flyctl scale count` é escopado em --region gru, então 1 em gru + 1 fora
+# passaria pela contagem (2 <= 2) e a escala levaria o total a 3 — divergência
+# criada depois do gate, que então travaria todo deploy seguinte.
+MACHINES_JSON="$(machines "$(machine machine-1)" "$(machine machine-2 started iad)")"
+expect_failure run_checker pre
+MACHINES_JSON="$(machines "$(machine machine-1 started iad)")"
+expect_failure run_checker pre
 
 MACHINES_JSON="$two_machines"
 CHECKS_JSON="$two_healthy"
@@ -156,6 +164,15 @@ ruby -ryaml -e '
   # Machine sozinho, e `scale count` destrói excedentes — antes do preflight,
   # apagaria a divergência que ele existe para recusar.
   abort("workflow sem ordem preflight -> scale -> deploy -> postflight") unless pre && scale && deploy && post && pre < scale && scale < deploy && deploy < post
+  # Os argumentos do scale carregam efeito em produção e por isso são asseridos
+  # um a um: sem `--yes` o comando pede confirmação e o job morre (runner do
+  # GitHub não tem TTY); sem `-a` explícito, o mesmo passo escalaria o app da
+  # API; sem `--region`, a Machine nova nasce onde o scheduler decidir, e o
+  # postflight exige gru.
+  scale_run = runs.fetch(scale)
+  ["--region gru", "--yes", "-a gui-analise-sistematica-frontend"].each do |arg|
+    abort("passo de escala sem #{arg}") unless scale_run.include?(arg)
+  end
   # --ha=false trava a cardinalidade em 1 do lado do flyctl e reintroduziria o
   # ponto único de falha do #664 sem tocar em nada que os outros gates leem.
   abort("--ha=false trava a cardinalidade em 1") if runs.any? { |run| run.include?("--ha=false") }
