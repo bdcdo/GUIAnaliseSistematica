@@ -14,7 +14,7 @@ beforeEach(() => {
   authorize.mockReset();
   drain.mockReset();
   authorize.mockReturnValue(true);
-  drain.mockResolvedValue({ processed: 1, stale: 0, deferred: 0, failed: 0, remaining: 0 });
+  drain.mockResolvedValue({ processed: 1, stale: 0, failed: 0, remaining: 0 });
 });
 
 describe("POST /api/internal/auto-review/reconcile", () => {
@@ -35,11 +35,11 @@ describe("POST /api/internal/auto-review/reconcile", () => {
     }));
 
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ processed: 1, stale: 0, deferred: 0, failed: 0, remaining: 0 });
+    expect(await response.json()).toEqual({ processed: 1, stale: 0, failed: 0, remaining: 0 });
   });
 
   it("sinaliza falha operacional para o backend repetir o wakeup", async () => {
-    drain.mockResolvedValue({ processed: 0, stale: 0, deferred: 0, failed: 1, remaining: 0 });
+    drain.mockResolvedValue({ processed: 0, stale: 0, failed: 1, remaining: 0 });
     const { POST } = await import("@/app/api/internal/auto-review/reconcile/route");
     const response = await POST(new Request("https://app.test/api/internal/auto-review/reconcile", {
       method: "POST",

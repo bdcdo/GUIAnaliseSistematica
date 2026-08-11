@@ -77,6 +77,11 @@ async function fetchAll<T>(
   table: string,
   columns: string,
   filter?: (q: UntypedSelectBuilder) => UntypedSelectBuilder,
+  // Nem toda tabela chaveia por `id`: `auto_review_reconciliation_requests` tem
+  // PK em `document_id`. O default cobre o resto do arquivo; o que a coluna
+  // precisa ser é ÚNICA, senão o ORDER BY volta a não desempatar e o hazard
+  // descrito acima reaparece por outro caminho.
+  orderColumn = "id",
 ): Promise<T[]> {
   const PAGE = 1000;
   const rows: T[] = [];
@@ -84,7 +89,7 @@ async function fetchAll<T>(
     let q: UntypedSelectBuilder = supabase
       .from(table)
       .select(columns)
-      .order("id", { ascending: true })
+      .order(orderColumn, { ascending: true })
       .range(from, from + PAGE - 1);
     if (filter) q = filter(q);
     const { data, error } = await q;
@@ -852,6 +857,47 @@ const invariants: Invariant[] = [
         .map((rv) => ({
           key: rv.id,
           detail: `review de ${rv.created_at.slice(0, 10)} escolheu ${rv.chosen_response_id} mas o snapshot não tem entry dessa resposta`,
+        }));
+    },
+  },
+  {
+    name: "outbox-de-auto-revisao-drena",
+    motivation:
+      "#670: a fila de reconciliação não tem limite de tentativas, TTL nem dead-letter — request que o worker não consegue satisfazer envelhece para sempre com o backoff no teto de 1h, e nada denuncia (o outcome `deferred` não conta como `failed`, e a rota interna só devolve 503 em `failed`). Foi assim que 25 linhas insatisfazíveis passaram dias em retry silencioso no Zolgensma-Judiciário. Com o produtor corrigido, toda request é satisfazível, então FAIL aqui deixou de significar 'estado impossível' e passa a significar CONSUMIDOR parado: worker morto, segredo rotacionado, ou reconcile_auto_review_cycles falhando em série",
+    run: async () => {
+      // Os dois limiares medem coisas diferentes e nenhum cobre o outro.
+      // `attempt_count` pega o loop rápido: o backoff é 5s, 10s, 20s..., então 5
+      // tentativas ≈ 2,5 min de falha contínua — alto o bastante para não morder
+      // um erro transitório isolado (a RPC rejeita input stale por desenho, e
+      // uma rejeição sozinha é normal sob edição concorrente). `requested_at`
+      // pega o caso em que ninguém sequer TENTA: worker parado não incrementa
+      // attempt_count, e a linha ficaria invisível para o primeiro limiar.
+      //
+      // Cuidado ao ler o número: `requested_at` e `attempt_count` são zerados
+      // pelo ON CONFLICT DO UPDATE do trigger a cada nova submissão humana no
+      // mesmo documento. Não medem a idade da fila — medem quanto tempo faz que
+      // o último evento sujo daquele documento está sem drenar, que é o que
+      // interessa aqui.
+      const MAX_ATTEMPTS = 5;
+      const MAX_IDADE_MS = 6 * 60 * 60 * 1000;
+      const rows = await fetchAll<{
+        document_id: string;
+        project_id: string;
+        attempt_count: number;
+        requested_at: string;
+        last_error: string | null;
+      }>(
+        "auto_review_reconciliation_requests",
+        "document_id, project_id, attempt_count, requested_at, last_error",
+        undefined,
+        "document_id",
+      );
+      const corte = Date.now() - MAX_IDADE_MS;
+      return rows
+        .filter((r) => r.attempt_count >= MAX_ATTEMPTS || Date.parse(r.requested_at) < corte)
+        .map((r) => ({
+          key: r.document_id,
+          detail: `${r.attempt_count} tentativa(s) desde ${r.requested_at} (projeto ${r.project_id}): ${r.last_error ?? "nenhuma tentativa registrada"}`,
         }));
     },
   },

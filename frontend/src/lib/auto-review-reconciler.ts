@@ -8,7 +8,11 @@ import type { PydanticField } from "@/lib/types";
 interface ReconciliationRequest {
   project_id: string;
   document_id: string;
-  llm_response_id: string | null;
+  // Nunca nulo desde a #670: a coluna é NOT NULL e o produtor não enfileira
+  // documento sem geração LLM corrente. Antes disso, NULL significava "humano
+  // sujo esperando a primeira geração" — um estado que nenhum worker conseguia
+  // satisfazer e que ficava em retry perpétuo.
+  llm_response_id: string;
   allow_new_cycles: boolean;
 }
 
@@ -26,7 +30,7 @@ interface ReconciliationGroup {
 type AdminClient = ReturnType<typeof createSupabaseAdmin>;
 type VersionedHumanResponse = HumanResponseRow & { updated_at: string };
 type VersionedLlmResponse = LlmResponseRow & { updated_at: string };
-type ReconciliationOutcome = "processed" | "stale" | "deferred" | "failed";
+type ReconciliationOutcome = "processed" | "stale" | "failed";
 
 interface ReconciliationInputs {
   fields: PydanticField[];
@@ -39,12 +43,9 @@ interface ReconciliationInputs {
 export interface ReconciliationDrainResult {
   processed: number;
   stale: number;
-  deferred: number;
   failed: number;
   remaining: number;
 }
-
-class DeferredReconciliation extends Error {}
 
 function firstError(
   results: Array<{ error: { message: string } | null }>,
@@ -56,14 +57,13 @@ async function acknowledge(
   admin: AdminClient,
   request: ReconciliationRequest,
 ): Promise<void> {
-  let query = admin
+  // ACK pela geração exata: se outra publicação já reenfileirou o documento, a
+  // request em banco não é mais a que este worker leu e o DELETE não casa.
+  const { error } = await admin
     .from("auto_review_reconciliation_requests")
     .delete()
-    .eq("document_id", request.document_id);
-  query = request.llm_response_id === null
-    ? query.is("llm_response_id", null)
-    : query.eq("llm_response_id", request.llm_response_id);
-  const { error } = await query;
+    .eq("document_id", request.document_id)
+    .eq("llm_response_id", request.llm_response_id);
   if (error) throw new Error(error.message);
 }
 
@@ -177,20 +177,20 @@ async function readReconciliationInputs(
         .eq("respondent_type", "humano")
         .eq("is_latest", true)
         .eq("is_partial", false),
-      (() => {
-        let query = admin
-          .from("responses")
-          .select("id, document_id, answers, answer_field_hashes, updated_at")
-          .eq("project_id", request.project_id)
-          .eq("document_id", request.document_id)
-          .eq("respondent_type", "llm")
-          .eq("is_latest", true)
-          .eq("is_partial", false);
-        if (request.llm_response_id !== null) {
-          query = query.eq("id", request.llm_response_id);
-        }
-        return query.maybeSingle();
-      })(),
+      // O filtro por id é o que distingue "a geração que enfileirou este pedido
+      // continua corrente" de "outra publicação já a substituiu". Sem ele, uma
+      // request obsoleta reconciliaria contra a geração nova, com os
+      // `expected_*` da antiga.
+      admin
+        .from("responses")
+        .select("id, document_id, answers, answer_field_hashes, updated_at")
+        .eq("project_id", request.project_id)
+        .eq("document_id", request.document_id)
+        .eq("respondent_type", "llm")
+        .eq("is_latest", true)
+        .eq("is_partial", false)
+        .eq("id", request.llm_response_id)
+        .maybeSingle(),
       admin
         .from("response_equivalences")
         .select(
@@ -272,12 +272,13 @@ async function reconcileRequest(
 ): Promise<"processed" | "stale"> {
   const inputs = await readReconciliationInputs(admin, request);
   const llm = inputs.llm;
+  // A geração enfileirada deixou de ser a corrente e completa (rerun, publicação
+  // parcial, remoção). O pedido é obsoleto: quem publicar a próxima geração
+  // reenfileira o documento. Desde a #670 não existe mais o caso "ainda não há
+  // geração nenhuma" — a request não seria criada.
   if (!llm) {
-    if (request.llm_response_id !== null) {
-      await acknowledge(admin, request);
-      return "stale";
-    }
-    throw new DeferredReconciliation("current complete LLM response is not visible yet");
+    await acknowledge(admin, request);
+    return "stale";
   }
 
   const humans = await eligibleHumanResponses(
@@ -329,7 +330,6 @@ async function processRequest(
     return await reconcileRequest(admin, request);
   } catch (requestError) {
     await recordFailure(admin, request, requestError);
-    if (requestError instanceof DeferredReconciliation) return "deferred";
     logReconciliationFailure(request, requestError);
     return "failed";
   }
@@ -368,7 +368,7 @@ async function countDueRequests(
 }
 
 function processedRequestCount(result: ReconciliationDrainResult): number {
-  return result.processed + result.stale + result.deferred + result.failed;
+  return result.processed + result.stale + result.failed;
 }
 
 export async function drainAutoReviewReconciliationRequests(
@@ -380,7 +380,6 @@ export async function drainAutoReviewReconciliationRequests(
   const result: ReconciliationDrainResult = {
     processed: 0,
     stale: 0,
-    deferred: 0,
     failed: 0,
     remaining: 0,
   };

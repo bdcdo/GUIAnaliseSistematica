@@ -27,7 +27,6 @@ const hoisted = vi.hoisted(() => ({
   drain: vi.fn(async () => ({
     processed: 1,
     stale: 0,
-    deferred: 0,
     failed: 0,
     remaining: 0,
   })),

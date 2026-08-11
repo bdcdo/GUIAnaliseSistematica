@@ -562,7 +562,6 @@ export async function regenerateAutoReviewBacklog(
   error?: string;
   queued?: number;
   processed?: number;
-  deferred?: number;
 }> {
   try {
     const gate = await requireCoordinator(
@@ -595,7 +594,6 @@ export async function regenerateAutoReviewBacklog(
       success: true,
       queued: typeof queued === "number" ? queued : 0,
       processed: drainResult.processed,
-      deferred: drainResult.deferred,
     };
   } catch (e) {
     return { success: false, error: errorMessage(e) || "Erro" };

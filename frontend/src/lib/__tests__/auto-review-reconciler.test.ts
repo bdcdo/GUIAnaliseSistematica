@@ -11,6 +11,11 @@ const state = vi.hoisted(() => ({
   rpcCalls: [] as Array<{ name: string; args: unknown }>,
   failures: [] as unknown[],
   deletes: [] as Array<Array<[string, unknown]>>,
+  // Filtros das LEITURAS, não só das escritas: é o que permite afirmar que o
+  // worker busca a geração LLM pelo id enfileirado, e não a corrente do
+  // documento — a diferença entre reconciliar a geração certa e reconciliar
+  // outra com os `expected_*` da antiga.
+  selects: [] as Array<{ table: string; filters: Array<[string, unknown]> }>,
 }));
 
 vi.mock("server-only", () => ({}));
@@ -84,6 +89,7 @@ class Query {
   }
 
   private selectResult() {
+    state.selects.push({ table: this.table, filters: this.filters });
     if (this.table === "auto_review_reconciliation_requests") return this.requestsResult();
     if (this.table === "responses") return this.responsesResult();
     const rowsByTable: Record<string, unknown> = {
@@ -146,6 +152,7 @@ beforeEach(() => {
   state.rpcCalls = [];
   state.failures = [];
   state.deletes = [];
+  state.selects = [];
   admin.rpc.mockClear();
   buildEquivalenceMap.mockClear();
   computeBacklogRows.mockReset();
@@ -167,7 +174,7 @@ describe("drainAutoReviewReconciliationRequests", () => {
     const { drainAutoReviewReconciliationRequests } = await import("@/lib/auto-review-reconciler");
     const result = await drainAutoReviewReconciliationRequests();
 
-    expect(result).toEqual({ processed: 1, stale: 0, deferred: 0, failed: 0, remaining: 0 });
+    expect(result).toEqual({ processed: 1, stale: 0, failed: 0, remaining: 0 });
     expect(computeBacklogRows).toHaveBeenCalledOnce();
     expect(state.rpcCalls).toEqual([{
       name: "reconcile_auto_review_cycles",
@@ -201,9 +208,12 @@ describe("drainAutoReviewReconciliationRequests", () => {
     const { drainAutoReviewReconciliationRequests } = await import("@/lib/auto-review-reconciler");
     const result = await drainAutoReviewReconciliationRequests();
 
-    expect(result).toEqual({ processed: 0, stale: 1, deferred: 0, failed: 0, remaining: 0 });
+    expect(result).toEqual({ processed: 0, stale: 1, failed: 0, remaining: 0 });
     expect(state.rpcCalls).toEqual([]);
     expect(state.deletes[0]).toContainEqual(["llm_response_id", "llm-1"]);
+    // Obsoleta é descartada, não reagendada: desde a #670 nada volta para a
+    // fila esperando uma geração que já foi substituída (era o retry perpétuo).
+    expect(state.failures).toEqual([]);
   });
 
   it("mantém a request e registra a falha para retry", async () => {
@@ -211,7 +221,7 @@ describe("drainAutoReviewReconciliationRequests", () => {
     const { drainAutoReviewReconciliationRequests } = await import("@/lib/auto-review-reconciler");
     const result = await drainAutoReviewReconciliationRequests();
 
-    expect(result).toEqual({ processed: 0, stale: 0, deferred: 0, failed: 1, remaining: 0 });
+    expect(result).toEqual({ processed: 0, stale: 0, failed: 1, remaining: 0 });
     expect(state.deletes).toEqual([]);
     expect(state.failures).toEqual([{
       p_document_id: "doc-1",
@@ -220,18 +230,15 @@ describe("drainAutoReviewReconciliationRequests", () => {
     }]);
   });
 
-  it("adia o sinal humano até a primeira geração LLM ficar visível", async () => {
-    state.requests = [{ ...request, llm_response_id: null }];
-    state.llmLatest = false;
+  it("lê a resposta LLM pela geração enfileirada, não pela corrente do documento", async () => {
     const { drainAutoReviewReconciliationRequests } = await import("@/lib/auto-review-reconciler");
-    const result = await drainAutoReviewReconciliationRequests();
+    await drainAutoReviewReconciliationRequests();
 
-    expect(result).toEqual({ processed: 0, stale: 0, deferred: 1, failed: 0, remaining: 0 });
-    expect(state.deletes).toEqual([]);
-    expect(state.failures).toEqual([expect.objectContaining({
-      p_document_id: "doc-1",
-      p_llm_response_id: null,
-    })]);
+    const llmRead = state.selects.find(
+      (s) => s.table === "responses"
+        && s.filters.some(([column, value]) => column === "respondent_type" && value === "llm"),
+    );
+    expect(llmRead?.filters).toContainEqual(["id", "llm-1"]);
   });
 
   it("confirma uma geração LLM sem humano e deixa um save futuro reenfileirar", async () => {
