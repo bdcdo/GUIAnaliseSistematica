@@ -156,6 +156,48 @@ BEGIN
 END;
 $$;
 
+-- Contrato do token de ACK. O dreno apaga a request casando também
+-- `requested_at` (auto-review-reconciler.ts, acknowledge), porque o
+-- reenfileiramento humano mantém a MESMA geração LLM: sem essa coluna o worker
+-- não distingue a linha que leu da que um save posterior recriou, e apaga a
+-- segunda. O que este bloco fixa é a premissa de banco disso — o
+-- `ON CONFLICT DO UPDATE` reescreve `requested_at` e preserva `llm_response_id`.
+--
+-- A suíte roda numa transação só e `pg_catalog.now()` é transaction_timestamp(),
+-- então dois enqueues seguidos gravariam o MESMO valor: afirmar "o timestamp
+-- avançou" seria vácuo aqui. Empurrar o valor para o passado antes do re-save é
+-- o que faz a asserção morder.
+DO $$
+DECLARE
+  v_llm_response_id UUID;
+  v_requested_at TIMESTAMPTZ;
+BEGIN
+  UPDATE public.auto_review_reconciliation_requests
+  SET requested_at = pg_catalog.now() - INTERVAL '1 minute'
+  WHERE document_id = 'c0000000-0000-0000-0000-000000000002';
+
+  UPDATE public.responses
+  SET answers = '{"q1":"human-revisado"}'
+  WHERE id = 'd0000000-0000-0000-0000-000000000010';
+
+  SELECT request.llm_response_id, request.requested_at
+  INTO STRICT v_llm_response_id, v_requested_at
+  FROM public.auto_review_reconciliation_requests AS request
+  WHERE request.document_id = 'c0000000-0000-0000-0000-000000000002';
+
+  IF v_requested_at <> pg_catalog.now() THEN
+    RAISE EXCEPTION
+      'human re-save did not refresh the ACK token; requested_at is %',
+      v_requested_at;
+  END IF;
+
+  IF v_llm_response_id IS DISTINCT FROM
+     'd0000000-0000-0000-0000-000000000011'::UUID THEN
+    RAISE EXCEPTION 'human re-save changed the enqueued LLM generation';
+  END IF;
+END;
+$$;
+
 -- Documento só com codificação humana, sem geração LLM nenhuma: é o cenário da
 -- #670 e a fixture das três asserções seguintes.
 INSERT INTO public.documents (id, project_id, title, text, text_hash) VALUES
@@ -262,6 +304,14 @@ $$;
 -- backlog em vez de virar linha insatisfazível.
 DO $$
 BEGIN
+  -- Apagar a request de c…0002 é o que torna o discriminante abaixo capaz de
+  -- morder: ela foi criada pelo trigger na publicação da geração LLM e ainda
+  -- está viva aqui, então um `NOT EXISTS` sobre a linha preexistente passaria
+  -- mesmo que o JOIN LATERAL casasse zero documentos. Zerada a fila, só o
+  -- próprio reparo pode recriá-la.
+  DELETE FROM public.auto_review_reconciliation_requests
+  WHERE document_id = 'c0000000-0000-0000-0000-000000000002';
+
   PERFORM public.enqueue_auto_review_reconciliation_for_project(
     'b0000000-0000-0000-0000-000000000002'
   );
@@ -273,8 +323,8 @@ BEGIN
     RAISE EXCEPTION 'backlog regeneration enqueued a document without an LLM generation';
   END IF;
 
-  -- Discriminante: o documento que TEM geração corrente continua entrando, senão
-  -- a asserção acima passaria com um reparo que simplesmente não enfileira nada.
+  -- Discriminante: o documento que TEM geração corrente volta a entrar, senão a
+  -- asserção acima passaria com um reparo que simplesmente não enfileira nada.
   IF NOT EXISTS (
     SELECT 1 FROM public.auto_review_reconciliation_requests
     WHERE document_id = 'c0000000-0000-0000-0000-000000000002'

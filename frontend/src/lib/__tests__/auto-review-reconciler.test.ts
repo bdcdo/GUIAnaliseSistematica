@@ -9,6 +9,10 @@ const state = vi.hoisted(() => ({
   humanLatest: true,
   rpcError: null as string | null,
   rpcCalls: [] as Array<{ name: string; args: unknown }>,
+  // Efeito colateral disparado DENTRO da reconciliação, que é onde a corrida
+  // vive: entre o commit da RPC e o ACK, uma nova submissão humana reenfileira
+  // o documento com a mesma geração LLM.
+  rpcSideEffect: null as (() => void) | null,
   failures: [] as unknown[],
   deletes: [] as Array<Array<[string, unknown]>>,
   // Filtros das LEITURAS, não só das escritas: é o que permite afirmar que o
@@ -125,6 +129,7 @@ const admin = {
       state.due = false;
       return { data: true, error: null };
     }
+    if (name === "reconcile_auto_review_cycles") state.rpcSideEffect?.();
     return {
       data: {},
       error: state.rpcError ? { message: state.rpcError } : null,
@@ -140,6 +145,7 @@ const request = {
   project_id: "project-1",
   document_id: "doc-1",
   llm_response_id: "llm-1",
+  requested_at: "2026-07-16T12:30:00.000Z",
   allow_new_cycles: true,
 };
 
@@ -150,6 +156,7 @@ beforeEach(() => {
   state.humanLatest = true;
   state.rpcError = null;
   state.rpcCalls = [];
+  state.rpcSideEffect = null;
   state.failures = [];
   state.deletes = [];
   state.selects = [];
@@ -190,6 +197,25 @@ describe("drainAutoReviewReconciliationRequests", () => {
       }] },
     }]);
     expect(state.deletes[0]).toContainEqual(["llm_response_id", "llm-1"]);
+  });
+
+  it("não confirma a request que um save humano reenfileirou durante a reconciliação", async () => {
+    // A janela é estreita mas a perda é silenciosa: a RPC já commitou os
+    // field_reviews, o novo save os arquiva e reenfileira o documento, e um ACK
+    // que casasse só documento+geração apagaria esse pedido recém-criado — o
+    // reenfileiramento humano mantém a MESMA geração LLM, só `requested_at`
+    // muda. O documento ficaria com as revisões arquivadas e nada na fila para
+    // regenerá-las, invisível até a próxima publicação LLM.
+    const reenqueued = { ...request, requested_at: "2026-07-16T12:31:00.000Z" };
+    state.rpcSideEffect = () => { state.requests = [reenqueued]; };
+    const { drainAutoReviewReconciliationRequests } = await import("@/lib/auto-review-reconciler");
+    const result = await drainAutoReviewReconciliationRequests();
+
+    // A perda vem primeiro: é o dado sobrevivendo que interessa, não a forma da
+    // query. O filtro logo abaixo diz por qual coluna ela sobreviveu.
+    expect(state.requests).toEqual([reenqueued]);
+    expect(result).toEqual({ processed: 1, stale: 0, failed: 0, remaining: 1 });
+    expect(state.deletes[0]).toContainEqual(["requested_at", "2026-07-16T12:30:00.000Z"]);
   });
 
   it("também reconcilia consenso para encerrar um ciclo anterior", async () => {

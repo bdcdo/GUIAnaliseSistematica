@@ -13,6 +13,10 @@ interface ReconciliationRequest {
   // sujo esperando a primeira geração" — um estado que nenhum worker conseguia
   // satisfazer e que ficava em retry perpétuo.
   llm_response_id: string;
+  // Token de versão da request, não metadado de exibição: os dois produtores o
+  // reescrevem com `now()` no `ON CONFLICT DO UPDATE`, e o ACK o exige de volta
+  // para não apagar um reenfileiramento que chegou depois da leitura.
+  requested_at: string;
   allow_new_cycles: boolean;
 }
 
@@ -57,13 +61,22 @@ async function acknowledge(
   admin: AdminClient,
   request: ReconciliationRequest,
 ): Promise<void> {
-  // ACK pela geração exata: se outra publicação já reenfileirou o documento, a
-  // request em banco não é mais a que este worker leu e o DELETE não casa.
+  // ACK pela linha exata que este worker leu, e são precisos os dois filtros:
+  // `llm_response_id` cobre a republicação de LLM (que troca a geração), e
+  // `requested_at` cobre o reenfileiramento HUMANO, que mantém a mesma geração e
+  // por isso é invisível ao primeiro filtro — o `ON CONFLICT (document_id) DO
+  // UPDATE` dos dois produtores só reescreve `requested_at`/`attempt_count`.
+  // Sem o segundo filtro, um save que caia entre o commit de
+  // reconcile_auto_review_cycles e este DELETE perde a request recém-criada,
+  // ficando com os field_reviews arquivados e nada na fila para regenerá-los.
+  // `record_auto_review_reconciliation_failure` não toca em `requested_at`, então
+  // uma tentativa que falhou antes ainda casa aqui: o filtro não prende a fila.
   const { error } = await admin
     .from("auto_review_reconciliation_requests")
     .delete()
     .eq("document_id", request.document_id)
-    .eq("llm_response_id", request.llm_response_id);
+    .eq("llm_response_id", request.llm_response_id)
+    .eq("requested_at", request.requested_at);
   if (error) throw new Error(error.message);
 }
 
@@ -342,7 +355,7 @@ async function fetchDueRequests(
 ): Promise<ReconciliationRequest[]> {
   let query = admin
     .from("auto_review_reconciliation_requests")
-    .select("project_id, document_id, llm_response_id, allow_new_cycles")
+    .select("project_id, document_id, llm_response_id, requested_at, allow_new_cycles")
     .lte("next_attempt_at", new Date().toISOString())
     .order("next_attempt_at", { ascending: true })
     .order("requested_at", { ascending: true })
@@ -389,8 +402,9 @@ export async function drainAutoReviewReconciliationRequests(
     const requests = await fetchDueRequests(admin, batchSize, options.projectId);
 
     for (const request of requests) {
-      // Sequential processing bounds DB pressure. Duplicate workers remain
-      // safe because reconciliation and ACK use the exact response generation.
+      // Sequential processing bounds DB pressure. Duplicate workers remain safe
+      // because reconciliation is versioned by the RPC's expected_* inputs and
+      // the ACK matches the exact request row (generation + requested_at).
       // react-doctor-disable-next-line react-doctor/async-await-in-loop
       const outcome = await processRequest(admin, request);
       result[outcome] += 1;
