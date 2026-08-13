@@ -271,6 +271,7 @@ function resp(
     answers,
     justifications: null,
     is_latest: true,
+    is_partial: false,
     pydantic_hash: null,
     answer_field_hashes: null,
     schema_version_major: null,

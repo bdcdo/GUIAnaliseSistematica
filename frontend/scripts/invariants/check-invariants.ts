@@ -364,6 +364,53 @@ const invariants: Invariant[] = [
     },
   },
   {
+    name: "comparacao-apoiada-so-em-rascunho",
+    motivation:
+      "#678: `is_partial` humano significa 'nunca submetida', mas sorteio e comparação usavam `is_latest` como proxy de 'codificou' — 21 dos 194 documentos ativos do Zolgensma entraram na fila de comparação apoiados numa codificação que o pesquisador nunca enviou. Corrigido em duas fronteiras (view lottery_doc_stats e regra 2 de responseQualifiesForVersion); FAIL aqui = alguma delas voltou a contar rascunho, ou um canal de escrita novo criou comparação sem checar submissão",
+    run: async () => {
+      const active = await activeDocIds();
+      const [assignments, responses] = await Promise.all([
+        fetchAll<{ id: string; document_id: string }>(
+          "assignments",
+          "id, document_id",
+          (q) => q.eq("type", "comparacao"),
+        ),
+        fetchAll<{ document_id: string; respondent_id: string | null; is_partial: boolean | null }>(
+          "responses",
+          "document_id, respondent_id, is_partial",
+          (q) => q.eq("respondent_type", "humano").eq("is_latest", true),
+        ),
+      ]);
+      // Conta, por documento, quantas codificações humanas SUBMETIDAS existem.
+      // `is_partial === true` é o único estado excluído: `null` é linha legada
+      // sem o sinal e conta como submetida, mesma escolha conservadora de
+      // 'codificacao-concluida-response-so-rascunho' — não falso-positivar sem
+      // prova de rascunho.
+      const submittedByDoc = new Map<string, number>();
+      const draftOnlyByDoc = new Map<string, number>();
+      for (const r of responses) {
+        const bucket = r.is_partial === true ? draftOnlyByDoc : submittedByDoc;
+        bucket.set(r.document_id, (bucket.get(r.document_id) ?? 0) + 1);
+      }
+      // Violação: existe comparação para o documento, mas NENHUMA codificação
+      // humana submetida a sustenta — e há ao menos um rascunho, que é o que
+      // explica a comparação ter sido criada. Sem essa segunda condição a
+      // invariante também pegaria comparação órfã por response apagada, que é
+      // outra família (e outra invariante).
+      return assignments
+        .filter(
+          (a) =>
+            active.has(a.document_id) &&
+            (submittedByDoc.get(a.document_id) ?? 0) === 0 &&
+            (draftOnlyByDoc.get(a.document_id) ?? 0) > 0,
+        )
+        .map((a) => ({
+          key: a.id,
+          detail: `comparação apoiada só em rascunho: doc ${a.document_id} tem ${draftOnlyByDoc.get(a.document_id)} codificação(ões) humana(s) nunca submetida(s) e nenhuma submetida`,
+        }));
+    },
+  },
+  {
     name: "versao-carimbada-tem-hash-da-propria-epoca",
     motivation:
       "família #529/#573 (medição #574/#579): antes do #573, o auto-save promovia schema_version_* sem revisão. Sob o critério do #573, carimbar a versão V no save ao vivo exige revisão real sob V — que grava ao menos um hash de V em answer_field_hashes. Uma response live_save cujo carimbo não é sustentado por NENHUM hash da própria época foi promovida por canal que pulou essa regra (ou o log de versões foi reescrito sob os pés dela — também vale investigação)",

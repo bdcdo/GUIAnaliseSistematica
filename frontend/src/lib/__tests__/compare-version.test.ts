@@ -29,6 +29,7 @@ function resp(overrides: Partial<VersionedResponse>): VersionedResponse {
   return {
     respondent_type: "llm",
     is_latest: true,
+    is_partial: false,
     pydantic_hash: "hash-atual",
     schema_version_major: 0,
     schema_version_minor: 20,
@@ -128,6 +129,53 @@ describe("responseQualifiesForVersion", () => {
     expect(
       responseQualifiesForVersion(
         resp({ respondent_type: "humano", is_latest: false }),
+        floor,
+        proj,
+      ),
+    ).toBe(false);
+  });
+  // Regra 2 (#678): rascunho nunca submetido não conta como codificação.
+  // Antes desta regra, `is_latest` fazia as vezes de "codificou" e um
+  // auto-save tirava o documento da fila do pesquisador e o empurrava para a
+  // Comparação — 21 dos 194 documentos ativos do Zolgensma.
+  it("descarta rascunho humano (is_partial=true) mesmo sendo is_latest", () => {
+    expect(
+      responseQualifiesForVersion(
+        resp({ respondent_type: "humano", is_partial: true }),
+        floor,
+        proj,
+      ),
+    ).toBe(false);
+  });
+  it("descarta rascunho humano mesmo sem filtro de versão (minVersion null)", () => {
+    // Discrimina a regra 2 da regra 3: sem piso, o predicado retornaria true
+    // logo após o gate de is_latest se o rascunho não fosse barrado antes.
+    expect(
+      responseQualifiesForVersion(
+        resp({ respondent_type: "humano", is_partial: true }),
+        null,
+        proj,
+      ),
+    ).toBe(false);
+  });
+  it("aceita resposta humana submetida (is_partial=false)", () => {
+    // O par positivo da regra 2: sem ele, um predicado que devolvesse `false`
+    // para tudo passaria nos dois casos acima.
+    expect(
+      responseQualifiesForVersion(
+        resp({ respondent_type: "humano", is_partial: false }),
+        floor,
+        proj,
+      ),
+    ).toBe(true);
+  });
+  it("descarta rascunho LLM — redundante com a CHECK do banco, mas não confia nela", () => {
+    // `responses_partial_llm_not_latest` já impede LLM parcial de ser
+    // is_latest; a regra vale como defesa em profundidade se a constraint for
+    // relaxada ou se a linha vier de fixture/backfill.
+    expect(
+      responseQualifiesForVersion(
+        resp({ respondent_type: "llm", is_partial: true }),
         floor,
         proj,
       ),
@@ -239,6 +287,7 @@ describe("fecho espelha o filtro default da UI (#217/#218/#247)", () => {
     answers,
     respondent_type: "humano",
     is_latest: true,
+    is_partial: false,
     pydantic_hash: "hash-atual",
     schema_version_major: 0,
     schema_version_minor: 20,

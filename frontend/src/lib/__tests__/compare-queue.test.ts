@@ -41,6 +41,7 @@ function response(overrides: Partial<CompareQueueResponse> = {}): CompareQueueRe
     answers: { a: "x" },
     justifications: null,
     is_latest: true,
+    is_partial: false,
     pydantic_hash: "hash1",
     answer_field_hashes: {},
     schema_version_major: null,

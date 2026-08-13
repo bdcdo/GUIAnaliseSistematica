@@ -186,7 +186,7 @@ export async function syncCompareAssignment(
     supabase
       .from("responses")
       .select(
-        "id, respondent_type, is_latest, pydantic_hash, schema_version_major, schema_version_minor, schema_version_patch, answers, answer_field_hashes",
+        "id, respondent_type, is_latest, is_partial, pydantic_hash, schema_version_major, schema_version_minor, schema_version_patch, answers, answer_field_hashes",
       )
       .eq("project_id", projectId)
       .eq("document_id", documentId),

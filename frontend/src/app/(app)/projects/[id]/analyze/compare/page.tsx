@@ -71,7 +71,7 @@ export default async function ComparePageRoute({
       // `documents!inner` + filtro excluded_at: documentos arquivados não
       // entram na fila de comparação (consistente com a contagem de B4).
       .select(
-        "id, document_id, respondent_type, respondent_name, respondent_id, answers, justifications, is_latest, pydantic_hash, answer_field_hashes, schema_version_major, schema_version_minor, schema_version_patch, created_at, documents!inner(id, title, external_id)",
+        "id, document_id, respondent_type, respondent_name, respondent_id, answers, justifications, is_latest, is_partial, pydantic_hash, answer_field_hashes, schema_version_major, schema_version_minor, schema_version_patch, created_at, documents!inner(id, title, external_id)",
       )
       .eq("project_id", id)
       .is("documents.excluded_at", null)
