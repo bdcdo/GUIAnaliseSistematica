@@ -22,7 +22,7 @@ import { toast } from "sonner";
 import { toggleLlmField } from "@/actions/schema";
 import { LLM_AMBIGUITIES_FIELD } from "@/lib/standard-questions";
 import {
-  getModelsForProvider,
+  defaultModelForProvider,
   getModelCapabilities,
   type ModelCapabilities,
   type Provider,
@@ -93,12 +93,11 @@ export function ModelConfigCard({
   };
 
   const handleChangeProvider = (provider: string) => {
-    const models = getModelsForProvider(provider as Provider);
-    const firstModel = models[0]?.model ?? "";
-    const caps = getModelCapabilities(provider as Provider, firstModel);
+    const defaultModel = defaultModelForProvider(provider as Provider);
+    const caps = getModelCapabilities(provider as Provider, defaultModel);
     setConfig({
       llm_provider: provider,
-      llm_model: firstModel,
+      llm_model: defaultModel,
       llm_kwargs: buildKwargsForCapabilities(config.llm_kwargs, caps),
     });
   };

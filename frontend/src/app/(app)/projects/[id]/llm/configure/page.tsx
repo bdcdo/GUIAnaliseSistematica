@@ -1,5 +1,6 @@
 import { createSupabaseServer } from "@/lib/supabase/server";
 import { LlmConfigurePane } from "@/components/llm/LlmConfigurePane";
+import { defaultModelForProvider, type Provider } from "@/lib/model-registry";
 import type { PydanticField } from "@/lib/types";
 
 // fallow-ignore-next-line complexity -- esta mudança só propaga a revisão do schema; a composição preexistente da página permanece fora deste refactor.
@@ -43,14 +44,21 @@ export default async function LlmConfigurePage({
     new Set(llmResponses?.map((response) => response.document_id)).size,
   );
 
+  // Projeto que nunca teve o modelo tocado na UI cai neste fallback. Ele tem
+  // de ser o mesmo default do registry: quando divergiam, a página abria num
+  // modelo que o próprio registry não conhecia e, por cair em
+  // DEFAULT_CAPABILITIES, escondia o select de raciocínio enquanto seguia
+  // mandando thinking_level nos kwargs.
+  const provider = (project?.llm_provider || "google_genai") as Provider;
+
   return (
     <LlmConfigurePane
       projectId={id}
       promptTemplate={project?.prompt_template ?? ""}
       projectDescription={project?.description ?? ""}
       config={{
-        llm_provider: project?.llm_provider || "google_genai",
-        llm_model: project?.llm_model || "gemini-3-flash-preview",
+        llm_provider: provider,
+        llm_model: project?.llm_model || defaultModelForProvider(provider),
         llm_kwargs:
           (project?.llm_kwargs as Record<string, unknown>) || {
             temperature: 1.0,

@@ -5,24 +5,49 @@ export interface ModelCapabilities {
   model: string;
   label: string;
   supportsTemperature: boolean;
+  /**
+   * Aceita `thinking_level` nos kwargs. Independente de `category`: os
+   * Flash-Lite entram no grupo "Padrão" pelo porte, mas aceitam o parâmetro.
+   * O select da UI só oferece low/medium/high — subconjunto que vale para
+   * toda a linha Gemini (os 3.5/3.6 também aceitam `minimal`).
+   */
   supportsThinkingLevel: boolean;
+  /** Só agrupa a lista do combobox por porte do modelo. */
   category: "standard" | "reasoning";
 }
 
+/**
+ * O PRIMEIRO modelo de cada provider é o default dele — ver
+ * `defaultModelForProvider`. Trocar o default é reordenar esta lista, não
+ * manter uma tabela provider→modelo em paralelo.
+ *
+ * IDs conferidos em https://ai.google.dev/gemini-api/docs/models. Um ID que
+ * não exista lá vira 404 no provider e queima a run inteira (foi o que
+ * aconteceu com `gemini-3-flash`, que nunca existiu: o preview chamava-se
+ * `gemini-3-flash-preview`).
+ */
 const MODEL_REGISTRY: ModelCapabilities[] = [
   // --- Google GenAI ---
   {
     provider: "google_genai",
-    model: "gemini-3-flash",
-    label: "Gemini 3 Flash",
+    model: "gemini-3.7-flash",
+    label: "Gemini 3.7 Flash",
     supportsTemperature: true,
     supportsThinkingLevel: true,
     category: "reasoning",
   },
   {
     provider: "google_genai",
-    model: "gemini-3.1-pro-preview",
-    label: "Gemini 3.1 Pro",
+    model: "gemini-3.6-flash",
+    label: "Gemini 3.6 Flash",
+    supportsTemperature: true,
+    supportsThinkingLevel: true,
+    category: "reasoning",
+  },
+  {
+    provider: "google_genai",
+    model: "gemini-3.5-flash",
+    label: "Gemini 3.5 Flash",
     supportsTemperature: true,
     supportsThinkingLevel: true,
     category: "reasoning",
@@ -45,10 +70,18 @@ const MODEL_REGISTRY: ModelCapabilities[] = [
   },
   {
     provider: "google_genai",
+    model: "gemini-3.5-flash-lite",
+    label: "Gemini 3.5 Flash Lite",
+    supportsTemperature: true,
+    supportsThinkingLevel: true,
+    category: "standard",
+  },
+  {
+    provider: "google_genai",
     model: "gemini-2.5-flash-lite",
     label: "Gemini 2.5 Flash Lite",
     supportsTemperature: true,
-    supportsThinkingLevel: false,
+    supportsThinkingLevel: true,
     category: "standard",
   },
 
@@ -139,6 +172,19 @@ const MODEL_REGISTRY: ModelCapabilities[] = [
 
 export function getModelsForProvider(provider: Provider): ModelCapabilities[] {
   return MODEL_REGISTRY.filter((m) => m.provider === provider);
+}
+
+/**
+ * Modelo default de um provider: o primeiro que ele declara no registry.
+ * Usado tanto ao trocar de provider na UI quanto como fallback para projeto
+ * cuja coluna `llm_model` veio vazia.
+ *
+ * O DEFAULT da coluna `projects.llm_model` precisa acompanhar este valor para
+ * `google_genai` — o SQL não deriva do TypeScript, então a migration que troca
+ * um lado tem de trocar o outro.
+ */
+export function defaultModelForProvider(provider: Provider): string {
+  return getModelsForProvider(provider)[0]?.model ?? "";
 }
 
 const DEFAULT_CAPABILITIES: Omit<ModelCapabilities, "provider" | "model"> = {
