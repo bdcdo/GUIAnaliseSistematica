@@ -7,6 +7,12 @@
 -- snapshot que a grava. Sem elas o arquivo seria so leitura de catalogo, e
 -- catalogo nao reproduz o bug: o que quebrou em producao foi um UPDATE.
 --
+-- (c) e (c2) gravam uma rodada que NAO e a corrente de proposito. As duas
+-- escritas de `fill_current_round_id` convergiam para o mesmo valor que a
+-- trigger ja tinha carimbado em (b), e escrita que repete o valor existente nao
+-- e observavel: em 2026-08-13 remover `round_id` do SET de (c) deixava a suite
+-- verde. Uma rodada distinta e o unico valor que so o write sob teste produz.
+--
 -- Roda numa transacao e nao deixa fixture no banco local.
 
 BEGIN;
@@ -94,18 +100,33 @@ BEGIN
 END;
 $$;
 
+-- Segunda rodada do mesmo projeto, sem promove-la a corrente. Ela existe para
+-- que (c) tenha um valor que so o proprio UPDATE consiga produzir: enquanto o
+-- snapshot gravava a rodada corrente, ele repetia o carimbo que a trigger de
+-- (b) ja tinha posto, e remover `round_id` do SET deixava a suite verde —
+-- medido em 2026-08-13, exatamente a mutacao correspondente ao write que
+-- quebrou em producao.
+INSERT INTO public.rounds (id, project_id, label) VALUES
+  ('7c300000-0000-0000-0000-000000000001',
+   '7c100000-0000-0000-0000-000000000001', 'Rodada 2');
+
 -- (c) Replay de `_persist_run_snapshot` (llm_runner.py:216-227) — o write que
 -- produzia o PGRST204 em producao. As demais colunas do payload acompanham
 -- porque e o UPDATE inteiro que precisa passar, nao so a coluna nova.
+--
+-- A rodada gravada e deliberadamente diferente da corrente, e nao um capricho
+-- do teste: o INSERT nasce no POST /api/llm/run e o snapshot roda depois, ja
+-- no background task, relendo `current_round_id` (llm_runner.py:1216 e :1262).
+-- Se o coordenador trocar a rodada nesse intervalo, a run migra — e o comentario
+-- da migration chama isso de "o UPDATE do snapshot continua mandando na rodada
+-- final". Nao ha guarda contra esse UPDATE: `enforce_current_response_round_write`
+-- protege `responses`, nao `llm_runs`.
 UPDATE public.llm_runs
 SET llm_provider = 'google',
     llm_model = 'gemini-2.5-flash',
     document_count = 3,
     pydantic_code = 'class Resposta(BaseModel): pass',
-    round_id = (
-      SELECT current_round_id FROM public.projects
-      WHERE id = '7c100000-0000-0000-0000-000000000001'
-    )
+    round_id = '7c300000-0000-0000-0000-000000000001'
 WHERE job_id = '7c200000-0000-0000-0000-000000000001';
 
 DO $$
@@ -115,13 +136,44 @@ BEGIN
     FROM public.llm_runs AS run
     JOIN public.projects AS project ON project.id = run.project_id
     WHERE run.job_id = '7c200000-0000-0000-0000-000000000001'
-      AND run.round_id = project.current_round_id
+      AND run.round_id = '7c300000-0000-0000-0000-000000000001'
+      -- O discriminante: e esta metade que morre se `round_id` sair do SET,
+      -- porque a trigger de (b) deixou a run na rodada corrente.
+      AND run.round_id IS DISTINCT FROM project.current_round_id
       AND run.llm_model = 'gemini-2.5-flash'
       AND run.document_count = 3
   ) THEN
     RAISE EXCEPTION 'FALHOU: snapshot da execucao nao gravou rodada e metadados';
   END IF;
-  RAISE NOTICE 'OK: snapshot da execucao grava a rodada junto dos metadados';
+  RAISE NOTICE 'OK: snapshot da execucao move a run para a rodada que gravou';
+END;
+$$;
+
+-- (c2) A outra metade do contrato de `fill_current_round_id`: valor explicito
+-- nunca e sobrescrito. Sem isso, uma trigger que carimbasse incondicionalmente
+-- passaria em (b) e so quebraria em producao, no INSERT de um cliente
+-- round-aware.
+INSERT INTO public.llm_runs (job_id, project_id, round_id, status, phase)
+VALUES (
+  '7c200000-0000-0000-0000-000000000003',
+  '7c100000-0000-0000-0000-000000000001',
+  '7c300000-0000-0000-0000-000000000001',
+  'running', 'loading'
+);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM public.llm_runs AS run
+    JOIN public.projects AS project ON project.id = run.project_id
+    WHERE run.job_id = '7c200000-0000-0000-0000-000000000003'
+      AND run.round_id = '7c300000-0000-0000-0000-000000000001'
+      AND run.round_id IS DISTINCT FROM project.current_round_id
+  ) THEN
+    RAISE EXCEPTION 'FALHOU: INSERT com rodada explicita foi sobrescrito pela trigger';
+  END IF;
+  RAISE NOTICE 'OK: rodada explicita no INSERT sobrevive a trigger';
 END;
 $$;
 
