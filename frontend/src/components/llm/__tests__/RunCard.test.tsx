@@ -56,7 +56,7 @@ import { RunCard } from "@/components/llm/RunCard";
 const props = {
   projectId: "00000000-0000-4000-8000-000000000001",
   config: {
-    llm_provider: "openai",
+    llm_provider: "openai" as const,
     llm_model: "test-model",
     llm_kwargs: {},
   },

@@ -50,7 +50,7 @@ const baseProps = {
   promptTemplate: "",
   projectDescription: "",
   config: {
-    llm_provider: "anthropic",
+    llm_provider: "anthropic" as const,
     llm_model: "claude-test",
     llm_kwargs: {},
   },

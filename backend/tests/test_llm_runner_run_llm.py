@@ -202,12 +202,22 @@ def _docs(n: int) -> list[dict]:
     ]
 
 
-def _make_fake_dataframeit(row_specs: dict[str, dict], calls: list[dict] | None = None):
+def _make_fake_dataframeit(
+    row_specs: dict[str, dict],
+    calls: list[dict] | None = None,
+    errors: dict[str, str] | None = None,
+):
     """row_specs: {doc_id: {field: value}}.
 
     Campos ausentes do spec de um doc simulam resposta incompleta do
     provider (o dataframeit real também não garante 100% de cobertura).
+
+    errors: {doc_id: mensagem de _error_details}. Espelha o ponto central do
+    dataframeit real — ele NÃO propaga exceção do provider: marca a linha com
+    `_dataframeit_status='error'`, escreve a mensagem em `_error_details` e
+    devolve o frame como se tivesse dado certo.
     """
+    errors = errors or {}
 
     def _fake(batch_df, model_class, prompt_template, **kwargs):
         if calls is not None:
@@ -224,8 +234,10 @@ def _make_fake_dataframeit(row_specs: dict[str, dict], calls: list[dict] | None 
             out[field] = [
                 row_specs.get(doc_id, {}).get(field) for doc_id in batch_df["id"]
             ]
-        out["_dataframeit_status"] = "processed"
-        out["_error_details"] = None
+        out["_dataframeit_status"] = [
+            "error" if doc_id in errors else "processed" for doc_id in batch_df["id"]
+        ]
+        out["_error_details"] = [errors.get(doc_id) for doc_id in batch_df["id"]]
         return out
 
     return _fake
@@ -256,13 +268,16 @@ def _run_llm_sync(
     *,
     dataframeit_calls: list[dict] | None = None,
     wakeup_calls: list[bool] | None = None,
+    dataframeit_errors: dict[str, str] | None = None,
 ) -> None:
     monkeypatch.setattr("services.llm_runner.get_supabase", lambda: sb)
     monkeypatch.setitem(
         sys.modules,
         "dataframeit",
         SimpleNamespace(
-            dataframeit=_make_fake_dataframeit(row_specs, dataframeit_calls)
+            dataframeit=_make_fake_dataframeit(
+                row_specs, dataframeit_calls, dataframeit_errors
+            )
         ),
     )
 
@@ -431,9 +446,11 @@ def test_run_llm_processes_multiple_batches_and_tracks_progress(monkeypatch):
 
     _run_llm_sync(monkeypatch, sb, row_specs, dataframeit_calls=dataframeit_calls)
 
+    # A primeira batch leva um documento só (canário do erro de provider); as
+    # demais seguem o parallel_requests configurado.
     assert [call["document_ids"] for call in dataframeit_calls] == [
-        ["doc-0", "doc-1"],
-        ["doc-2"],
+        ["doc-0"],
+        ["doc-1", "doc-2"],
     ]
     assert _jobs[JOB_ID]["current_batch"] == 2
     assert _jobs[JOB_ID]["total_batches"] == 2
@@ -443,8 +460,10 @@ def test_run_llm_processes_multiple_batches_and_tracks_progress(monkeypatch):
         "doc-1",
         "doc-2",
     }
+    # Heartbeat persistido no fim da primeira batch — que agora é o canário,
+    # de um documento.
     assert any(
-        update.get("progress") == 2 for update in sb.table("llm_runs").update_calls
+        update.get("progress") == 1 for update in sb.table("llm_runs").update_calls
     )
 
 
@@ -604,6 +623,89 @@ def test_run_llm_compromised_run_raises_runtime_error(monkeypatch):
     error_update = _last_update_where(sb.table("llm_runs"), status="error")
     assert error_update is not None
     assert "Run comprometida" in error_update["error_message"]
+
+
+# Erro determinístico de configuração: o provider recusa o modelo em toda
+# linha. Texto copiado do incidente que motivou o canário (gemini-3-flash, um
+# ID que nunca existiu na API).
+_MODEL_NOT_FOUND = (
+    "[Erro não-recuperável] ChatGoogleGenerativeAIError: Error calling model "
+    "'gemini-3-flash' (NOT_FOUND): 404 NOT_FOUND. models/gemini-3-flash is not "
+    "found for API version v1beta"
+)
+# Erro pontual daquele documento, que o dataframeit já tentou de novo e
+# desistiu. Não contém nenhum padrão de NON_RECOVERABLE_ERRORS.
+_RATE_LIMIT_EXHAUSTED = (
+    "[Falhou após 3 tentativa(s)] ResourceExhausted: 429 rate limit exceeded"
+)
+
+
+def test_run_llm_canary_aborts_before_publishing_when_provider_rejects_model(
+    monkeypatch,
+):
+    # 26 documentos: a escala do incidente real, em que as 26 chamadas foram
+    # gastas e 26 respostas vazias publicadas antes de alguém perceber o 404.
+    docs = _docs(26)
+    row_specs = {doc["id"]: {} for doc in docs}
+    dataframeit_calls: list[dict] = []
+    sb = _build_supabase(_project_row(llm_model="gemini-3-flash"), docs)
+
+    _run_llm_sync(
+        monkeypatch,
+        sb,
+        row_specs,
+        dataframeit_calls=dataframeit_calls,
+        dataframeit_errors={doc["id"]: _MODEL_NOT_FOUND for doc in docs},
+    )
+
+    assert _jobs[JOB_ID]["status"] == "error"
+    assert _jobs[JOB_ID]["error_type"] == "RuntimeError"
+    message = _jobs[JOB_ID]["errors"][0]
+    # A mensagem tem de nomear o modelo: o diagnóstico antigo falava em
+    # cobertura baixa e mandava o usuário procurar defeito no schema.
+    assert "google/gemini-3-flash" in message
+    assert "404 NOT_FOUND" in message
+    assert "Run comprometida" not in message
+
+    # O que a guarda existe para evitar. Sem a asserção das chamadas, o teste
+    # passaria mesmo se o abort acontecesse só no fim, depois de gastar as 26.
+    assert [call["document_ids"] for call in dataframeit_calls] == [["doc-0"]]
+    assert _published_responses(sb) == []
+
+    error_update = _last_update_where(sb.table("llm_runs"), status="error")
+    assert error_update is not None
+    assert "404 NOT_FOUND" in error_update["error_message"]
+
+
+def test_run_llm_canary_lets_recoverable_error_reach_the_statistical_path(
+    monkeypatch,
+):
+    # Mesma forma do teste acima — todo documento falhando já no canário — mas
+    # com erro recuperável. É o discriminante: uma guarda que abortasse em
+    # qualquer falha do primeiro documento passaria no teste anterior e
+    # quebraria aqui, matando a run inteira por azar pontual.
+    docs = _docs(4)
+    row_specs = {doc["id"]: {} for doc in docs}
+    dataframeit_calls: list[dict] = []
+    sb = _build_supabase(_project_row(), docs)
+
+    _run_llm_sync(
+        monkeypatch,
+        sb,
+        row_specs,
+        dataframeit_calls=dataframeit_calls,
+        dataframeit_errors={doc["id"]: _RATE_LIMIT_EXHAUSTED for doc in docs},
+    )
+
+    # Todas as batches rodaram e as respostas foram publicadas (parciais, com
+    # is_latest=false) — só então o caminho estatístico reprovou a run.
+    assert [call["document_ids"] for call in dataframeit_calls] == [
+        ["doc-0"],
+        ["doc-1", "doc-2", "doc-3"],
+    ]
+    assert len(_published_responses(sb)) == 4
+    assert _jobs[JOB_ID]["status"] == "error"
+    assert "Run comprometida" in _jobs[JOB_ID]["errors"][0]
 
 
 def test_run_llm_unhandled_exception_is_persisted(monkeypatch):

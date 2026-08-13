@@ -13,7 +13,7 @@ def _run(**overrides) -> _RunMetadata:
         project_id="proj-1",
         round_id="round-1",
         llm_provider="google_genai",
-        llm_model="gemini-3-flash-preview",
+        llm_model="gemini-3.7-flash",
         pydantic_hash="3c5e901f76547135",
         answer_field_hashes={"q1": "h1"},
         schema_version_major=0,
@@ -66,7 +66,7 @@ def test_campos_basicos_preservados():
     row = _build_llm_response_row(**_kwargs())
     assert row["respondent_type"] == "llm"
     assert "respondent_id" not in row
-    assert row["respondent_name"] == "google_genai/gemini-3-flash-preview"
+    assert row["respondent_name"] == "google_genai/gemini-3.7-flash"
     assert row["pydantic_hash"] == "3c5e901f76547135"
     assert row["llm_job_id"] == "job-1"
     assert row["llm_error"] is None

@@ -23,6 +23,12 @@ import {
   parseSaveablePydanticFields,
 } from "@/lib/pydantic-field";
 import {
+  buildKwargsForCapabilities,
+  getModelCapabilities,
+  getModelsForProvider,
+  isProvider,
+} from "@/lib/model-registry";
+import {
   classifyLogEntries,
   reconstructSnapshotsByVersion,
   matchResponsesToVersions,
@@ -833,6 +839,17 @@ export async function toggleLlmField(
   return persistSchema(projectId, fields, expectedBaseline, loaded);
 }
 
+/**
+ * Único escritor de `projects.llm_provider` / `llm_model` / `llm_kwargs` no
+ * sistema — o backend só lê essas colunas. É por isso que a validação mora
+ * aqui: é a fronteira onde dá para tornar o estado ruim inconstruível, em vez
+ * de detectá-lo depois, na run, quando o provider já recusou.
+ *
+ * O `llm_model` gravado ia cru para o provider, sem validação em ponto algum do
+ * caminho — foi assim que um ID inexistente queimou 26 chamadas em produção.
+ * Recusar o que não está no registry, em vez de sanear em silêncio, mantém o
+ * erro visível: `RunCard` já aborta a run quando esta action devolve `error`.
+ */
 export async function saveLlmConfig(
   projectId: string,
   config: {
@@ -841,9 +858,34 @@ export async function saveLlmConfig(
     llm_kwargs: Record<string, unknown>;
   }
 ): Promise<{ error?: string }> {
+  const { llm_provider, llm_model, llm_kwargs } = config;
+  if (!isProvider(llm_provider)) {
+    return { error: `Provedor de LLM desconhecido: "${llm_provider}".` };
+  }
+  const known = getModelsForProvider(llm_provider).map((m) => m.model);
+  if (!known.includes(llm_model)) {
+    return {
+      error:
+        `O modelo "${llm_model}" não é oferecido por ${llm_provider}. ` +
+        `Escolha um destes: ${known.join(", ")}.`,
+    };
+  }
+  // Higieniza os kwargs pela mesma regra que a UI aplica ao trocar de modelo.
+  // Sem isto, um `thinking_level` herdado de outro modelo sobrevive na coluna:
+  // `buildKwargsForCapabilities` só roda nos handlers de troca, nunca no mount,
+  // então config antiga nunca passaria por limpeza nenhuma.
+  const sanitized = {
+    llm_provider,
+    llm_model,
+    llm_kwargs: buildKwargsForCapabilities(
+      llm_kwargs,
+      getModelCapabilities(llm_provider, llm_model)
+    ),
+  };
+
   const supabase = await createSupabaseServer();
   try {
-    await updateOrThrow(supabase, "projects", config, { id: projectId }, {
+    await updateOrThrow(supabase, "projects", sanitized, { id: projectId }, {
       message:
         "Não foi possível salvar a configuração do LLM: sem permissão para alterar este projeto.",
     });

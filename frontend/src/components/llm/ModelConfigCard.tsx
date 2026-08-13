@@ -22,9 +22,10 @@ import { toast } from "sonner";
 import { toggleLlmField } from "@/actions/schema";
 import { LLM_AMBIGUITIES_FIELD } from "@/lib/standard-questions";
 import {
-  getModelsForProvider,
+  buildKwargsForCapabilities,
+  defaultModelForProvider,
   getModelCapabilities,
-  type ModelCapabilities,
+  PROVIDERS,
   type Provider,
 } from "@/lib/model-registry";
 import { ModelCombobox } from "./ModelCombobox";
@@ -39,18 +40,6 @@ interface ModelConfigCardProps {
   schemaBaseline: SchemaBaselineIdentity;
 }
 
-function buildKwargsForCapabilities(
-  currentKwargs: Record<string, unknown>,
-  caps: ModelCapabilities,
-): Record<string, unknown> {
-  const newKwargs = { ...currentKwargs };
-  if (!caps.supportsTemperature) delete newKwargs.temperature;
-  else if (newKwargs.temperature == null) newKwargs.temperature = 1.0;
-  if (!caps.supportsThinkingLevel) delete newKwargs.thinking_level;
-  else if (!newKwargs.thinking_level) newKwargs.thinking_level = "medium";
-  return newKwargs;
-}
-
 export function ModelConfigCard({
   projectId,
   config,
@@ -59,7 +48,7 @@ export function ModelConfigCard({
   schemaBaseline,
 }: ModelConfigCardProps) {
   const capabilities = getModelCapabilities(
-    config.llm_provider as Provider,
+    config.llm_provider,
     config.llm_model,
   );
 
@@ -84,7 +73,7 @@ export function ModelConfigCard({
   };
 
   const handleSelectModel = (model: string) => {
-    const caps = getModelCapabilities(config.llm_provider as Provider, model);
+    const caps = getModelCapabilities(config.llm_provider, model);
     setConfig((c) => ({
       ...c,
       llm_model: model,
@@ -92,13 +81,14 @@ export function ModelConfigCard({
     }));
   };
 
-  const handleChangeProvider = (provider: string) => {
-    const models = getModelsForProvider(provider as Provider);
-    const firstModel = models[0]?.model ?? "";
-    const caps = getModelCapabilities(provider as Provider, firstModel);
+  // O parâmetro é `Provider` porque as opções do Select saem de PROVIDERS; o
+  // cast fica na fronteira do Radix, cujo onValueChange é sempre `string`.
+  const handleChangeProvider = (provider: Provider) => {
+    const defaultModel = defaultModelForProvider(provider);
+    const caps = getModelCapabilities(provider, defaultModel);
     setConfig({
       llm_provider: provider,
-      llm_model: firstModel,
+      llm_model: defaultModel,
       llm_kwargs: buildKwargsForCapabilities(config.llm_kwargs, caps),
     });
   };
@@ -152,15 +142,17 @@ export function ModelConfigCard({
             <Label className="text-sm">Provedor</Label>
             <Select
               value={config.llm_provider}
-              onValueChange={handleChangeProvider}
+              onValueChange={(v) => handleChangeProvider(v as Provider)}
             >
               <SelectTrigger className="w-full">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="google_genai">Google GenAI</SelectItem>
-                <SelectItem value="openai">OpenAI</SelectItem>
-                <SelectItem value="anthropic">Anthropic</SelectItem>
+                {PROVIDERS.map((p) => (
+                  <SelectItem key={p.provider} value={p.provider}>
+                    {p.label}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>

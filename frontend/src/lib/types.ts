@@ -1,4 +1,5 @@
 import type { PydanticField } from "./pydantic-field";
+import type { Provider } from "./model-registry";
 
 export interface Profile {
   id: string;
@@ -237,7 +238,11 @@ export interface SchemaChangeEntry {
 // `ModelConfigCard`/`RunCard` — tipo único aqui evita drift ao adicionar um
 // kwarg estrutural novo.
 export interface LlmConfig {
-  llm_provider: string;
+  // `Provider`, e não `string`: enquanto era string, cada consumidor refazia um
+  // `as Provider` por conta própria e nenhum deles validava nada. Com a união
+  // aqui, o compilador exige `isProvider` na única fronteira que lê a coluna
+  // (a página de configure) e os casts somem.
+  llm_provider: Provider;
   llm_model: string;
   llm_kwargs: Record<string, unknown>;
 }
