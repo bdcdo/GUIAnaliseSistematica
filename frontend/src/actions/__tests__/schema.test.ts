@@ -507,11 +507,65 @@ describe("savePrompt / saveLlmConfig", () => {
     await expect(savePrompt("p1", "prompt")).resolves.toMatchObject({
       error: expect.stringMatching(/salvar o prompt/i),
     });
+    // Config válida de propósito: com provider ou modelo fora do registry a
+    // action recusa antes de tocar no banco, e este teste passaria a medir a
+    // validação em vez do caminho de RLS que ele existe para cobrir.
     state.tables = { projects: { data: [] } };
     await expect(saveLlmConfig("p1", {
-      llm_provider: "google",
-      llm_model: "gemini",
+      llm_provider: "google_genai",
+      llm_model: "gemini-3.7-flash",
       llm_kwargs: {},
     })).resolves.toMatchObject({ error: expect.stringMatching(/configuração do LLM/i) });
+  });
+
+  // A coluna `llm_model` ia crua ao provider, sem validação em ponto algum do
+  // caminho: foi um ID inexistente gravado aqui que queimou 26 chamadas em
+  // produção. Recusar na escrita torna o valor ruim impossível de persistir.
+  it("recusa provider fora do registry sem tocar no banco", async () => {
+    const result = await saveLlmConfig("p1", {
+      llm_provider: "google",
+      llm_model: "gemini-3.7-flash",
+      llm_kwargs: {},
+    });
+    expect(result.error).toMatch(/provedor de llm desconhecido/i);
+    expect(state.writes).toEqual([]);
+  });
+
+  it("recusa modelo que o provider não oferece sem tocar no banco", async () => {
+    const result = await saveLlmConfig("p1", {
+      llm_provider: "google_genai",
+      llm_model: "gemini-3-flash",
+      llm_kwargs: {},
+    });
+    // A mensagem nomeia as opções válidas: quem cair aqui está com uma UI
+    // dessincronizada do registry e precisa saber para onde ir.
+    expect(result.error).toMatch(/gemini-3-flash/);
+    expect(result.error).toMatch(/gemini-3\.7-flash/);
+    expect(state.writes).toEqual([]);
+  });
+
+  it("descarta o kwarg que o modelo escolhido não aceita", async () => {
+    // Cenário real: o projeto trocou de um Gemini 3.x para o 2.5 Flash Lite.
+    // `buildKwargsForCapabilities` só roda nos handlers de troca da UI, nunca
+    // no mount, então sem esta limpeza o thinking_level herdado sobreviveria na
+    // coluna e o provider responderia 400 em todo documento da run.
+    state.tables = { projects: { data: [{ id: "p1" }] } };
+    const result = await saveLlmConfig("p1", {
+      llm_provider: "google_genai",
+      llm_model: "gemini-2.5-flash-lite",
+      llm_kwargs: { thinking_level: "high", include_justifications: true },
+    });
+    expect(result.error).toBeUndefined();
+    expect(state.writes).toEqual([
+      {
+        table: "projects",
+        op: "update",
+        payload: {
+          llm_provider: "google_genai",
+          llm_model: "gemini-2.5-flash-lite",
+          llm_kwargs: { include_justifications: true, temperature: 1.0 },
+        },
+      },
+    ]);
   });
 });

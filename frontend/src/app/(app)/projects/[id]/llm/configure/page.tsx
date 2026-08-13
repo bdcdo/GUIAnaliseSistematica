@@ -1,6 +1,6 @@
 import { createSupabaseServer } from "@/lib/supabase/server";
 import { LlmConfigurePane } from "@/components/llm/LlmConfigurePane";
-import { defaultModelForProvider, type Provider } from "@/lib/model-registry";
+import { defaultModelForProvider, isProvider } from "@/lib/model-registry";
 import type { PydanticField } from "@/lib/types";
 
 // fallow-ignore-next-line complexity -- esta mudança só propaga a revisão do schema; a composição preexistente da página permanece fora deste refactor.
@@ -49,7 +49,13 @@ export default async function LlmConfigurePage({
   // modelo que o próprio registry não conhecia e, por cair em
   // DEFAULT_CAPABILITIES, escondia o select de raciocínio enquanto seguia
   // mandando thinking_level nos kwargs.
-  const provider = (project?.llm_provider || "google_genai") as Provider;
+  //
+  // `llm_provider` é TEXT livre no banco; o guard é a fronteira que converte a
+  // string persistida no tipo `Provider`. Um cast no lugar dele deixaria um
+  // valor desconhecido render `""` em defaultModelForProvider.
+  const provider = isProvider(project?.llm_provider)
+    ? project.llm_provider
+    : "google_genai";
 
   return (
     <LlmConfigurePane

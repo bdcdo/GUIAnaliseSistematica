@@ -20,7 +20,7 @@ import { LLM_AMBIGUITIES_FIELD } from "@/lib/standard-questions";
 const baseProps = {
   projectId: "p1",
   config: {
-    llm_provider: "anthropic",
+    llm_provider: "anthropic" as const,
     llm_model: "claude-test",
     llm_kwargs: {},
   },
