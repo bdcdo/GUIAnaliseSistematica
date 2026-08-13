@@ -61,13 +61,14 @@ export function LlmInsightsView({
         toast.error(result.error ?? "Falha ao regenerar backlog");
         return;
       }
+      // "Aguardando a resposta LLM" saiu na #670: documento sem geração LLM
+      // deixou de entrar no backlog, então não há mais pedido em espera para
+      // contar — o que sobrava ali era a fila insatisfazível se anunciando como
+      // se fosse trabalho em andamento.
       const parts = [
         `${result.queued ?? 0} documento(s) reenfileirado(s)`,
         `${result.processed ?? 0} pedido(s) processado(s)`,
       ];
-      if (result.deferred) {
-        parts.push(`${result.deferred} pedido(s) aguardando a resposta LLM`);
-      }
       toast.success(`Backlog regenerado. ${parts.join(", ")}.`);
       refresh();
     } catch (err) {

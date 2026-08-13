@@ -85,8 +85,9 @@ BEGIN
 END;
 $$;
 
--- Human-first publication creates a nullable dirty signal. The subsequent LLM
--- generation coalesces that row instead of leaving two competing contracts.
+-- Human-first publication has nothing to reconcile against yet, so it must not
+-- enqueue: a request without an LLM generation is work no worker can finish
+-- (#670). The save is not lost — the LLM publication below enqueues it.
 INSERT INTO public.responses (
   id, project_id, document_id, respondent_id, respondent_type, answers,
   is_latest, is_partial, pydantic_hash, answer_field_hashes,
@@ -101,12 +102,11 @@ INSERT INTO public.responses (
 
 DO $$
 BEGIN
-  IF NOT EXISTS (
+  IF EXISTS (
     SELECT 1 FROM public.auto_review_reconciliation_requests
     WHERE document_id = 'c0000000-0000-0000-0000-000000000002'
-      AND llm_response_id IS NULL
   ) THEN
-    RAISE EXCEPTION 'human-first save did not persist a nullable dirty signal';
+    RAISE EXCEPTION 'human-first save enqueued without a current LLM generation';
   END IF;
 END;
 $$;
@@ -126,10 +126,13 @@ DO $$
 DECLARE
   v_rejected BOOLEAN := false;
 BEGIN
+  -- Contrapartida da asserção anterior: o save humano que não enfileirou não se
+  -- perdeu. A publicação da geração LLM é que enfileira, e o dreno relê as
+  -- respostas humanas correntes daquele instante.
   IF (SELECT llm_response_id FROM public.auto_review_reconciliation_requests
       WHERE document_id = 'c0000000-0000-0000-0000-000000000002')
      IS DISTINCT FROM 'd0000000-0000-0000-0000-000000000011'::UUID THEN
-    RAISE EXCEPTION 'LLM generation did not coalesce the nullable dirty signal';
+    RAISE EXCEPTION 'LLM generation did not enqueue the pending human reconciliation';
   END IF;
 
   BEGIN
@@ -149,6 +152,185 @@ BEGIN
 
   IF NOT v_rejected THEN
     RAISE EXCEPTION 'malformed project/document/request trio was accepted';
+  END IF;
+END;
+$$;
+
+-- Contrato do token de ACK. O dreno apaga a request casando também
+-- `requested_at` (auto-review-reconciler.ts, acknowledge), porque o
+-- reenfileiramento humano mantém a MESMA geração LLM: sem essa coluna o worker
+-- não distingue a linha que leu da que um save posterior recriou, e apaga a
+-- segunda. O que este bloco fixa é a premissa de banco disso — o
+-- `ON CONFLICT DO UPDATE` reescreve `requested_at` e preserva `llm_response_id`.
+--
+-- A suíte roda numa transação só e `pg_catalog.now()` é transaction_timestamp(),
+-- então dois enqueues seguidos gravariam o MESMO valor: afirmar "o timestamp
+-- avançou" seria vácuo aqui. Empurrar o valor para o passado antes do re-save é
+-- o que faz a asserção morder.
+DO $$
+DECLARE
+  v_llm_response_id UUID;
+  v_requested_at TIMESTAMPTZ;
+BEGIN
+  UPDATE public.auto_review_reconciliation_requests
+  SET requested_at = pg_catalog.now() - INTERVAL '1 minute'
+  WHERE document_id = 'c0000000-0000-0000-0000-000000000002';
+
+  UPDATE public.responses
+  SET answers = '{"q1":"human-revisado"}'
+  WHERE id = 'd0000000-0000-0000-0000-000000000010';
+
+  SELECT request.llm_response_id, request.requested_at
+  INTO STRICT v_llm_response_id, v_requested_at
+  FROM public.auto_review_reconciliation_requests AS request
+  WHERE request.document_id = 'c0000000-0000-0000-0000-000000000002';
+
+  IF v_requested_at <> pg_catalog.now() THEN
+    RAISE EXCEPTION
+      'human re-save did not refresh the ACK token; requested_at is %',
+      v_requested_at;
+  END IF;
+
+  IF v_llm_response_id IS DISTINCT FROM
+     'd0000000-0000-0000-0000-000000000011'::UUID THEN
+    RAISE EXCEPTION 'human re-save changed the enqueued LLM generation';
+  END IF;
+END;
+$$;
+
+-- Documento só com codificação humana, sem geração LLM nenhuma: é o cenário da
+-- #670 e a fixture das três asserções seguintes.
+INSERT INTO public.documents (id, project_id, title, text, text_hash) VALUES
+  ('c0000000-0000-0000-0000-000000000003',
+   'b0000000-0000-0000-0000-000000000002', 'human-only doc', 'text',
+   'human-only-doc');
+
+INSERT INTO public.responses (
+  id, project_id, document_id, respondent_id, respondent_type, answers,
+  is_latest, is_partial, pydantic_hash, answer_field_hashes,
+  schema_version_major, schema_version_minor, schema_version_patch
+) VALUES (
+  'd0000000-0000-0000-0000-000000000013',
+  'b0000000-0000-0000-0000-000000000002',
+  'c0000000-0000-0000-0000-000000000003',
+  'a0000000-0000-0000-0000-000000000001', 'humano', '{"q1":"human-only"}',
+  true, false, 'schema-hash', '{"q1":"q1-hash"}', 1, 0, 0
+);
+
+-- #670: é o NOT NULL da coluna que torna "request sem geração para comparar" um
+-- estado inconstruível. O guard do trigger sozinho protegeria só o caminho que
+-- passa por ele; a constraint protege qualquer canal de escrita, inclusive os
+-- que ainda não existem. Asserção estrutural porque a comportamental abaixo não
+-- consegue distinguir a constraint do validate: BEFORE trigger roda ANTES da
+-- checagem de NOT NULL, então é sempre o validate que responde primeiro.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_catalog.pg_attribute AS column_meta
+    WHERE column_meta.attrelid = 'public.auto_review_reconciliation_requests'::REGCLASS
+      AND column_meta.attname = 'llm_response_id'
+      AND column_meta.attnotnull
+  ) THEN
+    RAISE EXCEPTION 'llm_response_id still admits NULL';
+  END IF;
+END;
+$$;
+
+DO $$
+DECLARE
+  v_rejected BOOLEAN := false;
+BEGIN
+  BEGIN
+    INSERT INTO public.auto_review_reconciliation_requests (
+      document_id, project_id, llm_response_id, allow_new_cycles
+    ) VALUES (
+      'c0000000-0000-0000-0000-000000000003',
+      'b0000000-0000-0000-0000-000000000002', NULL, true
+    );
+  EXCEPTION
+    WHEN not_null_violation THEN
+      v_rejected := true;
+    WHEN raise_exception THEN
+      IF SQLERRM <> 'reconciliation request must reference its current complete LLM response' THEN
+        RAISE;
+      END IF;
+      v_rejected := true;
+  END;
+
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'request without an LLM generation was accepted';
+  END IF;
+END;
+$$;
+
+-- A geração precisa ser a CORRENTE, não qualquer uma do documento: uma request
+-- apontando para geração superada faria o dreno reconciliar contra respostas
+-- que a publicação seguinte já substituiu.
+INSERT INTO public.responses (
+  id, project_id, document_id, respondent_type, answers, justifications,
+  is_latest, is_partial, pydantic_hash, answer_field_hashes,
+  schema_version_major, schema_version_minor, schema_version_patch
+) VALUES (
+  'd0000000-0000-0000-0000-000000000012',
+  'b0000000-0000-0000-0000-000000000002',
+  'c0000000-0000-0000-0000-000000000002', 'llm', '{"q1":"llm-superseded"}', NULL,
+  false, false, 'schema-hash', '{"q1":"q1-hash"}', 1, 0, 0
+);
+
+DO $$
+DECLARE
+  v_rejected BOOLEAN := false;
+BEGIN
+  BEGIN
+    UPDATE public.auto_review_reconciliation_requests
+    SET llm_response_id = 'd0000000-0000-0000-0000-000000000012'
+    WHERE document_id = 'c0000000-0000-0000-0000-000000000002';
+  EXCEPTION WHEN raise_exception THEN
+    IF SQLERRM <> 'reconciliation request must reference its current complete LLM response' THEN
+      RAISE;
+    END IF;
+    v_rejected := true;
+  END;
+
+  IF NOT v_rejected THEN
+    RAISE EXCEPTION 'request pointing at a superseded LLM generation was accepted';
+  END IF;
+END;
+$$;
+
+-- O reparo do coordenador (regenerateAutoReviewBacklog) é o SEGUNDO produtor e
+-- precisa do mesmo contrato: documento sem geração LLM corrente fica fora do
+-- backlog em vez de virar linha insatisfazível.
+DO $$
+BEGIN
+  -- Apagar a request de c…0002 é o que torna o discriminante abaixo capaz de
+  -- morder: ela foi criada pelo trigger na publicação da geração LLM e ainda
+  -- está viva aqui, então um `NOT EXISTS` sobre a linha preexistente passaria
+  -- mesmo que o JOIN LATERAL casasse zero documentos. Zerada a fila, só o
+  -- próprio reparo pode recriá-la.
+  DELETE FROM public.auto_review_reconciliation_requests
+  WHERE document_id = 'c0000000-0000-0000-0000-000000000002';
+
+  PERFORM public.enqueue_auto_review_reconciliation_for_project(
+    'b0000000-0000-0000-0000-000000000002'
+  );
+
+  IF EXISTS (
+    SELECT 1 FROM public.auto_review_reconciliation_requests
+    WHERE document_id = 'c0000000-0000-0000-0000-000000000003'
+  ) THEN
+    RAISE EXCEPTION 'backlog regeneration enqueued a document without an LLM generation';
+  END IF;
+
+  -- Discriminante: o documento que TEM geração corrente volta a entrar, senão a
+  -- asserção acima passaria com um reparo que simplesmente não enfileira nada.
+  IF NOT EXISTS (
+    SELECT 1 FROM public.auto_review_reconciliation_requests
+    WHERE document_id = 'c0000000-0000-0000-0000-000000000002'
+      AND llm_response_id = 'd0000000-0000-0000-0000-000000000011'
+  ) THEN
+    RAISE EXCEPTION 'backlog regeneration dropped a document with a current LLM generation';
   END IF;
 END;
 $$;

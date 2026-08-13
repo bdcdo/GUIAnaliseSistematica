@@ -8,7 +8,15 @@ import type { PydanticField } from "@/lib/types";
 interface ReconciliationRequest {
   project_id: string;
   document_id: string;
-  llm_response_id: string | null;
+  // Nunca nulo desde a #670: a coluna é NOT NULL e o produtor não enfileira
+  // documento sem geração LLM corrente. Antes disso, NULL significava "humano
+  // sujo esperando a primeira geração" — um estado que nenhum worker conseguia
+  // satisfazer e que ficava em retry perpétuo.
+  llm_response_id: string;
+  // Token de versão da request, não metadado de exibição: os dois produtores o
+  // reescrevem com `now()` no `ON CONFLICT DO UPDATE`, e o ACK o exige de volta
+  // para não apagar um reenfileiramento que chegou depois da leitura.
+  requested_at: string;
   allow_new_cycles: boolean;
 }
 
@@ -26,7 +34,7 @@ interface ReconciliationGroup {
 type AdminClient = ReturnType<typeof createSupabaseAdmin>;
 type VersionedHumanResponse = HumanResponseRow & { updated_at: string };
 type VersionedLlmResponse = LlmResponseRow & { updated_at: string };
-type ReconciliationOutcome = "processed" | "stale" | "deferred" | "failed";
+type ReconciliationOutcome = "processed" | "stale" | "failed";
 
 interface ReconciliationInputs {
   fields: PydanticField[];
@@ -39,12 +47,9 @@ interface ReconciliationInputs {
 export interface ReconciliationDrainResult {
   processed: number;
   stale: number;
-  deferred: number;
   failed: number;
   remaining: number;
 }
-
-class DeferredReconciliation extends Error {}
 
 function firstError(
   results: Array<{ error: { message: string } | null }>,
@@ -56,14 +61,22 @@ async function acknowledge(
   admin: AdminClient,
   request: ReconciliationRequest,
 ): Promise<void> {
-  let query = admin
+  // ACK pela linha exata que este worker leu, e são precisos os dois filtros:
+  // `llm_response_id` cobre a republicação de LLM (que troca a geração), e
+  // `requested_at` cobre o reenfileiramento HUMANO, que mantém a mesma geração e
+  // por isso é invisível ao primeiro filtro — o `ON CONFLICT (document_id) DO
+  // UPDATE` dos dois produtores só reescreve `requested_at`/`attempt_count`.
+  // Sem o segundo filtro, um save que caia entre o commit de
+  // reconcile_auto_review_cycles e este DELETE perde a request recém-criada,
+  // ficando com os field_reviews arquivados e nada na fila para regenerá-los.
+  // `record_auto_review_reconciliation_failure` não toca em `requested_at`, então
+  // uma tentativa que falhou antes ainda casa aqui: o filtro não prende a fila.
+  const { error } = await admin
     .from("auto_review_reconciliation_requests")
     .delete()
-    .eq("document_id", request.document_id);
-  query = request.llm_response_id === null
-    ? query.is("llm_response_id", null)
-    : query.eq("llm_response_id", request.llm_response_id);
-  const { error } = await query;
+    .eq("document_id", request.document_id)
+    .eq("llm_response_id", request.llm_response_id)
+    .eq("requested_at", request.requested_at);
   if (error) throw new Error(error.message);
 }
 
@@ -177,20 +190,20 @@ async function readReconciliationInputs(
         .eq("respondent_type", "humano")
         .eq("is_latest", true)
         .eq("is_partial", false),
-      (() => {
-        let query = admin
-          .from("responses")
-          .select("id, document_id, answers, answer_field_hashes, updated_at")
-          .eq("project_id", request.project_id)
-          .eq("document_id", request.document_id)
-          .eq("respondent_type", "llm")
-          .eq("is_latest", true)
-          .eq("is_partial", false);
-        if (request.llm_response_id !== null) {
-          query = query.eq("id", request.llm_response_id);
-        }
-        return query.maybeSingle();
-      })(),
+      // O filtro por id é o que distingue "a geração que enfileirou este pedido
+      // continua corrente" de "outra publicação já a substituiu". Sem ele, uma
+      // request obsoleta reconciliaria contra a geração nova, com os
+      // `expected_*` da antiga.
+      admin
+        .from("responses")
+        .select("id, document_id, answers, answer_field_hashes, updated_at")
+        .eq("project_id", request.project_id)
+        .eq("document_id", request.document_id)
+        .eq("respondent_type", "llm")
+        .eq("is_latest", true)
+        .eq("is_partial", false)
+        .eq("id", request.llm_response_id)
+        .maybeSingle(),
       admin
         .from("response_equivalences")
         .select(
@@ -272,12 +285,13 @@ async function reconcileRequest(
 ): Promise<"processed" | "stale"> {
   const inputs = await readReconciliationInputs(admin, request);
   const llm = inputs.llm;
+  // A geração enfileirada deixou de ser a corrente e completa (rerun, publicação
+  // parcial, remoção). O pedido é obsoleto: quem publicar a próxima geração
+  // reenfileira o documento. Desde a #670 não existe mais o caso "ainda não há
+  // geração nenhuma" — a request não seria criada.
   if (!llm) {
-    if (request.llm_response_id !== null) {
-      await acknowledge(admin, request);
-      return "stale";
-    }
-    throw new DeferredReconciliation("current complete LLM response is not visible yet");
+    await acknowledge(admin, request);
+    return "stale";
   }
 
   const humans = await eligibleHumanResponses(
@@ -329,7 +343,6 @@ async function processRequest(
     return await reconcileRequest(admin, request);
   } catch (requestError) {
     await recordFailure(admin, request, requestError);
-    if (requestError instanceof DeferredReconciliation) return "deferred";
     logReconciliationFailure(request, requestError);
     return "failed";
   }
@@ -342,7 +355,7 @@ async function fetchDueRequests(
 ): Promise<ReconciliationRequest[]> {
   let query = admin
     .from("auto_review_reconciliation_requests")
-    .select("project_id, document_id, llm_response_id, allow_new_cycles")
+    .select("project_id, document_id, llm_response_id, requested_at, allow_new_cycles")
     .lte("next_attempt_at", new Date().toISOString())
     .order("next_attempt_at", { ascending: true })
     .order("requested_at", { ascending: true })
@@ -368,7 +381,7 @@ async function countDueRequests(
 }
 
 function processedRequestCount(result: ReconciliationDrainResult): number {
-  return result.processed + result.stale + result.deferred + result.failed;
+  return result.processed + result.stale + result.failed;
 }
 
 export async function drainAutoReviewReconciliationRequests(
@@ -380,7 +393,6 @@ export async function drainAutoReviewReconciliationRequests(
   const result: ReconciliationDrainResult = {
     processed: 0,
     stale: 0,
-    deferred: 0,
     failed: 0,
     remaining: 0,
   };
@@ -390,8 +402,9 @@ export async function drainAutoReviewReconciliationRequests(
     const requests = await fetchDueRequests(admin, batchSize, options.projectId);
 
     for (const request of requests) {
-      // Sequential processing bounds DB pressure. Duplicate workers remain
-      // safe because reconciliation and ACK use the exact response generation.
+      // Sequential processing bounds DB pressure. Duplicate workers remain safe
+      // because reconciliation is versioned by the RPC's expected_* inputs and
+      // the ACK matches the exact request row (generation + requested_at).
       // react-doctor-disable-next-line react-doctor/async-await-in-loop
       const outcome = await processRequest(admin, request);
       result[outcome] += 1;

@@ -9,7 +9,6 @@ import type { SaveResponseOpts } from "@/actions/responses";
 const drainAutoReviewReconciliationRequests = vi.hoisted(() => vi.fn(async () => ({
   processed: 1,
   stale: 0,
-  deferred: 0,
   failed: 0,
   remaining: 0,
 })));
