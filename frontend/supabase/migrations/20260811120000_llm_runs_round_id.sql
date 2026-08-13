@@ -18,6 +18,46 @@
 ALTER TABLE public.llm_runs
   ADD COLUMN round_id uuid;
 
+-- Preflight, na mesma idiomatica fail-fast de 20260731120000: o backfill abaixo
+-- carimba a rodada CORRENTE em toda run historica, e isso so e verdade sob a
+-- premissa daquela migration — "a Rodada inicial representa retroativamente
+-- todo o historico". A diferenca e que a premissa deixou de ser automatica em
+-- 20260804120000: ate ali nenhuma troca de rodada chegava a commitar (o proprio
+-- cabecalho daquela migration mede os 9 projetos com exatamente uma rodada
+-- cada), e a partir dali passou a commitar. Num projeto que ja trocou de
+-- rodada, o historico anterior a troca nao pertence a corrente, e carimba-lo
+-- assim seria mentira silenciosa.
+--
+-- A clausula `count(*) > 1` e carga, nao decoracao: as "Rodada inicial" foram
+-- todas criadas pelo backfill do #642 em 2026-07-31, depois das runs que elas
+-- representam. Medicao de 2026-08-13 contra producao — sem essa clausula o
+-- preflight abortaria 8 das 9 runs existentes; com ela, nenhuma, e a unica run
+-- de projeto multi-rodada (Zolgensma-Judiciario, segunda rodada em 2026-08-05,
+-- run em 2026-08-10) e legitimamente da rodada corrente.
+--
+-- O que este bloco NAO cobre: projeto com `current_round_id IS NULL` some no
+-- JOIN e passa batido aqui — ele aborta adiante, no SET NOT NULL. Esse estado
+-- continua representavel e tem issue propria; torna-lo irrepresentavel exige
+-- CONSTRAINT TRIGGER deferida, porque `create_initial_project_round` e AFTER
+-- INSERT (logo NOT NULL na coluna quebraria a criacao de projeto) e CHECK nao
+-- aceita DEFERRABLE no Postgres.
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM public.llm_runs AS run
+    JOIN public.projects AS project ON project.id = run.project_id
+    JOIN public.rounds AS current_round ON current_round.id = project.current_round_id
+    WHERE run.started_at < current_round.created_at
+      AND (
+        SELECT count(*) FROM public.rounds AS project_round
+        WHERE project_round.project_id = run.project_id
+      ) > 1
+  ) THEN
+    RAISE EXCEPTION 'llm_runs round_id: run anterior a rodada corrente em projeto multi-rodada; derive o backfill dos dados reais';
+  END IF;
+END $$;
+
 -- Runs historicas herdam a rodada atual do projeto — mesmo criterio do backfill
 -- de responses/assignments em 20260731120000, onde a "Rodada inicial" representa
 -- retroativamente todo o historico anterior as rodadas.
