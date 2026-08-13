@@ -17,6 +17,13 @@ from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 
+# Importado no topo (e não junto do `from dataframeit import dataframeit` que
+# vive dentro de _run_dataframeit_batches) porque os testes substituem
+# sys.modules["dataframeit"] por um SimpleNamespace sem submódulos: resolver a
+# tupla em import-time do módulo mantém esses testes válidos sem que eles
+# precisem conhecer este import.
+from dataframeit.errors import NON_RECOVERABLE_ERRORS
+
 from services.auto_review_reconciliation import wake_auto_review_reconciliation
 from services.condition_evaluator import evaluate_condition, extract_field_conditions
 from services.pydantic_compiler import build_model_from_code, extract_json_schema_extra
@@ -839,6 +846,38 @@ def _expected_llm_fields(model_class) -> set[str]:
     return expected_llm_fields
 
 
+def _fatal_provider_error(frame: pd.DataFrame) -> str | None:
+    """Erro de configuração do provider (modelo inexistente, chave inválida,
+    permissão) visível já no canário — a mensagem, ou None se não houver.
+
+    Só classifica como fatal o que o próprio dataframeit marcou como sem
+    retry: `NON_RECOVERABLE_ERRORS` é a mesma tupla que ele consulta em
+    `is_recoverable_error` para decidir não tentar de novo, então não há um
+    segundo critério aqui para desatualizar quando a lib mudar o dela.
+
+    A distinção importa: um erro que esgotou retries num documento específico
+    (rate limit, timeout) continua indo para a via estatística de
+    `_raise_if_run_compromised`. Matar a run inteira por ele confundiria azar
+    pontual com configuração errada.
+
+    Exige que TODAS as linhas do frame tenham falhado assim — o sinal é "o
+    provider recusou tudo que viu", não "uma linha falhou".
+    """
+    if frame.empty:
+        return None
+    first_error: str | None = None
+    for _, row in frame.iterrows():
+        _, dfi_error = _extract_dataframeit_error(row)
+        if dfi_error is None:
+            return None
+        lowered = dfi_error.lower()
+        if not any(pattern.lower() in lowered for pattern in NON_RECOVERABLE_ERRORS):
+            return None
+        if first_error is None:
+            first_error = dfi_error
+    return first_error
+
+
 def _run_dataframeit_batches(
     *,
     sb,
@@ -855,7 +894,22 @@ def _run_dataframeit_batches(
     from dataframeit import dataframeit
 
     batch_size = max(1, config.parallel_requests)
-    batches = [df.iloc[i : i + batch_size] for i in range(0, len(df), batch_size)]
+    # A primeira batch leva um documento só, como canário. O dataframeit não
+    # propaga erro do provider: ele grava o erro na célula e devolve o frame
+    # normalmente, então um modelo inexistente ou uma chave inválida só
+    # apareceria em _raise_if_run_compromised — depois de gastar uma chamada por
+    # documento e de _process_and_save_rows ter publicado uma resposta vazia
+    # para cada um. Com o canário o pior caso é uma chamada e nenhuma escrita.
+    batches = [
+        batch
+        for batch in [
+            df.iloc[0:1],
+            *(df.iloc[i : i + batch_size] for i in range(1, len(df), batch_size)),
+        ]
+        # Partição vazia não é batch: sem o filtro, um df sem linhas produziria
+        # uma "primeira batch" vazia e o provider seria chamado à toa.
+        if not batch.empty
+    ]
     jobs_state.update(phase="processing", total_batches=len(batches))
 
     result_frames = []
@@ -876,6 +930,20 @@ def _run_dataframeit_batches(
             resume=False,
             **config.dfi_kwargs,
         )
+        if idx == 0:
+            fatal = _fatal_provider_error(batch_result)
+            if fatal:
+                # A afirmação "nenhuma resposta foi gravada" depende de esta
+                # função rodar inteira antes de _process_and_save_rows, que é
+                # quem publica (ver run_llm). Mover a publicação para dentro do
+                # loop de batches tornaria a mensagem mentirosa.
+                raise RuntimeError(
+                    f"O provider recusou o modelo '{llm_provider}/{llm_model}' "
+                    f"no primeiro dos {len(df)} documentos, então a run foi "
+                    f"abortada e nenhuma resposta foi gravada. Confira o nome "
+                    f"do modelo e a chave de API. "
+                    f"Erro do provider: {fatal}"
+                )
         result_frames.append(batch_result)
         processed = sum(len(f) for f in result_frames)
         jobs_state["progress"] = processed
