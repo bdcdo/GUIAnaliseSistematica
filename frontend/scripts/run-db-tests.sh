@@ -50,6 +50,7 @@ GATE_SUITES=(
   atomic_replace_rpcs
   explicit_assignment_rounds
   llm_rate_limit
+  llm_runs_round
   member_permission_rpcs
   project_members_column_guard
   responses_one_latest_human
