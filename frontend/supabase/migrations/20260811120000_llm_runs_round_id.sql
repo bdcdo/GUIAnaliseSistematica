@@ -37,7 +37,7 @@ ALTER TABLE public.llm_runs
 --
 -- O que este bloco NAO cobre: projeto com `current_round_id IS NULL` some no
 -- JOIN e passa batido aqui — ele aborta adiante, no SET NOT NULL. Esse estado
--- continua representavel e tem issue propria; torna-lo irrepresentavel exige
+-- continua representavel (ver issue #687); torna-lo irrepresentavel exige
 -- CONSTRAINT TRIGGER deferida, porque `create_initial_project_round` e AFTER
 -- INSERT (logo NOT NULL na coluna quebraria a criacao de projeto) e CHECK nao
 -- aceita DEFERRABLE no Postgres.
