@@ -22,7 +22,7 @@ import pandas as pd
 # sys.modules["dataframeit"] por um SimpleNamespace sem submódulos: resolver a
 # tupla em import-time do módulo mantém esses testes válidos sem que eles
 # precisem conhecer este import.
-from dataframeit.errors import NON_RECOVERABLE_ERRORS
+from dataframeit.errors import RECOVERABLE_ERRORS
 
 from services.auto_review_reconciliation import wake_auto_review_reconciliation
 from services.condition_evaluator import evaluate_condition, extract_field_conditions
@@ -846,22 +846,21 @@ def _expected_llm_fields(model_class) -> set[str]:
     return expected_llm_fields
 
 
-def _fatal_provider_error(frame: pd.DataFrame) -> str | None:
-    """Erro de configuração do provider (modelo inexistente, chave inválida,
-    permissão) visível já no canário — a mensagem, ou None se não houver.
+def _canary_provider_error(frame: pd.DataFrame) -> str | None:
+    """A mensagem de erro do provider se TODAS as linhas do frame falharam.
 
-    Só classifica como fatal o que o próprio dataframeit marcou como sem
-    retry: `NON_RECOVERABLE_ERRORS` é a mesma tupla que ele consulta em
-    `is_recoverable_error` para decidir não tentar de novo, então não há um
-    segundo critério aqui para desatualizar quando a lib mudar o dela.
+    Só constata a falha; não a classifica. A classificação — configuração
+    errada versus azar naquele documento — é feita por experimento em
+    `_probe_schema`, porque nenhuma leitura do texto do erro dá a resposta.
 
-    A distinção importa: um erro que esgotou retries num documento específico
-    (rate limit, timeout) continua indo para a via estatística de
-    `_raise_if_run_compromised`. Matar a run inteira por ele confundiria azar
-    pontual com configuração errada.
-
-    Exige que TODAS as linhas do frame tenham falhado assim — o sinal é "o
-    provider recusou tudo que viu", não "uma linha falhou".
+    O critério textual que existia aqui consultava `NON_RECOVERABLE_ERRORS` do
+    dataframeit, e errava nos dois sentidos (ver issue #692). Deixava passar a
+    recusa de schema medida em produção, porque `INVALID_ARGUMENT` não casa
+    com o padrão `InvalidArgument` por causa do underscore; e, na direção
+    oposta, teria matado a run inteira por um `BadRequestError` de um único
+    documento — a tupla responde "vale repetir esta linha?", uma pergunta por
+    documento, e estava sendo usada para decidir "a run está mal
+    configurada?", uma pergunta sobre a run.
     """
     if frame.empty:
         return None
@@ -870,12 +869,194 @@ def _fatal_provider_error(frame: pd.DataFrame) -> str | None:
         _, dfi_error = _extract_dataframeit_error(row)
         if dfi_error is None:
             return None
-        lowered = dfi_error.lower()
-        if not any(pattern.lower() in lowered for pattern in NON_RECOVERABLE_ERRORS):
-            return None
         if first_error is None:
             first_error = dfi_error
     return first_error
+
+
+# Sonda: um documento sintético, curto e sem particularidade nenhuma. O id não
+# colide com uuid de documento real, e o frame da sonda nunca chega a
+# _process_and_save_rows — é descartado assim que o erro é lido.
+_PROBE_DOC_ID = "__schema_probe__"
+_PROBE_TEXT = "Documento de teste."
+
+
+def _is_transient(message: str) -> bool:
+    """O provider declarou falha passageira (429, timeout, 5xx)?
+
+    Consulta `RECOVERABLE_ERRORS` para a pergunta que essa tupla de fato
+    responde — "isto é transitório?" — e exige casamento **explícito**. O
+    default do `is_recoverable_error` é otimista: erro que não casa com lista
+    nenhuma é tratado como recuperável, e foi por aí que a recusa de schema
+    ganhou o prefixo "[Falhou após 3 tentativa(s)]" apesar de determinística.
+    Aqui o silêncio das duas listas significa "não sei", não "passageiro".
+
+    Serve para não martelar um provider que já está recusando: sob rate limit
+    a sonda falha igual à chamada real, e sem esta porta a bisseção abortaria
+    a run inteira por uma falha que costuma passar sozinha.
+    """
+    lowered = message.lower()
+    return any(pattern.lower() in lowered for pattern in RECOVERABLE_ERRORS)
+
+
+def _field_group_key(model_class, name: str) -> str:
+    """Chave do grupo de campos que precisam viajar na mesma chamada.
+
+    Dois vínculos são semânticos e não podem ser quebrados por uma divisão:
+
+    - campo e sua justificativa gerada. Separados, o modelo escreveria a
+      justificativa numa chamada em que a resposta correspondente não foi
+      decidida — justificaria uma resposta que ele não deu;
+    - subcampos achatados de um mesmo pai (`pai__sub`), que são uma pergunta
+      só, quebrada em colunas por `_flatten_nested_basemodels`.
+
+    A justificativa é reconhecida pelo conjunto que o próprio
+    `_extend_model_with_justifications` registrou, não pelo sufixo: um campo
+    do coordenador pode terminar em `_justification` sem ser gerado.
+    """
+    if name in _generated_justification_fields(model_class):
+        name = name[: -len(_JUSTIFICATION_FIELD_SUFFIX)]
+    return name.split(_NESTED_FLATTEN_SEP, 1)[0]
+
+
+def _field_groups(model_class) -> list[list[str]]:
+    """Campos agrupados por `_field_group_key`, na ordem de declaração."""
+    groups: dict[str, list[str]] = {}
+    for name in model_class.model_fields:
+        groups.setdefault(_field_group_key(model_class, name), []).append(name)
+    return list(groups.values())
+
+
+def _submodel(model_class, names: list[str]):
+    """Modelo com o subconjunto de campos, preservando cada `FieldInfo`.
+
+    Devolve o próprio modelo quando o subconjunto é o total: além de evitar
+    reconstrução à toa, preserva os atributos que `_expected_llm_fields` e
+    `_extract_answers_from_row` leem do modelo completo.
+    """
+    if len(names) == len(model_class.model_fields):
+        return model_class
+    from pydantic import create_model
+
+    fields = {
+        name: (
+            model_class.model_fields[name].annotation,
+            model_class.model_fields[name],
+        )
+        for name in names
+    }
+    return create_model(f"{model_class.__name__}Chunk", **fields)
+
+
+def _merge_chunk_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    """Funde os frames dos lotes de campos de um mesmo conjunto de documentos.
+
+    Cada lote traz suas colunas de resposta mais as duas de controle. A regra
+    de fusão do controle é "erro em qualquer lote marca a linha": sem ela um
+    lote que falhou sozinho desapareceria, o documento sairia como resposta
+    parcial e o erro do provider nunca chegaria ao usuário.
+    """
+    if len(frames) == 1:
+        return frames[0]
+    control = {"_dataframeit_status", "_error_details"}
+    normalized = [f.reset_index(drop=True) for f in frames]
+    merged = normalized[0].copy()
+    for frame in normalized[1:]:
+        for column in frame.columns:
+            if column not in control and column not in merged.columns:
+                merged[column] = frame[column]
+
+    statuses: list[str] = []
+    details: list[str | None] = []
+    for i in range(len(merged)):
+        messages: list[str] = []
+        failed = False
+        for frame in normalized:
+            status, message = _extract_dataframeit_error(frame.iloc[i])
+            if status == "error":
+                failed = True
+            if message is not None:
+                messages.append(message)
+        statuses.append("error" if failed else "processed")
+        # dict.fromkeys deduplica preservando ordem: quando a recusa atinge
+        # todos os lotes, a mesma mensagem chegaria repetida.
+        details.append(" | ".join(dict.fromkeys(messages)) or None)
+    merged["_dataframeit_status"] = statuses
+    merged["_error_details"] = details
+    return merged
+
+
+def _probe_schema(call, model_class, names: list[str]) -> str | None:
+    """Roda o modelo contra um texto trivial. A mensagem de erro, ou None.
+
+    É este experimento que responde a pergunta que o texto do erro não
+    responde: *o erro depende de qual documento é?* Se o texto trivial também
+    falha, o documento não é a variável.
+    """
+    frame = pd.DataFrame([{"id": _PROBE_DOC_ID, "texto": _PROBE_TEXT}])
+    result = call(frame, _submodel(model_class, names))
+    if result.empty:
+        return None
+    _, message = _extract_dataframeit_error(result.iloc[0])
+    return message
+
+
+def _fit_chunks(probe, groups: list[list[str]], llm_provider, llm_model):
+    """Maior subdivisão que o provider aceita, achada por bisseção.
+
+    Sem número mágico: o limite de schema do provider é opaco (medi que não é
+    contagem de campos, nem propriedades+valores de enum, nem tamanho em chars
+    — cada métrica tem contraexemplo), então ele é descoberto perguntando.
+    Schema que já cabe não paga nada, porque a primeira pergunta é o modelo
+    inteiro.
+
+    Recursão em profundidade pela esquerda, levantando no primeiro lote de um
+    grupo só que ainda falhe: um erro que atinge tudo aborta em ~log2(n)
+    sondas, em vez de varrer a árvore inteira martelando um provider que já
+    está recusando.
+    """
+    names = [name for group in groups for name in group]
+    message = probe(names)
+    if message is None:
+        return [names]
+    if len(groups) == 1:
+        # Sem diagnóstico embutido: a mensagem relata o que foi tentado e
+        # deixa o erro do provider falar. Dizer "o schema é grande demais"
+        # aqui seria mentira sempre que a causa for outra.
+        raise RuntimeError(
+            f"O provider recusou toda chamada a '{llm_provider}/{llm_model}', "
+            f"inclusive com texto trivial e um único campo no schema, então "
+            f"a run foi abortada sem gravar resposta alguma. "
+            f"Erro do provider: {message}"
+        )
+    middle = len(groups) // 2
+    return _fit_chunks(probe, groups[:middle], llm_provider, llm_model) + _fit_chunks(
+        probe, groups[middle:], llm_provider, llm_model
+    )
+
+
+def _chunks_after_canary_failure(
+    probe, model_class, chunks: list[list[str]], llm_provider, llm_model
+) -> list[list[str]] | None:
+    """Lotes novos quando o canário falhou, ou None para seguir sem dividir.
+
+    Três desfechos, e a ordem entre eles importa. Sonda passa: o erro era
+    daquele documento, a run segue e a via estatística julga. Sonda falha com
+    erro transitório: também segue, porque abortar por rate limit desperdiça
+    uma run que costuma passar depois. Sonda falha de outro jeito: é a
+    configuração, e só aí vale dividir.
+    """
+    probe_error = probe(chunks[0])
+    if probe_error is None or _is_transient(probe_error):
+        return None
+    split = _fit_chunks(probe, _field_groups(model_class), llm_provider, llm_model)
+    logger.warning(
+        "Schema recusado inteiro por %s/%s; dividido em %d lotes de campos.",
+        llm_provider,
+        llm_model,
+        len(split),
+    )
+    return split
 
 
 def _run_dataframeit_batches(
@@ -912,14 +1093,10 @@ def _run_dataframeit_batches(
     ]
     jobs_state.update(phase="processing", total_batches=len(batches))
 
-    result_frames = []
-    proc_start = time.time()
-    last_proc_heartbeat = 0.0
-    for idx, batch_df in enumerate(batches):
-        jobs_state["current_batch"] = idx + 1
-        batch_result = dataframeit(
-            batch_df,
-            model_class,
+    def _call(frame: pd.DataFrame, model):
+        return dataframeit(
+            frame,
+            model,
             prompt_template,
             text_column="texto",
             provider=llm_provider,
@@ -930,20 +1107,33 @@ def _run_dataframeit_batches(
             resume=False,
             **config.dfi_kwargs,
         )
-        if idx == 0:
-            fatal = _fatal_provider_error(batch_result)
-            if fatal:
-                # A afirmação "nenhuma resposta foi gravada" depende de esta
-                # função rodar inteira antes de _process_and_save_rows, que é
-                # quem publica (ver run_llm). Mover a publicação para dentro do
-                # loop de batches tornaria a mensagem mentirosa.
-                raise RuntimeError(
-                    f"O provider recusou o modelo '{llm_provider}/{llm_model}' "
-                    f"no primeiro dos {len(df)} documentos, então a run foi "
-                    f"abortada e nenhuma resposta foi gravada. Confira o nome "
-                    f"do modelo e a chave de API. "
-                    f"Erro do provider: {fatal}"
-                )
+
+    def _call_chunks(frame: pd.DataFrame, chunks: list[list[str]]) -> pd.DataFrame:
+        return _merge_chunk_frames(
+            [_call(frame, _submodel(model_class, names)) for names in chunks]
+        )
+
+    def _probe(names: list[str]) -> str | None:
+        return _probe_schema(_call, model_class, names)
+
+    chunks: list[list[str]] = [list(model_class.model_fields)]
+    result_frames = []
+    proc_start = time.time()
+    last_proc_heartbeat = 0.0
+    for idx, batch_df in enumerate(batches):
+        jobs_state["current_batch"] = idx + 1
+        batch_result = _call_chunks(batch_df, chunks)
+        if idx == 0 and _canary_provider_error(batch_result):
+            # A afirmação "nenhuma resposta foi gravada" nas mensagens de abort
+            # depende de esta função rodar inteira antes de
+            # _process_and_save_rows, que é quem publica (ver run_llm).
+            split = _chunks_after_canary_failure(
+                _probe, model_class, chunks, llm_provider, llm_model
+            )
+            if split is not None:
+                chunks = split
+                # Refaz o canário para que a run comece com o resultado bom.
+                batch_result = _call_chunks(batch_df, chunks)
         result_frames.append(batch_result)
         processed = sum(len(f) for f in result_frames)
         jobs_state["progress"] = processed
