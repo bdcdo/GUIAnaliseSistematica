@@ -861,12 +861,16 @@ def _canary_provider_error(frame: pd.DataFrame) -> str | None:
     documento — a tupla responde "vale repetir esta linha?", uma pergunta por
     documento, e estava sendo usada para decidir "a run está mal
     configurada?", uma pergunta sobre a run.
+
+    Quem responde "esta linha falhou?" é `_row_error`, pelo status: a
+    presença de `_error_details` não basta, porque sucesso após retry também
+    a preenche.
     """
     if frame.empty:
         return None
     first_error: str | None = None
     for _, row in frame.iterrows():
-        _, dfi_error = _extract_dataframeit_error(row)
+        dfi_error = _row_error(row)
         if dfi_error is None:
             return None
         if first_error is None:
@@ -972,10 +976,9 @@ def _merge_chunk_frames(frames: list[pd.DataFrame]) -> pd.DataFrame:
         messages: list[str] = []
         failed = False
         for frame in normalized:
-            status, message = _extract_dataframeit_error(frame.iloc[i])
-            if status == "error":
-                failed = True
+            message = _row_error(frame.iloc[i])
             if message is not None:
+                failed = True
                 messages.append(message)
         statuses.append("error" if failed else "processed")
         # dict.fromkeys deduplica preservando ordem: quando a recusa atinge
@@ -997,8 +1000,23 @@ def _probe_schema(call, model_class, names: list[str]) -> str | None:
     result = call(frame, _submodel(model_class, names))
     if result.empty:
         return None
-    _, message = _extract_dataframeit_error(result.iloc[0])
-    return message
+    return _row_error(result.iloc[0])
+
+
+class _TransientProbeError(Exception):
+    """A sonda esbarrou numa falha passageira, não num veredito sobre o schema.
+
+    Sobe de qualquer nível da bisseção, e não só da primeira pergunta: a
+    divisão dispara sondas em sequência logo depois de `parallel_requests`
+    chamadas, que é justamente quando um 429 é mais provável. Sem esta
+    distinção, um rate limit no meio da recursão faria a bisseção concluir
+    "não cabe" sobre um lote que cabe — over-split permanente no caso leve, e
+    no caso pior a run abortaria no piso culpando o schema.
+    """
+
+    def __init__(self, message: str):
+        super().__init__(message)
+        self.provider_message = message
 
 
 def _fit_chunks(probe, groups: list[list[str]], llm_provider, llm_model):
@@ -1008,7 +1026,9 @@ def _fit_chunks(probe, groups: list[list[str]], llm_provider, llm_model):
     contagem de campos, nem propriedades+valores de enum, nem tamanho em chars
     — cada métrica tem contraexemplo), então ele é descoberto perguntando.
     Schema que já cabe não paga nada, porque a primeira pergunta é o modelo
-    inteiro.
+    inteiro — e é essa mesma pergunta que serve de discriminante entre erro do
+    documento e erro de configuração, motivo pelo qual ela não é feita duas
+    vezes (ver `_chunks_after_canary_failure`).
 
     Recursão em profundidade pela esquerda, levantando no primeiro lote de um
     grupo só que ainda falhe: um erro que atinge tudo aborta em ~log2(n)
@@ -1019,14 +1039,22 @@ def _fit_chunks(probe, groups: list[list[str]], llm_provider, llm_model):
     message = probe(names)
     if message is None:
         return [names]
+    if _is_transient(message):
+        raise _TransientProbeError(message)
     if len(groups) == 1:
-        # Sem diagnóstico embutido: a mensagem relata o que foi tentado e
-        # deixa o erro do provider falar. Dizer "o schema é grande demais"
-        # aqui seria mentira sempre que a causa for outra.
+        # O piso é um GRUPO, não um campo: campo mais a justificativa dele, ou
+        # um campo aninhado com todos os subcampos (ver `_field_group_key`).
+        #
+        # A dica sobre modelo e chave não afirma causa — afirmar "o schema é
+        # grande demais" aqui seria mentira sempre que a causa for outra. Ela
+        # aponta o que conferir, porque um modelo inexistente ou uma chave
+        # inválida (o caso da #691) recusa exatamente assim: tudo, até o
+        # menor pedido possível. O erro do provider vem junto e fala por si.
         raise RuntimeError(
             f"O provider recusou toda chamada a '{llm_provider}/{llm_model}', "
-            f"inclusive com texto trivial e um único campo no schema, então "
-            f"a run foi abortada sem gravar resposta alguma. "
+            f"inclusive com texto trivial e um único grupo de campos no "
+            f"schema, então a run foi abortada sem gravar resposta alguma. "
+            f"Confira o nome do modelo e a chave de API. "
             f"Erro do provider: {message}"
         )
     middle = len(groups) // 2
@@ -1036,20 +1064,35 @@ def _fit_chunks(probe, groups: list[list[str]], llm_provider, llm_model):
 
 
 def _chunks_after_canary_failure(
-    probe, model_class, chunks: list[list[str]], llm_provider, llm_model
+    probe, model_class, llm_provider, llm_model
 ) -> list[list[str]] | None:
     """Lotes novos quando o canário falhou, ou None para seguir sem dividir.
 
-    Três desfechos, e a ordem entre eles importa. Sonda passa: o erro era
-    daquele documento, a run segue e a via estatística julga. Sonda falha com
-    erro transitório: também segue, porque abortar por rate limit desperdiça
-    uma run que costuma passar depois. Sonda falha de outro jeito: é a
-    configuração, e só aí vale dividir.
+    Três desfechos. Sonda passa: o erro era daquele documento, a run segue e a
+    via estatística julga. Sonda falha com erro transitório: também segue,
+    porque abortar por rate limit desperdiça uma run que costuma passar
+    depois. Sonda falha de outro jeito: é a configuração, e só aí vale
+    dividir.
+
+    Os três saem da mesma bisseção em vez de uma sonda de entrada seguida de
+    outra idêntica: a primeira pergunta de `_fit_chunks` já é o modelo
+    inteiro, e "cabe inteiro" é o mesmo fato que "o erro era do documento".
+    Perguntar de novo era uma chamada paga ao provider em toda decisão de
+    divisão.
     """
-    probe_error = probe(chunks[0])
-    if probe_error is None or _is_transient(probe_error):
+    try:
+        split = _fit_chunks(probe, _field_groups(model_class), llm_provider, llm_model)
+    except _TransientProbeError as exc:
+        logger.warning(
+            "Sonda de schema barrada por erro transitório em %s/%s; a run "
+            "segue sem dividir. Erro do provider: %s",
+            llm_provider,
+            llm_model,
+            exc.provider_message,
+        )
         return None
-    split = _fit_chunks(probe, _field_groups(model_class), llm_provider, llm_model)
+    if len(split) == 1:
+        return None
     logger.warning(
         "Schema recusado inteiro por %s/%s; dividido em %d lotes de campos.",
         llm_provider,
@@ -1095,7 +1138,15 @@ def _run_dataframeit_batches(
 
     def _call(frame: pd.DataFrame, model):
         return dataframeit(
-            frame,
+            # Cópia, e não o frame recebido: o dataframeit escreve as colunas
+            # do modelo e as de controle **no objeto do chamador** (`to_pandas`
+            # devolve o mesmo DataFrame e `_setup_columns` é in-place) e, num
+            # frame que já as tenha, desiste em silêncio — avisa "Colunas [...]
+            # já existem" e devolve sem chamar o provider. Chamar duas vezes
+            # sobre o mesmo frame é justamente o que o refazer do canário
+            # abaixo faz. Copiar aqui torna esse estado inconstruível, em vez
+            # de obrigar cada chamador a lembrar da regra.
+            frame.copy(),
             model,
             prompt_template,
             text_column="texto",
@@ -1128,11 +1179,16 @@ def _run_dataframeit_batches(
             # depende de esta função rodar inteira antes de
             # _process_and_save_rows, que é quem publica (ver run_llm).
             split = _chunks_after_canary_failure(
-                _probe, model_class, chunks, llm_provider, llm_model
+                _probe, model_class, llm_provider, llm_model
             )
             if split is not None:
                 chunks = split
                 # Refaz o canário para que a run comece com o resultado bom.
+                # Depende de `_call` copiar o frame: sem isso a chamada aqui
+                # reencontraria as colunas que a primeira gravou em batch_df,
+                # devolveria o frame da falha sem chamar o provider, e este
+                # documento sairia vazio — abaixo do run_failure_threshold e,
+                # portanto, sem nem reprovar a run.
                 batch_result = _call_chunks(batch_df, chunks)
         result_frames.append(batch_result)
         processed = sum(len(f) for f in result_frames)
@@ -1241,6 +1297,25 @@ def _extract_dataframeit_error(row) -> tuple[object, str | None]:
         else None
     )
     return dfi_status, dfi_error
+
+
+def _row_error(row) -> str | None:
+    """A mensagem da linha **só quando ela de fato falhou**.
+
+    O dataframeit usa `_error_details` para duas coisas diferentes: em falha
+    grava o erro com `_dataframeit_status='error'`, mas em sucesso que passou
+    por retry grava `"Sucesso após N retry(s)"` mantendo o status
+    `'processed'` (`core.py`, tanto no caminho sequencial quanto no
+    paralelo). Quem lê só a mensagem confunde um sucesso com uma recusa de
+    schema — e, no canário, um único retry passaria a disparar a bisseção
+    inteira.
+
+    É por isso que este predicado existe em vez de `_error_details is not
+    None` repetido em cada chamador: a regra é uma só, e o status é quem a
+    decide.
+    """
+    status, message = _extract_dataframeit_error(row)
+    return message if status == "error" else None
 
 
 def _reconstruct_nested_answers(

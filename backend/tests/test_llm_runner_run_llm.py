@@ -15,7 +15,7 @@ import asyncio
 import sys
 from types import SimpleNamespace
 
-from services.llm_runner import _jobs, init_job, run_llm
+from services.llm_runner import _PROBE_DOC_ID, _jobs, init_job, run_llm
 
 JOB_ID = "job-1"
 PROJECT_ID = "proj-1"
@@ -233,6 +233,8 @@ def _make_fake_dataframeit(
     errors: dict[str, str] | None = None,
     error_always: str | None = None,
     max_schema_fields: int | None = None,
+    retry_success: bool = False,
+    probe_errors: list[str | None] | None = None,
 ):
     """row_specs: {doc_id: {field: value}}.
 
@@ -255,10 +257,35 @@ def _make_fake_dataframeit(
       abaixo disso — é a recusa de schema medida em produção contra o Gemini
       (`400 INVALID_ARGUMENT`), que não depende do documento nem do modelo,
       só do tamanho do que se pediu.
+
+    `retry_success` não é um modo de erro: é **sucesso** que passou por retry.
+    A lib real escreve `"Sucesso após N retry(s)"` em `_error_details`
+    mantendo o status `'processed'`, e reproduzir isso é o que permite testar
+    que ninguém confunda a mensagem com uma recusa.
+
+    `probe_errors` roteia as sondas de texto trivial, em ordem: cada elemento
+    é a mensagem daquela sonda (ou None para passar), e depois que a lista
+    acaba a sonda volta ao comportamento normal. Serve para escrever o que os
+    outros modos não conseguem — um provider que muda de resposta entre uma
+    sonda e a seguinte, como acontece quando um 429 cai no meio da bisseção.
+
+    Duas fidelidades a mais, ambas atrás de bug encontrado em revisão:
+
+    - o frame recebido é mutado **in-place**, como faz o dataframeit
+      (`to_pandas` devolve o mesmo objeto e `_setup_columns` escreve nele);
+    - num frame que já tenha as colunas do modelo, a lib avisa e devolve
+      **sem chamar o provider**. Sem esse ramo aqui, um chamador que rode duas
+      vezes sobre o mesmo frame parece funcionar no teste e perde o documento
+      em produção.
     """
     errors = errors or {}
+    sondas_restantes = list(probe_errors or [])
 
     def _fake(batch_df, model_class, prompt_template, **kwargs):
+        ja_processado = [c for c in model_class.model_fields if c in batch_df.columns]
+        if ja_processado and not kwargs.get("resume"):
+            # Nem registra em `calls`: nenhuma chamada ao provider aconteceu.
+            return batch_df.copy()
         if calls is not None:
             calls.append(
                 {
@@ -272,13 +299,13 @@ def _make_fake_dataframeit(
             max_schema_fields is not None
             and len(model_class.model_fields) > max_schema_fields
         )
-        out = batch_df.copy()
-        for field in model_class.model_fields:
-            out[field] = [
-                row_specs.get(doc_id, {}).get(field) for doc_id in batch_df["id"]
-            ]
+
+        e_sonda = list(batch_df["id"]) == [_PROBE_DOC_ID]
+        sonda_roteada = e_sonda and sondas_restantes
 
         def _erro(doc_id):
+            if sonda_roteada:
+                return sondas_restantes.pop(0)
             if error_always:
                 return error_always
             if schema_recusado:
@@ -286,11 +313,26 @@ def _make_fake_dataframeit(
             return errors.get(doc_id)
 
         detalhes = [_erro(doc_id) for doc_id in batch_df["id"]]
-        out["_dataframeit_status"] = [
+        # Linha que falhou não ganha resposta nenhuma: no dataframeit real a
+        # exceção sobe antes da escrita das colunas, que ficam com o None que
+        # `_setup_columns` criou. Preencher aqui apesar do erro faria um
+        # documento perdido parecer completo — o teste mediria a contagem de
+        # chamadas e não o dano.
+        for field in model_class.model_fields:
+            batch_df[field] = [
+                None if erro is not None else row_specs.get(doc_id, {}).get(field)
+                for doc_id, erro in zip(batch_df["id"], detalhes, strict=True)
+            ]
+        batch_df["_dataframeit_status"] = [
             "error" if d is not None else "processed" for d in detalhes
         ]
-        out["_error_details"] = detalhes
-        return out
+        batch_df["_error_details"] = [
+            d
+            if d is not None
+            else ("Sucesso após 1 retry(s)" if retry_success else None)
+            for d in detalhes
+        ]
+        return batch_df.copy()
 
     return _fake
 
@@ -323,6 +365,8 @@ def _run_llm_sync(
     dataframeit_errors: dict[str, str] | None = None,
     dataframeit_error_always: str | None = None,
     max_schema_fields: int | None = None,
+    retry_success: bool = False,
+    probe_errors: list[str | None] | None = None,
 ) -> None:
     monkeypatch.setattr("services.llm_runner.get_supabase", lambda: sb)
     monkeypatch.setitem(
@@ -335,6 +379,8 @@ def _run_llm_sync(
                 dataframeit_errors,
                 dataframeit_error_always,
                 max_schema_fields,
+                retry_success,
+                probe_errors,
             )
         ),
     )
@@ -933,8 +979,178 @@ def test_run_llm_aborta_quando_nem_um_campo_sozinho_e_aceito(monkeypatch):
 
     assert _jobs[JOB_ID]["status"] == "error"
     assert _published_responses(sb) == []
-    assert "INVALID_ARGUMENT" in _jobs[JOB_ID]["errors"][0]
+    erro = _jobs[JOB_ID]["errors"][0]
+    assert "INVALID_ARGUMENT" in erro
     assert _doc_batches(calls) == [["doc-0"]]
+    # A unidade do piso é o GRUPO (campo + justificativa, ou aninhado com os
+    # subcampos), não o campo: dizer "um único campo" mandaria o usuário
+    # procurar um schema de um campo que a bisseção nunca chega a pedir.
+    assert "um único grupo de campos" in erro
+    # E a dica que a #691 dava continua chegando: recusar até o menor pedido
+    # possível é como um modelo inexistente ou uma chave inválida se
+    # manifestam, e a bisseção não pode custar ao usuário essa orientação.
+    assert "Confira o nome do modelo e a chave de API" in erro
+
+
+def _sondas(calls: list[dict]) -> list[set[str]]:
+    """Os campos pedidos em cada sonda de texto trivial, na ordem."""
+    return [
+        call["model_fields"]
+        for call in calls
+        if call["document_ids"] == [_PROBE_DOC_ID]
+    ]
+
+
+def test_run_llm_refaz_o_canario_de_verdade_depois_de_dividir(monkeypatch):
+    # O documento do canário é processado ANTES de a divisão ser conhecida,
+    # então a run precisa refazê-lo com os lotes novos. O dataframeit grava
+    # as colunas no frame que recebe e, num frame que já as tenha, devolve
+    # sem chamar o provider — se o refazer reaproveitar o frame do canário,
+    # este documento sai vazio.
+    #
+    # São 5 documentos de propósito: com 1 perdido em 5, a cobertura baixa
+    # fica em 0,2, abaixo do run_failure_threshold de 0,3. A run reporta
+    # "completed" e o documento some sem ninguém ser avisado — que é
+    # exatamente a forma do dano em produção (1 em 26).
+    docs = _docs(5)
+    campos = ["campo_a", "campo_b", "campo_c", "campo_d"]
+    todos = campos + [f"{c}_justification" for c in campos]
+    row_specs = {doc["id"]: {c: f"v-{c}" for c in todos} for doc in docs}
+    sb = _build_supabase(
+        _project_row(
+            pydantic_code=SPLIT_PYDANTIC_CODE,
+            llm_kwargs={"include_justifications": True},
+        ),
+        docs,
+    )
+
+    _run_llm_sync(monkeypatch, sb, row_specs, max_schema_fields=4)
+
+    assert _jobs[JOB_ID]["status"] == "completed"
+    por_doc = {r["document_id"]: r for r in _published_responses(sb)}
+    assert set(por_doc) == {d["id"] for d in docs}
+    # A asserção que importa é sobre o documento do canário, não sobre a
+    # média: os outros quatro nunca passaram pelo caminho do refazer.
+    assert set(por_doc["doc-0"]["answers"]) == set(campos)
+
+
+def test_run_llm_sucesso_apos_retry_no_canario_nao_dispara_divisao(monkeypatch):
+    # O dataframeit escreve "Sucesso após N retry(s)" em `_error_details`
+    # mantendo o status 'processed'. Quem lê só a mensagem toma um documento
+    # bem-sucedido por uma recusa de schema — e, no canário, um único retry
+    # (banal sob rate limit do Gemini) bastaria para dividir um schema que
+    # cabe, dobrando o custo da run inteira.
+    docs = _docs(3)
+    campos = ["campo_a", "campo_b", "campo_c"]
+    row_specs = {doc["id"]: {c: f"v-{c}" for c in campos} for doc in docs}
+    calls: list[dict] = []
+    sb = _build_supabase(_project_row(), docs)
+
+    _run_llm_sync(
+        monkeypatch, sb, row_specs, dataframeit_calls=calls, retry_success=True
+    )
+
+    assert _jobs[JOB_ID]["status"] == "completed"
+    # Nenhuma sonda: o canário não foi lido como falha, então não houve o que
+    # discriminar. Contar sondas é o discriminante — o resultado final é o
+    # mesmo com ou sem a divisão espúria, só o custo muda.
+    assert _sondas(calls) == []
+    assert all(lote == set(campos) for lote in _campos_por_lote(calls, "doc-0"))
+
+
+def test_run_llm_sucesso_apos_retry_na_sonda_nao_conta_como_recusa(monkeypatch):
+    # Mesma confusão, agora na sonda: aqui ela é pior, porque "Sucesso após 1
+    # retry(s)" não casa com RECOVERABLE_ERRORS e portanto nem a porta de
+    # transitório o barra. A bisseção leria "não cabe" a cada nível e mataria
+    # no piso uma run que o provider nunca recusou.
+    #
+    # Cinco documentos porque o canário falha de verdade aqui: 1 perdido em 5
+    # fica abaixo do run_failure_threshold, então a run só termina em "error"
+    # se a sonda for mal lida — que é justamente o que se quer medir.
+    docs = _docs(5)
+    campos = ["campo_a", "campo_b", "campo_c"]
+    row_specs = {doc["id"]: {c: f"v-{c}" for c in campos} for doc in docs}
+    calls: list[dict] = []
+    sb = _build_supabase(_project_row(), docs)
+
+    _run_llm_sync(
+        monkeypatch,
+        sb,
+        row_specs,
+        dataframeit_calls=calls,
+        # O canário falha de verdade (erro daquele documento), então a sonda
+        # é consultada; ela responde com sucesso-após-retry.
+        dataframeit_errors={"doc-0": "[Erro não-recuperável] BadRequestError: 400"},
+        retry_success=True,
+    )
+
+    assert _jobs[JOB_ID]["status"] == "completed"
+    # Uma sonda só, e ela encerrou a questão: o schema inteiro passou.
+    assert _sondas(calls) == [set(campos)]
+    assert len(_published_responses(sb)) == 5
+
+
+def test_run_llm_sonda_transitoria_no_meio_da_bissecao_nao_vira_veredito(
+    monkeypatch,
+):
+    # A bisseção dispara sondas em sequência logo depois de parallel_requests
+    # chamadas — é ali que um 429 é mais provável. Sem distinguir "não cabe"
+    # de "não deu para perguntar", o rate limit vira veredito sobre o schema:
+    # a recursão desce até o piso e aborta a run com uma mensagem que culpa o
+    # tamanho do pedido.
+    docs = _docs(3)
+    campos = ["campo_a", "campo_b", "campo_c"]
+    row_specs = {doc["id"]: {c: f"v-{c}" for c in campos} for doc in docs}
+    calls: list[dict] = []
+    sb = _build_supabase(_project_row(), docs)
+
+    _run_llm_sync(
+        monkeypatch,
+        sb,
+        row_specs,
+        dataframeit_calls=calls,
+        dataframeit_error_always=_SCHEMA_RECUSADO,
+        # 1ª sonda: o modelo inteiro é recusado, a bisseção começa.
+        # 2ª sonda: 429 no meio do caminho.
+        probe_errors=[
+            _SCHEMA_RECUSADO,
+            "[Falhou após 3 tentativa(s)] ResourceExhausted: 429 quota",
+        ],
+    )
+
+    erro = _jobs[JOB_ID]["errors"][0]
+    # A run termina denunciando o erro que o provider de fato deu, e não
+    # inventando um veredito sobre o schema a partir de um rate limit.
+    assert "INVALID_ARGUMENT" in erro
+    assert "um único grupo de campos" not in erro
+    # E parou de martelar o provider: duas sondas, não a árvore inteira.
+    assert len(_sondas(calls)) == 2
+
+
+def test_run_llm_pergunta_pelo_schema_inteiro_uma_vez_so(monkeypatch):
+    # A sonda de entrada e a primeira pergunta da bisseção são a mesma:
+    # "o modelo inteiro cabe?". Fazê-las separadamente custava uma chamada
+    # paga ao provider em toda decisão de divisão.
+    docs = _docs(1)
+    campos = ["campo_a", "campo_b", "campo_c", "campo_d"]
+    todos = campos + [f"{c}_justification" for c in campos]
+    row_specs = {doc["id"]: {c: f"v-{c}" for c in todos} for doc in docs}
+    calls: list[dict] = []
+    sb = _build_supabase(
+        _project_row(
+            pydantic_code=SPLIT_PYDANTIC_CODE,
+            llm_kwargs={"include_justifications": True},
+        ),
+        docs,
+    )
+
+    _run_llm_sync(
+        monkeypatch, sb, row_specs, dataframeit_calls=calls, max_schema_fields=4
+    )
+
+    sondas = _sondas(calls)
+    assert [len(s) for s in sondas] == [8, 4, 4]
+    assert sondas[0] == set(todos)
 
 
 def test_run_llm_marca_o_documento_quando_um_dos_lotes_falha(monkeypatch):
