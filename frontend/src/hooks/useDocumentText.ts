@@ -34,19 +34,33 @@ const LOAD_ERROR = "(Erro ao carregar o documento)";
  * está em voo. O refetch é imperativo de propósito: `failed` não está nas deps
  * do effect, então só limpar a marca não re-dispararia a busca.
  *
- * Cobre os três consumidores do texto de documento: `DocumentPreview`,
- * `CommentsSplitView` e `MyVerdictsView`.
+ * Cobre os consumidores do texto de documento: `DocumentPreview`,
+ * `CommentsSplitView`, `MyVerdictsView` e o modo Atribuídos da tela Codificar.
+ *
+ * `maxEntries` (opt-in) limita o cache por despejo FIFO — mesma razão do
+ * `MAX_CACHED_DOCS` de `useDocumentForCoding`: sem teto, o cache reteria o
+ * texto integral de todo doc visitado pelo tempo de vida do componente. Quem
+ * abre um documento por vez (preview, veredito) não precisa; quem percorre uma
+ * fila deve passar um teto.
  */
 export function useDocumentText(
   projectId: string,
   documentId: string | null | undefined,
+  maxEntries?: number,
 ): {
   text: string | undefined;
   loading: boolean;
   error: boolean;
   retry: () => void;
 } {
-  const [cache, setCache] = useState<Record<string, string>>({});
+  // `order` acompanha `entries` para o despejo FIFO quando há `maxEntries`.
+  // Reabrir uma chave já em cache NÃO renova sua posição — não é LRU por
+  // acesso, que exigiria escrita em tempo de render. O custo é um eventual
+  // refetch de chave reaberta após despejo; o ganho é o heap limitado.
+  const [cache, setCache] = useState<{
+    entries: Record<string, string>;
+    order: string[];
+  }>({ entries: {}, order: [] });
   const [failed, setFailed] = useState<Record<string, true>>({});
 
   // Busca compartilhada pelo effect (carga inicial / auto-retry ao renavegar) e
@@ -58,7 +72,16 @@ export function useDocumentText(
       getDocumentText(projectId, id)
         .then((result) => {
           if (cancelled) return;
-          setCache((prev) => ({ ...prev, [id]: result?.text ?? NOT_FOUND }));
+          setCache((prev) => {
+            const entries = { ...prev.entries, [id]: result?.text ?? NOT_FOUND };
+            let order = prev.order.includes(id) ? prev.order : [...prev.order, id];
+            if (maxEntries && order.length > maxEntries) {
+              const evicted = order.slice(0, order.length - maxEntries);
+              order = order.slice(order.length - maxEntries);
+              for (const k of evicted) delete entries[k];
+            }
+            return { entries, order };
+          });
         })
         .catch(() => {
           if (cancelled) return;
@@ -68,11 +91,11 @@ export function useDocumentText(
         cancelled = true;
       };
     },
-    [projectId],
+    [projectId, maxEntries],
   );
 
   useEffect(() => {
-    if (!documentId || documentId in cache) return;
+    if (!documentId || documentId in cache.entries) return;
     return fetchText(documentId);
   }, [documentId, cache, fetchText]);
 
@@ -89,11 +112,12 @@ export function useDocumentText(
   }, [documentId, fetchText]);
 
   const text = documentId
-    ? (cache[documentId] ?? (documentId in failed ? LOAD_ERROR : undefined))
+    ? (cache.entries[documentId] ??
+      (documentId in failed ? LOAD_ERROR : undefined))
     : undefined;
   const loading =
-    !!documentId && !(documentId in cache) && !(documentId in failed);
+    !!documentId && !(documentId in cache.entries) && !(documentId in failed);
   const error =
-    !!documentId && documentId in failed && !(documentId in cache);
+    !!documentId && documentId in failed && !(documentId in cache.entries);
   return { text, loading, error, retry };
 }

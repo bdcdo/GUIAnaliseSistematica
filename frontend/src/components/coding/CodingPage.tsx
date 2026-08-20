@@ -5,6 +5,7 @@ import { applyFieldOrder } from "@/lib/field-order";
 import { sortByRecent } from "@/lib/coding-sort";
 import type { DocRoundStatus } from "@/lib/rounds";
 import { useUrlState } from "@/hooks/useUrlState";
+import { useDocumentText } from "@/hooks/useDocumentText";
 import { useFieldOrder } from "@/hooks/useFieldOrder";
 import { useFullscreen } from "@/hooks/useFullscreen";
 import { useDirtyDocs, useDirtyDocsCount } from "@/hooks/useDirtyDocs";
@@ -24,6 +25,12 @@ import { BrowseCodingView } from "./BrowseCodingView";
 import { useAssignedCoding } from "./useAssignedCoding";
 import { useBrowseCoding } from "./useBrowseCoding";
 import type { OutOfScopeConfig } from "./QuestionsPanel";
+
+/** Quantos textos de doc atribuído ficam em cache por sessão. Espelha o
+ *  `MAX_CACHED_DOCS` do modo Explorar: a fila é percorrida em sequência, então
+ *  um teto baixo cobre o ir-e-voltar entre vizinhos sem reter o texto integral
+ *  da fila inteira no heap — 145 docs a ~16 KB na maior fila medida. */
+const MAX_CACHED_ASSIGNED_TEXTS = 5;
 import type {
   PydanticField,
   AssignedDoc,
@@ -304,6 +311,19 @@ function CodingPageInner({
     setParams,
   });
 
+  // Aqui, e não dentro de `AssignedCodingView`: aquele componente é montado
+  // condicionalmente (`mode === "assigned"`), então alternar para a aba
+  // Explorar o desmontaria e levaria o cache junto — o mesmo documento seria
+  // rebuscado ao voltar. O container sobrevive à troca de modo.
+  // O teto acompanha `MAX_CACHED_DOCS` do modo Explorar: a navegação na fila é
+  // sequencial (anterior/próximo), então poucas entradas cobrem o ir-e-voltar
+  // sem reter o texto integral de uma fila inteira (145 docs na maior medida).
+  const assignedText = useDocumentText(
+    projectId,
+    mode === "assigned" ? (assigned.currentDoc?.id ?? null) : null,
+    MAX_CACHED_ASSIGNED_TEXTS,
+  );
+
   const browse = useBrowseCoding({
     projectId,
     currentRoundId: roundFilter?.currentRoundKey ?? "",
@@ -530,7 +550,10 @@ function CodingPageInner({
       {mode === "assigned" && (
         <AssignedCodingView
           doc={assigned.currentDoc}
-          projectId={projectId}
+          text={assignedText.text}
+          textLoading={assignedText.loading}
+          textError={assignedText.error}
+          onRetryText={assignedText.retry}
           title={assignedTitle}
           docIndex={assigned.docIndex}
           total={documents.length}

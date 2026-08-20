@@ -107,8 +107,20 @@ vi.mock("@/components/coding/DocumentPicker", () => ({
   DocumentPicker: () => <div data-testid="picker" />,
 }));
 vi.mock("@/components/coding/CodingHeader", () => ({
-  CodingHeader: ({ mode }: { mode: string }) => (
-    <div data-testid="hdr-mode">{mode}</div>
+  // `onModeChange` exposto como botão: é por ele que o teste de cache alterna
+  // para o modo Explorar e volta, que é o que desmontava `AssignedCodingView`.
+  CodingHeader: ({
+    mode,
+    onModeChange,
+  }: {
+    mode: string;
+    onModeChange: (m: "assigned" | "browse") => void;
+  }) => (
+    <div>
+      <div data-testid="hdr-mode">{mode}</div>
+      <button onClick={() => onModeChange("assigned")}>to-assigned</button>
+      <button onClick={() => onModeChange("browse")}>to-browse</button>
+    </div>
   ),
 }));
 vi.mock("@/components/coding/FullscreenNav", () => ({
@@ -493,5 +505,38 @@ describe("texto do documento vem sob demanda, não na fila", () => {
     // A segunda chamada cai no default do beforeEach, que resolve.
     await user.click(botao);
     expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+  });
+});
+
+describe("cache do texto sobrevive à troca de aba", () => {
+  const DOIS = [assignedDoc("a1"), assignedDoc("a2")];
+
+  it("ir ao Explorar e voltar não rebusca o texto do documento aberto", async () => {
+    // O fetch vive no container (`CodingPage`), não em `AssignedCodingView`.
+    // Aquele componente é montado sob `mode === "assigned"`, então guardar o
+    // cache nele o faria morrer a cada visita à outra aba — e o mesmo documento
+    // seria rebuscado ao voltar. Espelha a guarda que o modo Explorar já tem
+    // sobre `getDocumentForCoding`.
+    const user = userEvent.setup();
+    render(
+      <CodingPage
+        roundFilter={ROUND_FILTER}
+        userId="user-teste"
+        projectId="p1"
+        documents={DOIS}
+        fields={FIELDS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+    expect(getDocumentText).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByText("to-browse"));
+    await user.click(screen.getByText("to-assigned"));
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+    expect(getDocumentText).toHaveBeenCalledTimes(1);
   });
 });
