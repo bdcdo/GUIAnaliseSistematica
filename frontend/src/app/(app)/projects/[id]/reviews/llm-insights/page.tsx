@@ -37,28 +37,17 @@ interface ErrorResolutionRow {
 // uma execução por linha documento × campo — 2944 no Zolgensma). Pagar uma ida
 // a mais ao banco em série é mais barato que varrer a view inteira para
 // descartá-la em todo projeto que não usa auto-revisão.
-async function loadInsightsData(
-  supabase: Awaited<ReturnType<typeof createSupabaseServer>>,
-  id: string,
-  user: Awaited<ReturnType<typeof requirePageAuthUser>>,
-) {
-  const [{ data: project }, accessResult] = await Promise.all([
-    supabase
-      .from("projects")
-      .select("pydantic_fields, schema_revision, automation_mode")
-      .eq("id", id)
-      .single(),
-    getProjectAccessContext(id, user),
-  ]);
+type SupabaseServer = Awaited<ReturnType<typeof createSupabaseServer>>;
 
-  const [
-    responsesResult,
-    reviewsResult,
-    documentsResult,
-    errorResolutionsResult,
-    equivalencesResult,
-    finalAnswersResult,
-  ] = await Promise.all([
+// As seis leituras de dados do projeto, com as colunas explícitas que formam o
+// contrato real com `computeLlmErrorMetrics`. Todas paginadas com ordem total:
+// ver `fetch-all-paged.ts` para por que a ordem é obrigatória.
+function fetchMetricsSources(
+  supabase: SupabaseServer,
+  id: string,
+  automationMode: string | null,
+) {
+  return Promise.all([
     // Todas as responses, de todas as rodadas e dos dois tipos de respondente:
     // o union-find de equivalência precisa dos dois endpoints de cada par, e
     // `chosen_response_id` pode apontar para uma resposta que não é mais
@@ -125,7 +114,7 @@ async function loadInsightsData(
     // `final_answers` é view: não tem PK, e (documento, campo) é a ordem total
     // que a invariante de uma única resposta LLM `is_latest` por documento
     // sustenta.
-    usesAutoReviewSource(project?.automation_mode ?? null)
+    usesAutoReviewSource(automationMode)
       ? fetchAllPaged<MetricsFinalAnswer>(
           () =>
             supabase
@@ -137,7 +126,47 @@ async function loadInsightsData(
           ["document_id", "field_name"],
         )
       : { data: [] as MetricsFinalAnswer[], error: null },
+  ] as const);
+}
+
+// Falha numa fonte ESTRUTURAL não pode virar número: `fetchAllPaged` devolve o
+// que já acumulou JUNTO com o erro, então ignorá-lo exibiria uma taxa calculada
+// sobre um recorte arbitrário dos dados — ou "0 erros / 0%" sem aviso nenhum.
+// As cinco são estruturais: sem `documents` a métrica mede zero documento, e
+// sem `error_resolutions` erro já resolvido reaparece como aberto.
+//
+// `final_answers` fica de fora de propósito, e é a única: é fonte OPCIONAL, e o
+// modo de falha esperado dela é a janela de deploy em que o código já subiu mas
+// a migration que expõe os vereditos ainda não foi aplicada. Ali degradar para
+// a Comparação é melhor que derrubar a página — mas em silêncio, não.
+function firstStructuralError(
+  results: ReadonlyArray<{ error: { message: string } | null }>,
+): { message: string } | null {
+  return results.find((result) => result.error)?.error ?? null;
+}
+
+async function loadInsightsData(
+  supabase: SupabaseServer,
+  id: string,
+  user: Awaited<ReturnType<typeof requirePageAuthUser>>,
+) {
+  const [{ data: project }, accessResult] = await Promise.all([
+    supabase
+      .from("projects")
+      .select("pydantic_fields, schema_revision, automation_mode")
+      .eq("id", id)
+      .single(),
+    getProjectAccessContext(id, user),
   ]);
+
+  const [
+    responsesResult,
+    reviewsResult,
+    documentsResult,
+    errorResolutionsResult,
+    equivalencesResult,
+    finalAnswersResult,
+  ] = await fetchMetricsSources(supabase, id, project?.automation_mode ?? null);
 
   return {
     project,
@@ -148,22 +177,13 @@ async function loadInsightsData(
     errorResolutions: errorResolutionsResult.data,
     equivalences: equivalencesResult.data,
     finalAnswers: finalAnswersResult.data,
-    // Falha numa fonte ESTRUTURAL não pode virar número: `fetchAllPaged`
-    // devolve o que já acumulou junto com o erro, então ignorá-lo exibiria uma
-    // taxa calculada sobre um recorte arbitrário dos dados — ou "0 erros / 0%"
-    // sem aviso nenhum. Todas as cinco entram: sem `documents` a métrica mede
-    // zero documento, e sem `error_resolutions` erros já resolvidos reaparecem
-    // como abertos.
-    structuralError:
-      responsesResult.error ??
-      reviewsResult.error ??
-      documentsResult.error ??
-      errorResolutionsResult.error ??
-      equivalencesResult.error,
-    // `final_answers` é a exceção deliberada: é fonte OPCIONAL, e o modo de
-    // falha esperado é a janela de deploy em que o código já subiu mas a
-    // migration que expõe os vereditos ainda não foi aplicada. Degradar para a
-    // Comparação é melhor que derrubar a página — mas em silêncio, não.
+    structuralError: firstStructuralError([
+      responsesResult,
+      reviewsResult,
+      documentsResult,
+      errorResolutionsResult,
+      equivalencesResult,
+    ]),
     finalAnswersError: finalAnswersResult.error,
   };
 }

@@ -203,39 +203,42 @@ export function isMeasurableField(
 }
 
 // "O LLM acertou este campo?" a partir da proveniência da auto-revisão. O mapa
-// espelha a view `final_answers`; 'arbitrado' é o único caso em que
-// `provenance` sozinho não decide.
+// espelha o `CASE` da view `final_answers`, e o `satisfies` é o gate de drift:
+// acrescentar um estado à view sem classificá-lo aqui não compila.
+const AUTO_REVIEW_OUTCOME = {
+  // Sem linha em `field_reviews`: humano e LLM concordaram na codificação, e o
+  // campo nunca entrou na fila de auto-revisão.
+  consenso: "acerto",
+  // O codificador reconheceu que errou e o LLM estava certo.
+  auto_corrigido: "acerto",
+  // Respostas diferentes no texto, mesma coisa no conteúdo — o análogo exato do
+  // "semelhantes" da Comparação, e como lá, não é erro do LLM.
+  equivalente: "acerto",
+  // O único caso em que a proveniência sozinha não decide: quem decide é
+  // `final_verdict`.
+  arbitrado: "depende_do_veredito",
+  // 'ambiguo' é terminal mas não produz gabarito: fica fora do numerador E do
+  // denominador, como já acontece com o veredito "ambiguo" da Comparação. Os
+  // 'aguarda_*' são pendências, não acertos.
+  ambiguo: "pendente",
+  aguarda_reconciliacao: "pendente",
+  aguarda_auto_revisao: "pendente",
+  aguarda_arbitragem: "pendente",
+} satisfies Record<
+  AutoReviewProvenance,
+  "acerto" | "pendente" | "depende_do_veredito"
+>;
+
 function classifyAutoReview(
   row: MetricsFinalAnswer,
 ): "acerto" | "erro" | "pendente" {
-  switch (row.provenance) {
-    // Sem linha em `field_reviews`: humano e LLM concordaram na codificação, e
-    // o campo nunca entrou na fila de auto-revisão.
-    case "consenso":
-    // O codificador reconheceu que errou e o LLM estava certo.
-    case "auto_corrigido":
-    // Respostas diferentes no texto, mesma coisa no conteúdo — o análogo
-    // exato do "semelhantes" da Comparação, e como lá, não é erro do LLM.
-    case "equivalente":
-      return "acerto";
-    case "arbitrado":
-      return row.final_verdict === "humano" ? "erro" : "acerto";
-    // 'ambiguo' é terminal mas não produz gabarito: fica fora do numerador E
-    // do denominador, como já acontece com o veredito "ambiguo" da Comparação.
-    // Os 'aguarda_*' são pendências, não acertos.
-    case "ambiguo":
-    case "aguarda_reconciliacao":
-    case "aguarda_auto_revisao":
-    case "aguarda_arbitragem":
-      return "pendente";
-    default: {
-      // Inalcançável pelo tipo. O `never` é o gate: acrescentar um estado ao
-      // `CASE` da view sem tratá-lo aqui não compila.
-      const unhandled: never = row.provenance;
-      void unhandled;
-      return "pendente";
-    }
+  // A indexação é total pelo tipo; o `undefined` só aparece se o banco emitir
+  // um valor fora da união, e aí "pendente" é a leitura conservadora.
+  const outcome: string | undefined = AUTO_REVIEW_OUTCOME[row.provenance];
+  if (outcome !== "depende_do_veredito") {
+    return outcome === "acerto" ? "acerto" : "pendente";
   }
+  return row.final_verdict === "humano" ? "erro" : "acerto";
 }
 
 // Vence a decisão mais recente. Consenso não é decisão de ninguém e perde para
@@ -362,33 +365,53 @@ function comparisonIsError(
 ): boolean {
   if (review.chosen_response_id === llmResponse.id) return false;
 
+  const isMulti = field.type === "multi" && !!field.options?.length;
+  return isMulti
+    ? multiIsError(review, field, llmResponse, ctx)
+    : groupedIsError(review, llmResponse, ctx);
+}
+
+// `multi` tem semântica de CONJUNTO de opções, e é assim que
+// `computeDivergentFieldNames` o compara — enquanto `normalizeForComparison`
+// serializa o array na ordem em que veio, e faria de ["a","b"] vs ["b","a"] um
+// erro do LLM que a tela de Comparação exibe como concordância. Fica de fora do
+// union-find pelo mesmo motivo que lá: a UI de revisão de multi
+// (MultiOptionReview) não tem cards de equivalência, não há par a fundir.
+//
+// Hoje o caminho é defensivo: `MultiOptionReview` submete sem
+// `chosenResponseId`, e a página filtra `chosen_response_id IS NOT NULL`, de
+// modo que nenhum review de `multi` chega até aqui. Ele existe para que a
+// afirmação "esta métrica usa as primitivas da Comparação" seja verdadeira por
+// construção, e não por acidente da UI atual.
+function multiIsError(
+  review: MetricsReview,
+  field: PydanticField,
+  llmResponse: MetricsResponse,
+  ctx: MetricsContext,
+): boolean {
   const chosen = review.chosen_response_id
     ? ctx.responseById.get(review.chosen_response_id)
     : undefined;
+  // Sem a response escolhida não há conjunto com que comparar: o texto do
+  // veredito de multi é um JSON de opção→marcada, de outra forma que a resposta.
+  if (!chosen) return true;
 
-  // `multi` tem semântica de CONJUNTO de opções, e é assim que
-  // `computeDivergentFieldNames` o compara — enquanto `normalizeForComparison`
-  // serializa o array na ordem em que veio, e faria de ["a","b"] vs ["b","a"]
-  // um erro do LLM que a tela de Comparação exibe como concordância. `multi`
-  // fica de fora do union-find pelo mesmo motivo que lá: a sua UI de revisão
-  // (MultiOptionReview) não tem cards de equivalência, não há par a fundir.
-  //
-  // Hoje o ramo é defensivo: `MultiOptionReview` submete sem
-  // `chosenResponseId`, e a página filtra `chosen_response_id IS NOT NULL`, de
-  // modo que nenhum review de `multi` chega até aqui. Ele existe para que a
-  // afirmação "esta métrica usa as primitivas da Comparação" seja verdadeira
-  // por construção, e não por acidente da UI atual.
-  if (field.type === "multi" && field.options?.length) {
-    if (!chosen) return true;
-    return !multiSelectionsAgree(
-      field.options,
-      multiSelectionSets([
-        llmResponse.answers?.[review.field_name],
-        chosen.answers?.[review.field_name],
-      ]),
-    );
-  }
+  return !multiSelectionsAgree(
+    field.options ?? [],
+    multiSelectionSets([
+      llmResponse.answers?.[review.field_name],
+      chosen.answers?.[review.field_name],
+    ]),
+  );
+}
 
+// Demais tipos: classe de equivalência do union-find, que já funde tanto os
+// pares marcados pelo revisor quanto as respostas de texto idêntico.
+function groupedIsError(
+  review: MetricsReview,
+  llmResponse: MetricsResponse,
+  ctx: MetricsContext,
+): boolean {
   const groupKeys = ctx.groupKeysFor(review.document_id, review.field_name);
   const llmKey = groupKeys.get(llmResponse.id);
   const chosenKey = review.chosen_response_id
@@ -425,42 +448,49 @@ function comparisonCandidates(
     const field = ctx.fieldMap.get(review.field_name);
     if (!isMeasurableField(field)) continue;
 
-    const llmAnswer = llmResponse.answers?.[review.field_name];
-    const isError = comparisonIsError(review, field, llmResponse, ctx);
-
-    const shared = {
-      documentId: review.document_id,
-      documentTitle: ctx.titleOf(review.document_id),
-      fieldName: review.field_name,
-      schemaVersion: formatSchemaVersion(llmResponse),
-      reviewedAt: review.created_at,
-    };
-
-    candidates.push({
-      documentId: review.document_id,
-      fieldName: review.field_name,
-      decidedAt: review.created_at,
-      isError,
-      error: isError
-        ? {
-            ...shared,
-            fieldDescription: field.description || review.field_name,
-            llmAnswer: formatAnswer(llmAnswer),
-            llmJustification:
-              llmResponse.justifications?.[review.field_name] || null,
-            chosenVerdict: review.verdict,
-            reviewerComment: review.comment,
-            resolvedAt: ctx.resolvedAtOf(review.document_id, review.field_name),
-            llmResponseId: llmResponse.id,
-            chosenResponseId: review.chosen_response_id,
-            source: "comparacao",
-          }
-        : null,
-      entry: { ...shared, isError },
-    });
+    candidates.push(buildComparisonCandidate(review, field, llmResponse, ctx));
   }
 
   return candidates;
+}
+
+function buildComparisonCandidate(
+  review: MetricsReview,
+  field: PydanticField,
+  llmResponse: MetricsResponse,
+  ctx: MetricsContext,
+): Candidate {
+  const isError = comparisonIsError(review, field, llmResponse, ctx);
+  const shared: SharedEntryFields = {
+    documentId: review.document_id,
+    documentTitle: ctx.titleOf(review.document_id),
+    fieldName: review.field_name,
+    schemaVersion: formatSchemaVersion(llmResponse),
+    reviewedAt: review.created_at,
+  };
+
+  return {
+    documentId: review.document_id,
+    fieldName: review.field_name,
+    decidedAt: review.created_at,
+    isError,
+    error: isError
+      ? {
+          ...shared,
+          fieldDescription: field.description || review.field_name,
+          llmAnswer: formatAnswer(llmResponse.answers?.[review.field_name]),
+          llmJustification:
+            llmResponse.justifications?.[review.field_name] || null,
+          chosenVerdict: review.verdict,
+          reviewerComment: review.comment,
+          resolvedAt: ctx.resolvedAtOf(review.document_id, review.field_name),
+          llmResponseId: llmResponse.id,
+          chosenResponseId: review.chosen_response_id,
+          source: "comparacao",
+        }
+      : null,
+    entry: { ...shared, isError },
+  };
 }
 
 // A view produz uma linha por campo do schema para TODO documento com resposta
@@ -536,14 +566,22 @@ function buildAutoReviewError(
   };
 }
 
-/* ── Fonte B: Auto-revisão (view `final_answers`) ── */
-// `null` quando a linha não é mensurável: documento excluído, campo fora da
-// superfície de revisão, documento sem LLM corrente, codificação humana ausente
-// ou incompleta, campo inaplicável a um dos lados, ou veredito ainda pendente.
-function autoReviewCandidate(
+interface MeasurableAutoReviewRow {
+  field: PydanticField;
+  /** A response sobre a qual o veredito se deu, que só coincide com a corrente
+   *  enquanto não houve nova rodada. Em 'consenso' não há `llm_response_id`. */
+  arbitratedLlm: MetricsResponse;
+  isError: boolean;
+}
+
+// A cadeia de guardas da fonte B, separada da montagem do candidato. `null`
+// quando a linha não é mensurável: documento excluído, campo fora da superfície
+// de revisão, documento sem LLM corrente, codificação humana ausente ou
+// incompleta, campo inaplicável a um dos lados, ou veredito ainda pendente.
+function measurableAutoReviewRow(
   row: MetricsFinalAnswer,
   ctx: MetricsContext,
-): Candidate | null {
+): MeasurableAutoReviewRow | null {
   // A view junta só `responses` e `projects` — nunca `documents` —, então
   // documentos com `excluded_at`/`exclusion_pending_at` continuam nela com as
   // responses que sobreviveram ao soft delete.
@@ -560,13 +598,24 @@ function autoReviewCandidate(
   const outcome = classifyAutoReview(row);
   if (outcome === "pendente") return null;
 
-  // A response sobre a qual o veredito se deu, que só coincide com a corrente
-  // enquanto não houve nova rodada. Em 'consenso' não há `llm_response_id`.
-  const arbitratedLlm =
-    (row.llm_response_id ? ctx.responseById.get(row.llm_response_id) : undefined) ??
-    llmResponse;
+  return {
+    field,
+    arbitratedLlm:
+      (row.llm_response_id
+        ? ctx.responseById.get(row.llm_response_id)
+        : undefined) ?? llmResponse,
+    isError: outcome === "erro",
+  };
+}
 
-  const isError = outcome === "erro";
+/* ── Fonte B: Auto-revisão (view `final_answers`) ── */
+function autoReviewCandidate(
+  row: MetricsFinalAnswer,
+  ctx: MetricsContext,
+): Candidate | null {
+  const measurable = measurableAutoReviewRow(row, ctx);
+  if (!measurable) return null;
+  const { field, arbitratedLlm, isError } = measurable;
   const decidedAt = row.final_decided_at ?? row.self_reviewed_at ?? null;
   const shared: SharedEntryFields = {
     documentId: row.document_id,
