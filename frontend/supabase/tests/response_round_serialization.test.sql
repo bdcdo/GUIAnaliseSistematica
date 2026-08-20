@@ -59,7 +59,8 @@ SELECT extensions.dblink_exec(
         '{"q1":"stale"}'::jsonb, true, true, v_old_round
       );
       RETURN 'unexpected-success';
-    EXCEPTION WHEN serialization_failure THEN
+    -- P0R01: recusa terminal, nao conflito transitorio (20260820170000).
+    EXCEPTION WHEN SQLSTATE 'P0R01' THEN
       RETURN 'rejected-stale-round';
     END;
     $fn$;$$

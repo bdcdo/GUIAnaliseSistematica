@@ -564,7 +564,10 @@ BEGIN
         'is_partial', false
       )
     );
-  EXCEPTION WHEN serialization_failure THEN
+  -- P0R01, nao serialization_failure: a recusa por rodada encerrada e terminal.
+  -- 40001 faria drivers e schedulers retentarem sozinhos, e a condicao so sai
+  -- do lugar quando alguem recarrega a pagina (ver 20260820170000).
+  EXCEPTION WHEN SQLSTATE 'P0R01' THEN
     v_rejected := true;
   END;
 
@@ -593,7 +596,10 @@ BEGIN
       '72000000-0000-0000-0000-000000000001',
       'humano', '{}'::jsonb, true, true, v_old_round
     );
-  EXCEPTION WHEN serialization_failure THEN
+  -- P0R01, nao serialization_failure: a recusa por rodada encerrada e terminal.
+  -- 40001 faria drivers e schedulers retentarem sozinhos, e a condicao so sai
+  -- do lugar quando alguem recarrega a pagina (ver 20260820170000).
+  EXCEPTION WHEN SQLSTATE 'P0R01' THEN
     v_rejected := true;
   END;
 
