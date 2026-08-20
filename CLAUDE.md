@@ -17,26 +17,10 @@ Browser  →  Next.js 16 (Vercel)  ←→  Supabase (Postgres + RLS)
               |-- Pydantic compiler
 ```
 
-## Tech Stack
-
-| Camada | Tecnologia | Versao |
-|--------|-----------|--------|
-| Frontend | Next.js (App Router) | 16 |
-| UI | React 19 + shadcn/ui (new-york, neutral) | latest |
-| Linguagem | TypeScript | 5.7 |
-| Styling | Tailwind CSS v4 (oklch) | 4 |
-| Auth | Clerk (`@clerk/nextjs`) + `@clerk/localizations` (pt-BR) | latest |
-| DB | Supabase (Postgres + RLS via Clerk JWT) | free tier |
-| Backend LLM | FastAPI (Python) | latest |
-| LLM | `dataframeit` | 0.5.3 |
-| Editor | Monaco Editor (`@monaco-editor/react`) | latest |
-| Toast | `sonner` | latest |
-| CSV | `papaparse` | latest |
-| Brand color | teal #2F6868 = `oklch(0.44 0.08 185)` | - |
-
 ## Convencoes
 
 - **Portugues** para UI (labels, mensagens), **ingles** para codigo (vars, funcs, types)
+- **Brand color**: teal #2F6868 = `oklch(0.44 0.08 185)`
 - **Alvo e desktop/mouse, nao toque**: a plataforma e acessada via computador. Otimizar densidade e alvos de clique para mouse — nao aplicar o minimo de 44px de toque. Em caso de tradeoff, priorizar densidade de informacao.
 - **shadcn/ui** para todos os componentes de UI
 - **Decisoes de UI e seus porques** (codificacao em lista e deliberada, codigo Pydantic somente-leitura, veredito em dois passos): **`docs/UI.md`**. Antes de propor mudanca de interface que pareca "corrigir uma regressao", conferir la se a forma atual nao e escolha registrada. O arquivo so guarda intencao — descricao de tela e medida em pixel vivem no codigo, deliberadamente (ver #611).
@@ -58,23 +42,6 @@ Browser  →  Next.js 16 (Vercel)  ←→  Supabase (Postgres + RLS)
 
   **Direcao registrada (constituicao, Principios III e VII)**: por seguranca, a representacao canonica do schema deve migrar de codigo Pydantic (Python compilado no backend a partir de texto editavel por usuario) para JSON declarativo. Ate essa migracao acontecer, todas as regras (a)–(e) acima valem integralmente; qualquer migracao deve preservar o round-trip completo e o versionamento em `schema_change_log`.
 - Testes: **Vitest** (frontend), **pytest** (backend)
-
-## Estrutura
-
-```
-frontend/           # Next.js 16
-  src/
-    app/            # App Router pages
-    components/     # UI components (shell, coding, compare, schema, etc.)
-    actions/        # Server Actions
-    lib/            # Supabase clients, types, utils
-  supabase/
-    migrations/     # SQL migrations
-
-backend/            # FastAPI
-  routes/           # API endpoints
-  services/         # Business logic (pydantic_compiler, llm_runner)
-```
 
 ## Supabase CLI
 
@@ -119,7 +86,7 @@ cd ../worktrees/<descricao-curta>
 Trabalhar la (todos os edits, commits, push, `gh pr create`). Apos o merge do PR:
 
 ```bash
-cd /home/brunodcdo/Desktop/dev/2026/38_GUIAnaliseSistematica
+cd /home/brunodcdo/Desktop/OpenClaw/LabDados/dataframeitGUI
 git worktree remove ../worktrees/<descricao-curta>
 ```
 
@@ -128,31 +95,17 @@ Excecao: tarefas read-only puras (responder duvida, ler codigo, explicar arquite
 ## Como rodar
 
 ```bash
-# Frontend
-cd frontend && npm run dev
-
-# Backend
+# Backend (nao esta em script de manifest)
 cd backend && uv run uvicorn main:app --reload
-
-# Supabase local
-cd frontend && npx supabase start
-
-# Lint / qualidade — stack completa em docs/CODE_QUALITY_TOOLING.md
-cd frontend && npm run lint                # eslint rápido
-cd frontend && npm run typecheck           # tsc --noEmit
-cd frontend && npm run lint:types          # typescript-eslint type-checked (no-floating-promises)
-cd frontend && npm run react-doctor        # react-doctor (semântica React no arquivo)
-cd frontend && npm run fallow              # fallow (grafo: dead-code/dupes/complexidade)
-cd frontend && npm run scan                # React Scan (precisa de npm run dev rodando)
-cd frontend && npm run test:e2e            # Playwright smoke manual (permissivo); no pre-push roda como gate fail-closed
-cd backend  && uv run ruff check .         # lint + complexidade do Python (versao do hook: .pre-commit-config.yaml)
 ```
+
+Demais comandos: scripts em `frontend/package.json` (`dev`, `lint`, `typecheck`, `lint:types`, `react-doctor`, `fallow`, `scan`, `test:e2e`, `invariants`, `test:db:*`). Duas ressalvas que o script nao conta: o `scan` precisa de `npm run dev` rodando, e o `test:e2e` roda permissivo na mao mas como gate fail-closed no pre-push.
 
 A stack de qualidade cobre quatro eixos — react-doctor (React no arquivo), **fallow** (grafo do codebase), **typescript-eslint type-checked** (tipos), **React Scan** (runtime) — mais **ruff** no backend Python, **actionlint** e o teste comportamental dos workflows de deploy, **Vitest/Playwright/pytest** (testes) e **Dependabot + semgrep** (segurança, sobre o gitleaks já existente). O princípio é que **nada depende de lembrar de rodar**: os hooks de `.pre-commit-config.yaml` disparam sozinhos, divididos em dois estágios — pre-commit (leve/file-scoped: gitleaks, ruff, actionlint, deploy notifier, react-doctor) e pre-push (pesado/grafo: typecheck, vitest, e2e-smoke, lint:types, fallow audit, semgrep, backend-pytest, mypy). Setup (1x): `cd frontend && npm install && uv tool install pre-commit && pre-commit install` (instala os dois estágios). Cada gate grandfathers o débito legado quando aplicável (new-only no fallow/semgrep, file-scoped no ruff/lint:types/mypy, line-scoped no react-doctor); vitest, e2e-smoke e backend-pytest rodam como gates de teste. Decisão completa, baselines e o que foi diferido (tsgo, mypy, Biome) em **`docs/CODE_QUALITY_TOOLING.md`**; baseline e regras silenciadas do react-doctor em `docs/LINT_CONFIG.md`.
 
 **Estratégia de verificação** (o que exige qual nível de verificação; práticas anti-"codificação não salva": discriminador escrita-vs-exibição, prova do vermelho, replay com dados de produção, invariantes de banco via `npm run invariants`): **`docs/VERIFICATION.md`**. Antes de tocar o write path de codificações/comparações, RLS ou migrations, classificar a mudança pela escala de tiers de lá.
 
-O **react-doctor** é um linter pinado (`react-doctor@0.7.8`, devDependency) com config em `frontend/doctor.config.json` (fonte única; o nome `doctor.config.*` vale desde a 0.5). Um hook **local de pre-commit** (`.pre-commit-config.yaml`) roda `frontend/scripts/react-doctor-gate.sh` nos commits que tocam `frontend/**/*.{ts,tsx}`; o script invoca `react-doctor . --scope changed --base HEAD --blocking warning`: **bloqueia se a linha alterada produzir qualquer diagnóstico** — error ou warning (`--scope changed` é line-scoped; substituiu o `--diff` deprecado na 0.5.7). O débito legado fica grandfathered. O script também falha fechado se o `react-doctor` instalado divergir do pino do `package.json` (`node_modules` stale media com a ferramenta errada). Por ser local e opt-in, é uma rede de proteção do dev — não um portão de merge no servidor. Detalhes, como medir a baseline e regras silenciadas em `docs/LINT_CONFIG.md`.
+O **react-doctor** roda como hook **local de pre-commit**, line-scoped, via `frontend/scripts/react-doctor-gate.sh` nos commits que tocam `frontend/**/*.{ts,tsx}`: **bloqueia se a linha alterada produzir qualquer diagnóstico** — error ou warning. O débito legado fica grandfathered. O script também falha fechado quando o `react-doctor` instalado diverge do pino do `package.json`, caso em que um `node_modules` stale mediria com a ferramenta errada. Por ser local e opt-in, é rede de proteção do dev, não portão de merge no servidor. Versão pinada, config (fonte única) e regras silenciadas: `frontend/package.json`, `frontend/doctor.config.json` e `docs/LINT_CONFIG.md`.
 
 ## Scripts one-off de dados / específicos de projeto
 

@@ -62,3 +62,7 @@ docs/erros-llm/
 # que a regra "nunca versionada" valha tambem em worktree, clone novo e agente
 # cloud — nao so no checkout onde o diretorio foi criado.
 harness/
+
+# Transcricoes de video baixadas para estudo (conteudo de terceiros)
+transcricao-*.md
+transcricao-*.vtt
