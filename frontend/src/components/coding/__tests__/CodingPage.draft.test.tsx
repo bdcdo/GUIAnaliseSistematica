@@ -14,7 +14,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, waitFor, cleanup, act, within, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import type { PydanticField, Document } from "@/lib/types";
+import type { PydanticField, AssignedDoc } from "@/lib/types";
 
 const { saveResponse, getDocumentsForBrowse, urlParams } = vi.hoisted(() => ({
   saveResponse: vi.fn(),
@@ -26,6 +26,12 @@ vi.mock("@/actions/responses", () => ({ saveResponse }));
 vi.mock("@/actions/documents", () => ({
   getDocumentsForBrowse,
   getDocumentForCoding: vi.fn(),
+  // O texto do doc aberto vem por aqui, não mais na fila de assignments.
+  // Devolve o mesmo `texto-${id}` que os fixtures traziam, para as asserções
+  // continuarem valendo — agora sobre o caminho de fetch sob demanda.
+  getDocumentText: vi.fn((_projectId: string, id: string) =>
+    Promise.resolve({ text: `texto-${id}`, title: `Doc ${id}` }),
+  ),
 }));
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
@@ -111,13 +117,12 @@ const FIELDS: PydanticField[] = [
   { name: "q1", type: "text", options: null, description: "Qual o medicamento?" },
 ];
 
-function assignedDoc(id: string): Document {
+function assignedDoc(id: string): AssignedDoc {
   return {
     id,
     project_id: PROJECT,
     external_id: `ext-${id}`,
     title: `Assigned ${id}`,
-    text: `texto-${id}`,
     metadata: null,
     created_at: "2026-01-01",
     excluded_at: null,
@@ -129,7 +134,7 @@ function assignedDoc(id: string): Document {
 
 function renderPage(
   existingAnswers: Record<string, Record<string, unknown>> = {},
-  documents: Document[] = [assignedDoc(DOC)],
+  documents: AssignedDoc[] = [assignedDoc(DOC)],
 ) {
   return render(
     <CodingPage

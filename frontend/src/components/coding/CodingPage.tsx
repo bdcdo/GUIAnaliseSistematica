@@ -530,6 +530,7 @@ function CodingPageInner({
       {mode === "assigned" && (
         <AssignedCodingView
           doc={assigned.currentDoc}
+          projectId={projectId}
           title={assignedTitle}
           docIndex={assigned.docIndex}
           total={documents.length}

@@ -95,7 +95,11 @@ export default async function CodePage({
   const [{ data: assignments }, { data: responses }] = await Promise.all([
     supabase
       .from("assignments")
-      .select("id, status, document_id, round_id, documents!inner(id, external_id, title, text)")
+      // Sem `text`: a fila é metadado. O texto do documento aberto vem por
+      // `getDocumentText` (ver `AssignedCodingView`). Trazê-lo aqui serializava
+      // o texto de TODOS os atribuídos no payload RSC e respondia por 126s dos
+      // 214s de CPU de query medidos em produção em 2026-08-20.
+      .select("id, status, document_id, round_id, documents!inner(id, external_id, title)")
       .eq("project_id", id)
       .eq("user_id", queueUserId)
       .eq("type", "codificacao")

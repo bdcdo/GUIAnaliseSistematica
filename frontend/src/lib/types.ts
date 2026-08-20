@@ -197,8 +197,14 @@ export interface Assignment {
  * modo Atribuídos usa (id + status). Fonte única consumida por `CodingPage`,
  * `useAssignedCoding` e `useBrowseCoding` (evita redefinir o mesmo tipo em cada
  * arquivo).
+ *
+ * `text` sai do tipo de propósito: a fila é metadado, e o texto do documento
+ * ABERTO é buscado sob demanda por `useDocumentText`. Trazê-lo na listagem
+ * serializava o texto de todos os atribuídos no payload RSC — até ~2,3 MB na
+ * maior fila medida (145 docs x ~16 KB) — para exibir um só. O `Omit` é o que
+ * faz o compilador recusar uma reintrodução acidental.
  */
-export type AssignedDoc = Document & {
+export type AssignedDoc = Omit<Document, "text"> & {
   assignment?: Pick<Assignment, "id" | "status">;
 };
 
