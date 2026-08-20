@@ -14,7 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/date-format";
 import { formatVerdictDisplay } from "@/lib/verdict-display";
-import type { LlmError } from "@/app/(app)/projects/[id]/reviews/llm-insights/page";
+import type { LlmError } from "@/lib/llm-error-metrics";
 
 interface LlmErrorCardProps {
   error: LlmError;

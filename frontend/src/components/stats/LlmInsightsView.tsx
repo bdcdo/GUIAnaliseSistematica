@@ -19,7 +19,7 @@ import type { PydanticField, SchemaBaselineIdentity } from "@/lib/types";
 import type {
   LlmError,
   ReviewedEntry,
-} from "@/app/(app)/projects/[id]/reviews/llm-insights/page";
+} from "@/lib/llm-error-metrics";
 
 interface LlmInsightsViewProps {
   projectId: string;
