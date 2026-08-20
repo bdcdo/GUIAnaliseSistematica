@@ -3,16 +3,25 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import type { PydanticField, Document } from "@/lib/types";
+import type { PydanticField, AssignedDoc } from "@/lib/types";
 import type { DocRoundStatus } from "@/lib/rounds";
 
 // Caracterização do modo Atribuídos ANTES do refactor da issue #389 (extração
 // da cascata allDone/no-doc/view de CodingPageInner para AssignedCodingView).
 // Serve de rede de segurança: os contratos observáveis aqui não podem mudar.
-const { saveResponse, getDocumentsForBrowse, urlParams, submitVerdict } = vi.hoisted(
+const {
+  saveResponse,
+  getDocumentsForBrowse,
+  getDocumentText,
+  urlParams,
+  submitVerdict,
+} = vi.hoisted(
   () => ({
     saveResponse: vi.fn(),
     getDocumentsForBrowse: vi.fn(),
+    // Exposto (em vez de inline no factory) para os testes de carregamento e
+    // de falha poderem controlar QUANDO a promessa resolve.
+    getDocumentText: vi.fn(),
     urlParams: { current: {} as Record<string, string | null> },
     // O que o container devolveu ao painel no último Enviar. É por este valor de
     // retorno — e não por um canal de estado — que o veredito do servidor chega
@@ -27,6 +36,8 @@ vi.mock("@/actions/responses", () => ({ saveResponse }));
 vi.mock("@/actions/documents", () => ({
   getDocumentsForBrowse,
   getDocumentForCoding: vi.fn(),
+  // O texto do doc aberto vem por aqui, não mais na fila de assignments.
+  getDocumentText,
 }));
 // `warning` junto de `success`/`error`: um envio que grava com obrigatória em
 // aberto avisa por ele (`notifySaved`). Mock incompleto não falha no typecheck —
@@ -96,8 +107,20 @@ vi.mock("@/components/coding/DocumentPicker", () => ({
   DocumentPicker: () => <div data-testid="picker" />,
 }));
 vi.mock("@/components/coding/CodingHeader", () => ({
-  CodingHeader: ({ mode }: { mode: string }) => (
-    <div data-testid="hdr-mode">{mode}</div>
+  // `onModeChange` exposto como botão: é por ele que o teste de cache alterna
+  // para o modo Explorar e volta, que é o que desmontava `AssignedCodingView`.
+  CodingHeader: ({
+    mode,
+    onModeChange,
+  }: {
+    mode: string;
+    onModeChange: (m: "assigned" | "browse") => void;
+  }) => (
+    <div>
+      <div data-testid="hdr-mode">{mode}</div>
+      <button onClick={() => onModeChange("assigned")}>to-assigned</button>
+      <button onClick={() => onModeChange("browse")}>to-browse</button>
+    </div>
   ),
 }));
 vi.mock("@/components/coding/FullscreenNav", () => ({
@@ -117,13 +140,12 @@ const FIELDS: PydanticField[] = [
   { name: "q1", type: "text", options: null, description: "" },
 ];
 
-function assignedDoc(id: string): Document {
+function assignedDoc(id: string): AssignedDoc {
   return {
     id,
     project_id: "p1",
     external_id: `ext-${id}`,
     title: `Assigned ${id}`,
-    text: `texto-${id}`,
     metadata: null,
     created_at: "2026-01-01",
     excluded_at: null,
@@ -138,6 +160,12 @@ beforeEach(() => {
   submitVerdict.current = undefined;
   Element.prototype.scrollTo = vi.fn();
   getDocumentsForBrowse.mockResolvedValue([]);
+  // Default: resolve com o mesmo `texto-${id}` que os fixtures da fila traziam
+  // antes de o texto sair de lá. Os testes que exercitam carregamento/falha
+  // sobrescrevem este mock.
+  getDocumentText.mockImplementation((_projectId: string, id: string) =>
+    Promise.resolve({ text: `texto-${id}`, title: `Doc ${id}` }),
+  );
 });
 afterEach(() => {
   cleanup();
@@ -413,5 +441,102 @@ describe("CodingPage — modo Atribuídos (integração)", () => {
         }),
       ),
     );
+  });
+});
+
+describe("texto do documento vem sob demanda, não na fila", () => {
+  // A fila de atribuídos passou a trazer só metadado: o `text` saiu do select
+  // de `assignments` porque serializava o texto de TODOS os documentos no
+  // payload RSC — até ~2,3 MB na maior fila medida em produção (145 docs x
+  // ~16 KB), para exibir um. Estes testes fixam o contrato do caminho novo;
+  // sem eles, reintroduzir o campo passaria despercebido.
+  const DOIS = [assignedDoc("a1"), assignedDoc("a2")];
+
+  const renderFila = (documents = DOIS) =>
+    render(
+      <CodingPage
+        roundFilter={ROUND_FILTER}
+        userId="user-teste"
+        projectId="p1"
+        documents={documents}
+        fields={FIELDS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+  it("busca o texto apenas do documento aberto, não de toda a fila", async () => {
+    renderFila();
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+    // O ponto do refactor: dois documentos na fila, uma única busca.
+    expect(getDocumentText).toHaveBeenCalledTimes(1);
+    expect(getDocumentText).toHaveBeenCalledWith("p1", "a1");
+  });
+
+  it("enquanto o texto não chega, avisa que está carregando", async () => {
+    // Promessa que não resolve: congela o estado de carregamento para observá-lo.
+    getDocumentText.mockImplementation(() => new Promise(() => {}));
+    renderFila();
+
+    expect(await screen.findByText("Carregando documento…")).toBeTruthy();
+    expect(screen.queryByTestId("doc-reader")).toBeNull();
+  });
+
+  it("o painel de perguntas fica montado enquanto o texto carrega", async () => {
+    // Load-bearing: o painel guarda o rascunho em andamento. Um early-return da
+    // tela inteira no carregamento o desmontaria a cada navegação entre
+    // documentos, levando junto o que a pesquisadora digitou e ainda não enviou.
+    getDocumentText.mockImplementation(() => new Promise(() => {}));
+    renderFila();
+
+    expect(await screen.findByText("Carregando documento…")).toBeTruthy();
+    expect(screen.getByTestId("qp-answers")).toBeTruthy();
+  });
+
+  it("falha no fetch oferece retry, e o retry recupera o texto", async () => {
+    const user = userEvent.setup();
+    getDocumentText.mockRejectedValueOnce(new Error("rede caiu"));
+    renderFila();
+
+    const botao = await screen.findByRole("button", { name: "Tentar novamente" });
+    expect(screen.queryByTestId("doc-reader")).toBeNull();
+
+    // A segunda chamada cai no default do beforeEach, que resolve.
+    await user.click(botao);
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+  });
+});
+
+describe("cache do texto sobrevive à troca de aba", () => {
+  const DOIS = [assignedDoc("a1"), assignedDoc("a2")];
+
+  it("ir ao Explorar e voltar não rebusca o texto do documento aberto", async () => {
+    // O fetch vive no container (`CodingPage`), não em `AssignedCodingView`.
+    // Aquele componente é montado sob `mode === "assigned"`, então guardar o
+    // cache nele o faria morrer a cada visita à outra aba — e o mesmo documento
+    // seria rebuscado ao voltar. Espelha a guarda que o modo Explorar já tem
+    // sobre `getDocumentForCoding`.
+    const user = userEvent.setup();
+    render(
+      <CodingPage
+        roundFilter={ROUND_FILTER}
+        userId="user-teste"
+        projectId="p1"
+        documents={DOIS}
+        fields={FIELDS}
+        existingAnswers={{}}
+        hasAssignments
+      />,
+    );
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+    expect(getDocumentText).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByText("to-browse"));
+    await user.click(screen.getByText("to-assigned"));
+
+    expect((await screen.findByTestId("doc-reader")).textContent).toBe("texto-a1");
+    expect(getDocumentText).toHaveBeenCalledTimes(1);
   });
 });

@@ -3,7 +3,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, waitFor, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
-import type { PydanticField, Document } from "@/lib/types";
+import type { PydanticField, AssignedDoc } from "@/lib/types";
 
 // Spies/estado controláveis. `urlParams` é o backing store do useUrlState mockado
 // (stateful: `set` muta e força re-render, como o router faria).
@@ -32,7 +32,16 @@ const {
 }));
 
 vi.mock("@/actions/responses", () => ({ saveResponse }));
-vi.mock("@/actions/documents", () => ({ getDocumentsForBrowse, getDocumentForCoding }));
+vi.mock("@/actions/documents", () => ({
+  getDocumentsForBrowse,
+  getDocumentForCoding,
+  // O texto do doc aberto vem por aqui, não mais na fila de assignments.
+  // Devolve o mesmo `texto-${id}` que os fixtures traziam, para as asserções
+  // continuarem valendo — agora sobre o caminho de fetch sob demanda.
+  getDocumentText: vi.fn((_projectId: string, id: string) =>
+    Promise.resolve({ text: `texto-${id}`, title: `Doc ${id}` }),
+  ),
+}));
 // `warning` incluído: é por ele que `notifySaved` avisa a pendência. Mock
 // incompleto não falha no typecheck e só aparece como rejeição não tratada.
 vi.mock("sonner", () => ({
@@ -176,13 +185,12 @@ function codingResult(id: string, answers: Record<string, unknown> | null) {
   };
 }
 
-function assignedDoc(id: string): Document {
+function assignedDoc(id: string): AssignedDoc {
   return {
     id,
     project_id: "p1",
     external_id: `ext-${id}`,
     title: `Assigned ${id}`,
-    text: `texto-${id}`,
     metadata: null,
     created_at: "2026-01-01",
     excluded_at: null,

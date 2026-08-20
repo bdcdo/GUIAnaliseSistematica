@@ -5,6 +5,7 @@ import {
   ResizablePanel,
   ResizableHandle,
 } from "@/components/ui/resizable";
+import { Button } from "@/components/ui/button";
 import { DocumentReader } from "./DocumentReader";
 import { QuestionsPanel, type QuestionsPanelProps } from "./QuestionsPanel";
 import { FullscreenNav } from "./FullscreenNav";
@@ -17,6 +18,14 @@ interface AssignedCodingViewProps
   /** Doc atribuído atual — `undefined` quando não há nenhum a mostrar
    *  (lista vazia ou filtro de rodada sem pendências). */
   doc: AssignedDoc | undefined;
+  /** Texto do doc aberto — buscado por id, já que a fila só traz metadado.
+   *  Vem do container, não daqui: este componente desmonta ao trocar para o
+   *  modo Explorar, e um cache local morreria junto (espelha o par
+   *  `browseDocLoading`/`onRetryDoc` de `BrowseCodingView`). */
+  text: string | undefined;
+  textLoading: boolean;
+  textError: boolean;
+  onRetryText: () => void;
   title: string;
   docIndex: number;
   total: number;
@@ -42,6 +51,10 @@ interface AssignedCodingViewProps
  */
 export function AssignedCodingView({
   doc,
+  text,
+  textLoading,
+  textError,
+  onRetryText,
   title,
   docIndex,
   total,
@@ -101,7 +114,26 @@ export function AssignedCodingView({
       )}
       <ResizablePanelGroup className="flex-1">
         <ResizablePanel defaultSize={55} minSize={25}>
-          <DocumentReader text={doc.text} />
+          {/* Só este painel alterna entre carregando/erro/texto. O
+              QuestionsPanel ao lado fica montado de propósito: ele guarda o
+              rascunho em andamento, e um early-return da tela inteira o
+              desmontaria a cada navegação entre documentos. */}
+          {textLoading ? (
+            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+              Carregando documento…
+            </div>
+          ) : textError ? (
+            <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
+              <p className="text-sm text-muted-foreground">
+                Não foi possível carregar o documento.
+              </p>
+              <Button variant="outline" size="sm" onClick={onRetryText}>
+                Tentar novamente
+              </Button>
+            </div>
+          ) : (
+            <DocumentReader text={text ?? ""} />
+          )}
         </ResizablePanel>
         <ResizableHandle withHandle />
         <ResizablePanel defaultSize={45} minSize={25}>
