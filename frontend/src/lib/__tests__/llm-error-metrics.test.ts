@@ -63,6 +63,7 @@ function finalAnswer(
     llm_response_id: null,
     human_answer_snapshot: null,
     llm_answer_snapshot: null,
+    arbitrator_comment: null,
     ...overrides,
   };
 }
@@ -391,6 +392,24 @@ describe("computeLlmErrorMetrics — fonte Auto-revisão", () => {
       llmResponseId: "rllm2",
       reviewedAt: "2026-03-01T00:00:00Z",
     });
+  });
+
+  it("leva o comentário do arbitrador para o card do erro", () => {
+    const { errors } = run({
+      documentTitles: titles,
+      responses: [llmDoc2, humanDoc2],
+      finalAnswers: [
+        finalAnswer({
+          document_id: "doc2",
+          provenance: "arbitrado",
+          final_verdict: "humano",
+          final_decided_at: "2026-03-01T00:00:00Z",
+          arbitrator_comment: "A nota técnica é explícita no ponto.",
+        }),
+      ],
+    });
+
+    expect(errors[0].reviewerComment).toBe("A nota técnica é explícita no ponto.");
   });
 });
 

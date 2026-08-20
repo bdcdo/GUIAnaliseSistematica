@@ -87,7 +87,7 @@ async function loadInsightsData(
       supabase
         .from("final_answers")
         .select(
-          "document_id, field_name, provenance, final_verdict, self_reviewed_at, final_decided_at, human_response_id, llm_response_id, human_answer_snapshot, llm_answer_snapshot",
+          "document_id, field_name, provenance, final_verdict, self_reviewed_at, final_decided_at, human_response_id, llm_response_id, human_answer_snapshot, llm_answer_snapshot, arbitrator_comment",
         )
         .eq("project_id", id),
     ),

@@ -96,7 +96,8 @@ export interface MetricsFinalAnswer {
   llm_response_id: string | null;
   human_answer_snapshot: unknown;
   llm_answer_snapshot: unknown;
-  arbitrator_comment?: string | null;
+  /** Texto que o arbitrador escreveu ao decidir; exibido como "Comentário do revisor". */
+  arbitrator_comment: string | null;
 }
 
 export interface MetricsEquivalence extends EquivalencePair {
@@ -398,7 +399,7 @@ function buildAutoReviewError(
     ),
     llmJustification: llmResponse.justifications?.[row.field_name] || null,
     chosenVerdict: formatAnswer(row.human_answer_snapshot),
-    reviewerComment: row.arbitrator_comment ?? null,
+    reviewerComment: row.arbitrator_comment,
     resolvedAt: ctx.resolvedAtOf(row.document_id, row.field_name),
     llmResponseId: row.llm_response_id ?? llmResponse.id,
     chosenResponseId: row.human_response_id,
