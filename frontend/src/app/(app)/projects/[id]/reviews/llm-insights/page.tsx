@@ -13,17 +13,14 @@ import {
 } from "@/lib/llm-error-metrics";
 import type { PydanticField } from "@/lib/types";
 
-export default async function LlmInsightsPage({
-  params,
-}: {
-  params: Promise<{ id: string }>;
-}) {
-  const [{ id }, user, supabase] = await Promise.all([
-    params,
-    requirePageAuthUser(),
-    createSupabaseServer(),
-  ]);
-
+// Carga de dados da página. Fora do componente porque o RSC fica ilegível com
+// sete queries inline — e porque a lista de colunas é o contrato real com
+// `computeLlmErrorMetrics`.
+async function loadInsightsData(
+  supabase: Awaited<ReturnType<typeof createSupabaseServer>>,
+  id: string,
+  user: Awaited<ReturnType<typeof requirePageAuthUser>>,
+) {
   const [
     { data: project },
     { data: responses },
@@ -97,6 +94,60 @@ export default async function LlmInsightsPage({
     getProjectAccessContext(id, user),
   ]);
 
+  return {
+    project,
+    responses,
+    reviews,
+    documents,
+    errorResolutions,
+    equivalencePairs,
+    finalAnswers,
+    finalAnswersError,
+    accessResult,
+  };
+}
+
+// Documentos que o LLM respondeu e que a métrica ainda não alcançou — o
+// rodapé dos cards avisa que a taxa não cobre o projeto inteiro.
+function buildSummary(
+  responses: MetricsResponse[],
+  reviewedEntries: { documentId: string }[],
+): { totalLlmDocs: number; unreviewedLlmDocs: number } {
+  const llmDocIds = new Set(
+    responses
+      .filter((r) => r.respondent_type === "llm" && r.is_latest)
+      .map((r) => r.document_id),
+  );
+  const measuredDocIds = new Set(reviewedEntries.map((e) => e.documentId));
+  return {
+    totalLlmDocs: llmDocIds.size,
+    unreviewedLlmDocs: [...llmDocIds].filter((id) => !measuredDocIds.has(id)).length,
+  };
+}
+
+export default async function LlmInsightsPage({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}) {
+  const [{ id }, user, supabase] = await Promise.all([
+    params,
+    requirePageAuthUser(),
+    createSupabaseServer(),
+  ]);
+
+  const {
+    project,
+    responses,
+    reviews,
+    documents,
+    errorResolutions,
+    equivalencePairs,
+    finalAnswers,
+    finalAnswersError,
+    accessResult,
+  } = await loadInsightsData(supabase, id, user);
+
   // A fonte de auto-revisão some sem quebrar a página se a query falhar — o
   // que aconteceria numa janela de deploy em que o código já subiu mas a
   // migration que expõe os vereditos em `final_answers` ainda não foi
@@ -124,37 +175,25 @@ export default async function LlmInsightsPage({
     revision: project?.schema_revision ?? 0,
   };
 
-  const documentTitles = new Map(
-    documents?.map((d) => [d.id, d.title || d.external_id || d.id]) || [],
-  );
-  const errorResolutionMap = new Map(
-    errorResolutions?.map((r) => [
-      `${r.document_id}:${r.field_name}`,
-      r.resolved_at,
-    ]) || [],
-  );
-
   const { errors, reviewedEntries } = computeLlmErrorMetrics({
     fields: allFields,
     automationMode: project?.automation_mode ?? null,
-    documentTitles,
+    documentTitles: new Map(
+      documents?.map((d) => [d.id, d.title || d.external_id || d.id]) || [],
+    ),
     responses,
     reviews,
     finalAnswers,
     equivalences: equivalencePairs,
-    errorResolutions: errorResolutionMap,
+    errorResolutions: new Map(
+      errorResolutions?.map((r) => [
+        `${r.document_id}:${r.field_name}`,
+        r.resolved_at,
+      ]) || [],
+    ),
   });
 
-  const llmDocIds = new Set(
-    responses
-      .filter((r) => r.respondent_type === "llm" && r.is_latest)
-      .map((r) => r.document_id),
-  );
-  const totalLlmDocs = llmDocIds.size;
-  const measuredDocIds = new Set(reviewedEntries.map((e) => e.documentId));
-  const unreviewedLlmDocs = [...llmDocIds].filter(
-    (docId) => !measuredDocIds.has(docId),
-  ).length;
+  const summary = buildSummary(responses, reviewedEntries);
 
   // Visible fields for the dropdown filter (same criteria as the error suppression).
   const visibleFields = allFields.filter(
@@ -170,7 +209,7 @@ export default async function LlmInsightsPage({
         fields={visibleFields}
         schemaEditor={{ fields: allFields, baseline: schemaBaseline }}
         isCoordinator={isCoordinator}
-        summary={{ totalLlmDocs, unreviewedLlmDocs }}
+        summary={summary}
       />
     </div>
   );

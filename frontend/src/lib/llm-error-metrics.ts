@@ -137,7 +137,7 @@ interface Candidate {
   entry: ReviewedEntry;
 }
 
-export function formatSchemaVersion(response: {
+function formatSchemaVersion(response: {
   schema_version_major: number | null;
   schema_version_minor: number | null;
   schema_version_patch: number | null;
@@ -194,25 +194,19 @@ function beats(candidate: Candidate, incumbent: Candidate): boolean {
   return candidate.decidedAt > incumbent.decidedAt!;
 }
 
-export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
-  errors: LlmError[];
-  reviewedEntries: ReviewedEntry[];
-} {
-  const {
-    fields,
-    automationMode,
-    documentTitles,
-    responses,
-    reviews,
-    finalAnswers,
-    equivalences,
-    errorResolutions,
-  } = input;
+// Contexto derivado uma vez e compartilhado pelas duas fontes.
+interface MetricsContext {
+  fieldMap: Map<string, PydanticField>;
+  titleOf: (docId: string) => string;
+  resolvedAtOf: (docId: string, fieldName: string) => string | null;
+  responsesByDoc: Map<string, MetricsResponse[]>;
+  llmLatestByDoc: Map<string, MetricsResponse>;
+  /** Classes de equivalência por (documento, campo), memoizadas. */
+  groupKeysFor: (docId: string, fieldName: string) => Map<string, string>;
+}
 
-  const fieldMap = new Map(fields.map((f) => [f.name, f]));
-  const titleOf = (docId: string) => documentTitles.get(docId) || docId;
-  const resolvedAtOf = (docId: string, fieldName: string) =>
-    errorResolutions.get(`${docId}:${fieldName}`) ?? null;
+function buildContext(input: LlmErrorMetricsInput): MetricsContext {
+  const { fields, documentTitles, responses, equivalences, errorResolutions } = input;
 
   const responsesByDoc = new Map<string, MetricsResponse[]>();
   const llmLatestByDoc = new Map<string, MetricsResponse>();
@@ -237,8 +231,8 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
     else byField.set(pair.field_name, [pair]);
   }
 
-  // Classes de equivalência por (documento, campo), memoizadas: um documento
-  // com muitos campos revisados repetiria o union-find à toa.
+  // Memoizado: um documento com muitos campos revisados repetiria o union-find
+  // por campo à toa.
   const groupKeyCache = new Map<string, Map<string, string>>();
   const groupKeysFor = (docId: string, fieldName: string) => {
     const cacheKey = `${docId}:${fieldName}`;
@@ -264,43 +258,71 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
     return groupKeys;
   };
 
+  return {
+    fieldMap: new Map(fields.map((f) => [f.name, f])),
+    titleOf: (docId) => documentTitles.get(docId) || docId,
+    resolvedAtOf: (docId, fieldName) =>
+      errorResolutions.get(`${docId}:${fieldName}`) ?? null,
+    responsesByDoc,
+    llmLatestByDoc,
+    groupKeysFor,
+  };
+}
+
+// O LLM errou este campo, na leitura da Comparação? Uma única noção de "mesma
+// resposta": as classes do union-find já fundem tanto pares marcados como
+// equivalentes pelo revisor quanto respostas de texto idêntico, e propagam por
+// transitividade (A≡B, B≡C ⇒ A≡C). É a mesma primitiva que a tela de
+// Comparação usa para decidir divergência.
+function comparisonIsError(
+  review: MetricsReview,
+  llmResponse: MetricsResponse,
+  ctx: MetricsContext,
+): boolean {
+  if (review.chosen_response_id === llmResponse.id) return false;
+
+  const groupKeys = ctx.groupKeysFor(review.document_id, review.field_name);
+  const llmKey = groupKeys.get(llmResponse.id);
+  const chosenKey = review.chosen_response_id
+    ? groupKeys.get(review.chosen_response_id)
+    : undefined;
+
+  if (llmKey !== undefined && chosenKey !== undefined) return llmKey !== chosenKey;
+
+  // A response escolhida sumiu do conjunto (apagada, ou de um documento que não
+  // veio na página). Resta comparar o texto do veredito, que é uma cópia do
+  // valor escolhido no momento da revisão.
+  return (
+    normalizeForComparison(llmResponse.answers?.[review.field_name]) !==
+    normalizeForComparison(review.verdict)
+  );
+}
+
+/* ── Fonte A: Comparação (`reviews`) ── */
+function comparisonCandidates(
+  reviews: MetricsReview[],
+  ctx: MetricsContext,
+): Candidate[] {
   const candidates: Candidate[] = [];
 
-  /* ── Fonte A: Comparação (`reviews`) ── */
   for (const review of reviews) {
-    const llmResponse = llmLatestByDoc.get(review.document_id);
+    const llmResponse = ctx.llmLatestByDoc.get(review.document_id);
     if (!llmResponse) continue;
 
-    const field = fieldMap.get(review.field_name);
+    const field = ctx.fieldMap.get(review.field_name);
     if (!isMeasurableField(field)) continue;
 
     const llmAnswer = llmResponse.answers?.[review.field_name];
-    let isError = false;
+    const isError = comparisonIsError(review, llmResponse, ctx);
 
-    if (review.chosen_response_id !== llmResponse.id) {
-      // Uma única noção de "mesma resposta": as classes do union-find já fundem
-      // tanto pares marcados como equivalentes pelo revisor quanto respostas de
-      // texto idêntico, e propagam por transitividade (A≡B, B≡C ⇒ A≡C). É a
-      // mesma primitiva que a tela de Comparação usa para decidir divergência.
-      const groupKeys = groupKeysFor(review.document_id, review.field_name);
-      const llmKey = groupKeys.get(llmResponse.id);
-      const chosenKey = review.chosen_response_id
-        ? groupKeys.get(review.chosen_response_id)
-        : undefined;
+    const shared = {
+      documentId: review.document_id,
+      documentTitle: ctx.titleOf(review.document_id),
+      fieldName: review.field_name,
+      schemaVersion: formatSchemaVersion(llmResponse),
+      reviewedAt: review.created_at,
+    };
 
-      if (llmKey !== undefined && chosenKey !== undefined) {
-        isError = llmKey !== chosenKey;
-      } else {
-        // A response escolhida sumiu do conjunto (apagada, ou de um documento
-        // que não veio na página). Resta comparar o texto do veredito, que é
-        // uma cópia do valor escolhido no momento da revisão.
-        isError =
-          normalizeForComparison(llmAnswer) !==
-          normalizeForComparison(review.verdict);
-      }
-    }
-
-    const schemaVersion = formatSchemaVersion(llmResponse);
     candidates.push({
       documentId: review.document_id,
       fieldName: review.field_name,
@@ -308,120 +330,154 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
       isError,
       error: isError
         ? {
-            documentId: review.document_id,
-            documentTitle: titleOf(review.document_id),
-            fieldName: review.field_name,
+            ...shared,
             fieldDescription: field.description || review.field_name,
             llmAnswer: formatAnswer(llmAnswer),
             llmJustification:
               llmResponse.justifications?.[review.field_name] || null,
             chosenVerdict: review.verdict,
             reviewerComment: review.comment,
-            resolvedAt: resolvedAtOf(review.document_id, review.field_name),
-            reviewedAt: review.created_at,
-            schemaVersion,
+            resolvedAt: ctx.resolvedAtOf(review.document_id, review.field_name),
             llmResponseId: llmResponse.id,
             chosenResponseId: review.chosen_response_id,
           }
         : null,
-      entry: {
-        documentId: review.document_id,
-        documentTitle: titleOf(review.document_id),
-        fieldName: review.field_name,
-        schemaVersion,
-        reviewedAt: review.created_at,
-        isError,
-      },
+      entry: { ...shared, isError },
     });
   }
 
-  /* ── Fonte B: Auto-revisão (view `final_answers`) ── */
-  // Sem este gate, um projeto de Comparação (`compare_llm`) veria toda a sua
-  // grade documento × campo entrar como acerto: medido no projeto Zolgensma,
-  // o denominador saltava de 898 para 2944 e a taxa despencava de 37% para
-  // 11% — puro ruído de linhas 'consenso' que nunca passaram por auto-revisão.
-  const autoReviewEnabled = automationMode === "auto_review_llm";
-  for (const row of autoReviewEnabled ? finalAnswers : []) {
-    const field = fieldMap.get(row.field_name);
-    if (!isMeasurableField(field)) continue;
+  return candidates;
+}
 
-    const llmResponse = llmLatestByDoc.get(row.document_id);
-    if (!llmResponse) continue;
+// A view produz uma linha por campo do schema para TODO documento com resposta
+// do LLM, e marca 'consenso' sempre que não há linha em `field_reviews` —
+// inclusive em documentos que ninguém codificou. O gate espelha
+// `computeBacklogRows` (`auto-review-backlog.ts`), que é quem MATERIALIZA as
+// linhas: ele só varre codificações humanas COMPLETAS. Um gate mais frouxo
+// leria a ausência de linha num documento pela metade como concordância,
+// quando ela só significa que o documento ainda não era elegível ao backlog.
+function hasCompleteHumanCoding(
+  docId: string,
+  field: PydanticField,
+  fields: PydanticField[],
+  ctx: MetricsContext,
+): boolean {
+  return (ctx.responsesByDoc.get(docId) ?? []).some(
+    (response) =>
+      response.respondent_type === "humano" &&
+      response.is_latest &&
+      fieldExistedWhenCoded(
+        response.answer_field_hashes ?? undefined,
+        field.name,
+      ) &&
+      isFieldVisible(field, response.answers ?? {}) &&
+      isCodingComplete(
+        fields,
+        response.answers ?? {},
+        response.answer_field_hashes ?? undefined,
+      ),
+  );
+}
 
-    // A view produz uma linha por campo do schema para TODO documento com
-    // resposta do LLM, e marca 'consenso' sempre que não há linha em
-    // `field_reviews` — inclusive em documentos que ninguém codificou. Sem
-    // este gate, não-codificação viraria acerto do LLM e afundaria a taxa.
-    //
-    // O gate espelha `computeBacklogRows` (`auto-review-backlog.ts`), que é
-    // quem MATERIALIZA as linhas de `field_reviews`: ele só varre codificações
-    // humanas COMPLETAS. Um gate mais frouxo aqui leria a ausência de linha
-    // num documento pela metade como concordância, quando ela só significa que
-    // o documento ainda não era elegível ao backlog.
-    const humanCoded = (responsesByDoc.get(row.document_id) ?? []).some(
-      (response) =>
-        response.respondent_type === "humano" &&
-        response.is_latest &&
-        fieldExistedWhenCoded(
-          response.answer_field_hashes ?? undefined,
-          field.name,
-        ) &&
-        isFieldVisible(field, response.answers ?? {}) &&
-        isCodingComplete(
-          fields,
-          response.answers ?? {},
-          response.answer_field_hashes ?? undefined,
-        ),
-    );
-    if (!humanCoded) continue;
+type SharedEntryFields = Omit<ReviewedEntry, "isError">;
 
-    const outcome = classifyAutoReview(row);
-    if (outcome === "pendente") continue;
+// Os snapshots congelam os valores sobre os quais o veredito foi dado; a
+// resposta atual pode já ter sido revisada desde então.
+function buildAutoReviewError(
+  row: MetricsFinalAnswer,
+  field: PydanticField,
+  llmResponse: MetricsResponse,
+  shared: SharedEntryFields,
+  ctx: MetricsContext,
+): LlmError {
+  return {
+    ...shared,
+    fieldDescription: field.description || row.field_name,
+    llmAnswer: formatAnswer(
+      row.llm_answer_snapshot ?? llmResponse.answers?.[row.field_name],
+    ),
+    llmJustification: llmResponse.justifications?.[row.field_name] || null,
+    chosenVerdict: formatAnswer(row.human_answer_snapshot),
+    reviewerComment: row.arbitrator_comment ?? null,
+    resolvedAt: ctx.resolvedAtOf(row.document_id, row.field_name),
+    llmResponseId: row.llm_response_id ?? llmResponse.id,
+    chosenResponseId: row.human_response_id,
+  };
+}
 
-    const isError = outcome === "erro";
-    const decidedAt = row.final_decided_at ?? row.self_reviewed_at ?? null;
+/* ── Fonte B: Auto-revisão (view `final_answers`) ── */
+// `null` quando a linha não é mensurável: campo fora da superfície de revisão,
+// documento sem LLM corrente, codificação humana ausente ou incompleta, ou
+// veredito ainda pendente.
+function autoReviewCandidate(
+  row: MetricsFinalAnswer,
+  fields: PydanticField[],
+  ctx: MetricsContext,
+): Candidate | null {
+  const field = ctx.fieldMap.get(row.field_name);
+  if (!isMeasurableField(field)) return null;
+
+  const llmResponse = ctx.llmLatestByDoc.get(row.document_id);
+  if (!llmResponse) return null;
+  if (!hasCompleteHumanCoding(row.document_id, field, fields, ctx)) return null;
+
+  const outcome = classifyAutoReview(row);
+  if (outcome === "pendente") return null;
+
+  const isError = outcome === "erro";
+  const decidedAt = row.final_decided_at ?? row.self_reviewed_at ?? null;
+  const shared: SharedEntryFields = {
+    documentId: row.document_id,
+    documentTitle: ctx.titleOf(row.document_id),
+    fieldName: row.field_name,
+    schemaVersion: formatSchemaVersion(llmResponse),
     // Consenso não tem instante de decisão; a data da resposta do LLM é o que
     // situa a entrada no tempo para o filtro de período.
-    const reviewedAt = decidedAt ?? llmResponse.created_at;
-    const schemaVersion = formatSchemaVersion(llmResponse);
+    reviewedAt: decidedAt ?? llmResponse.created_at,
+  };
 
-    candidates.push({
-      documentId: row.document_id,
-      fieldName: row.field_name,
-      decidedAt,
-      isError,
-      error: isError
-        ? {
-            documentId: row.document_id,
-            documentTitle: titleOf(row.document_id),
-            fieldName: row.field_name,
-            fieldDescription: field.description || row.field_name,
-            // Os snapshots congelam os valores sobre os quais o veredito foi
-            // dado; a resposta atual pode já ter sido revisada desde então.
-            llmAnswer: formatAnswer(
-              row.llm_answer_snapshot ?? llmResponse.answers?.[row.field_name],
-            ),
-            llmJustification:
-              llmResponse.justifications?.[row.field_name] || null,
-            chosenVerdict: formatAnswer(row.human_answer_snapshot),
-            reviewerComment: row.arbitrator_comment ?? null,
-            resolvedAt: resolvedAtOf(row.document_id, row.field_name),
-            reviewedAt,
-            schemaVersion,
-            llmResponseId: row.llm_response_id ?? llmResponse.id,
-            chosenResponseId: row.human_response_id,
-          }
-        : null,
-      entry: {
-        documentId: row.document_id,
-        documentTitle: titleOf(row.document_id),
-        fieldName: row.field_name,
-        schemaVersion,
-        reviewedAt,
-        isError,
-      },
-    });
-  }
+  return {
+    documentId: row.document_id,
+    fieldName: row.field_name,
+    decidedAt,
+    isError,
+    error: isError
+      ? buildAutoReviewError(row, field, llmResponse, shared, ctx)
+      : null,
+    entry: { ...shared, isError },
+  };
+}
+
+function autoReviewCandidates(
+  finalAnswers: MetricsFinalAnswer[],
+  fields: PydanticField[],
+  ctx: MetricsContext,
+): Candidate[] {
+  return finalAnswers.flatMap((row) => {
+    const candidate = autoReviewCandidate(row, fields, ctx);
+    return candidate ? [candidate] : [];
+  });
+}
+
+export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
+  errors: LlmError[];
+  reviewedEntries: ReviewedEntry[];
+} {
+  const ctx = buildContext(input);
+
+  // Sem o gate de modo, um projeto de Comparação (`compare_llm`) veria toda a
+  // sua grade documento × campo entrar como acerto: medido no projeto
+  // Zolgensma, o denominador saltava de 898 para 2944 e a taxa despencava de
+  // 37% para 11% — puro ruído de linhas 'consenso' que nunca passaram por
+  // auto-revisão, porque `field_reviews` não é materializado nesse modo.
+  const autoReviewEnabled = input.automationMode === "auto_review_llm";
+
+  const candidates = [
+    ...comparisonCandidates(input.reviews, ctx),
+    ...(autoReviewEnabled
+      ? autoReviewCandidates(input.finalAnswers, input.fields, ctx)
+      : []),
+  ];
 
   /* ── Deduplicação por (documento, campo) ── */
   // Vale tanto ENTRE as fontes quanto DENTRO da Comparação: `reviews` é única
