@@ -49,6 +49,7 @@ GATE_SUITES=(
   auto_review_assignment_sync
   atomic_replace_rpcs
   explicit_assignment_rounds
+  round_write_maintenance
   llm_rate_limit
   llm_runs_round
   member_permission_rpcs

@@ -257,6 +257,14 @@ type PersistOutcome =
 // unicidade que a tabela venha a ter.
 const HUMAN_LATEST_UNIQUE_INDEX = "responses_one_latest_human_per_document";
 
+// SQLSTATE que `enforce_current_response_round_write` reserva para "a rodada
+// fechou enquanto este formulário estava aberto". Deliberadamente NÃO é 40001:
+// aquele código promete que repetir pode dar certo, e schedulers e drivers
+// retentam nele sozinhos — o que aqui nunca converge, porque a condição só sai
+// do lugar quando alguém recarrega a página. Fonte: a migration
+// 20260820170000_round_write_allows_maintenance.sql.
+const ROUND_CHANGED_SQLSTATE = "P0R01";
+
 // Escrita idempotente sobre a CHAVE LÓGICA (#609). O UPDATE filtra pela chave
 // — não por `id` — e o rowcount que ele devolve é quem decide se havia linha
 // corrente; a leitura de `existing` deixou de ser o árbitro dessa decisão e
@@ -496,7 +504,7 @@ async function runSaveAttempt({
     return {
       success: false,
       error:
-        outcome.code === "40001"
+        outcome.code === ROUND_CHANGED_SQLSTATE
           ? "A rodada mudou enquanto este formulário estava aberto. Recarregue a página."
           : outcome.error,
     };
