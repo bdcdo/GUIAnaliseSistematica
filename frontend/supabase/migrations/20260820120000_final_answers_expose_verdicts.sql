@@ -78,7 +78,12 @@ CROSS JOIN LATERAL (
 WHERE r_llm.respondent_type = 'llm'
   AND r_llm.is_latest = true;
 
-REVOKE SELECT ON public.final_answers FROM anon;
+-- CREATE OR REPLACE VIEW preserva os grants existentes, mas reafirmamos o
+-- estado desejado. REVOKE ALL (e não apenas SELECT) para não reabrir a brecha
+-- fechada em 20260724140000_revoke_anon_from_public_views: `final_answers`
+-- carregava bits de INSERT/UPDATE/DELETE para anon que um REVOKE restrito a
+-- SELECT deixaria intactos.
+REVOKE ALL ON public.final_answers FROM anon;
 GRANT SELECT ON public.final_answers TO authenticated, service_role;
 
 COMMIT;

@@ -27,6 +27,7 @@ import {
   type EquivalencePair,
 } from "@/lib/equivalence";
 import { fieldExistedWhenCoded } from "@/lib/answer-staleness";
+import { isCodingComplete } from "@/lib/coding-completeness";
 import { formatAnswer } from "@/lib/reviews/queries";
 import type { AnswerFieldHashes, PydanticField } from "@/lib/types";
 
@@ -105,6 +106,13 @@ export interface MetricsEquivalence extends EquivalencePair {
 
 export interface LlmErrorMetricsInput {
   fields: PydanticField[];
+  /**
+   * `projects.automation_mode`. A fonte de auto-revisão só é lida em
+   * 'auto_review_llm': `field_reviews` não é materializado nos outros modos, e
+   * a view devolveria 'consenso' — que ali significa apenas "este projeto não
+   * usa auto-revisão" — para todo campo de todo documento.
+   */
+  automationMode: string | null;
   documentTitles: Map<string, string>;
   /** Todas as responses do projeto, de todas as rodadas e respondentes. */
   responses: MetricsResponse[];
@@ -192,6 +200,7 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
 } {
   const {
     fields,
+    automationMode,
     documentTitles,
     responses,
     reviews,
@@ -327,7 +336,12 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
   }
 
   /* ── Fonte B: Auto-revisão (view `final_answers`) ── */
-  for (const row of finalAnswers) {
+  // Sem este gate, um projeto de Comparação (`compare_llm`) veria toda a sua
+  // grade documento × campo entrar como acerto: medido no projeto Zolgensma,
+  // o denominador saltava de 898 para 2944 e a taxa despencava de 37% para
+  // 11% — puro ruído de linhas 'consenso' que nunca passaram por auto-revisão.
+  const autoReviewEnabled = automationMode === "auto_review_llm";
+  for (const row of autoReviewEnabled ? finalAnswers : []) {
     const field = fieldMap.get(row.field_name);
     if (!isMeasurableField(field)) continue;
 
@@ -338,6 +352,12 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
     // resposta do LLM, e marca 'consenso' sempre que não há linha em
     // `field_reviews` — inclusive em documentos que ninguém codificou. Sem
     // este gate, não-codificação viraria acerto do LLM e afundaria a taxa.
+    //
+    // O gate espelha `computeBacklogRows` (`auto-review-backlog.ts`), que é
+    // quem MATERIALIZA as linhas de `field_reviews`: ele só varre codificações
+    // humanas COMPLETAS. Um gate mais frouxo aqui leria a ausência de linha
+    // num documento pela metade como concordância, quando ela só significa que
+    // o documento ainda não era elegível ao backlog.
     const humanCoded = (responsesByDoc.get(row.document_id) ?? []).some(
       (response) =>
         response.respondent_type === "humano" &&
@@ -346,7 +366,12 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
           response.answer_field_hashes ?? undefined,
           field.name,
         ) &&
-        isFieldVisible(field, response.answers ?? {}),
+        isFieldVisible(field, response.answers ?? {}) &&
+        isCodingComplete(
+          fields,
+          response.answers ?? {},
+          response.answer_field_hashes ?? undefined,
+        ),
     );
     if (!humanCoded) continue;
 
@@ -398,7 +423,14 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
     });
   }
 
-  /* ── Deduplicação entre as fontes ── */
+  /* ── Deduplicação por (documento, campo) ── */
+  // Vale tanto ENTRE as fontes quanto DENTRO da Comparação: `reviews` é única
+  // por (projeto, doc, campo, revisor), então um campo revisado por três
+  // pessoas rendia três entradas e pesava o triplo na taxa. Uma entrada por
+  // campo é a leitura certa de "quantos campos o LLM errou" — medido no
+  // projeto Zolgensma, o efeito é de menos de 1 ponto percentual (961 reviews
+  // colapsam em 898 campos), mas o peso deixa de depender de quantas pessoas
+  // passaram pelo documento.
   const winners = new Map<string, Candidate>();
   for (const candidate of candidates) {
     const key = `${candidate.documentId}:${candidate.fieldName}`;

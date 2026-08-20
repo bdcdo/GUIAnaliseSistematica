@@ -31,13 +31,13 @@ export default async function LlmInsightsPage({
     { data: documents },
     { data: errorResolutions },
     { data: equivalencePairs },
-    { data: finalAnswers },
+    { data: finalAnswers, error: finalAnswersError },
     accessResult,
   ] = await Promise.all([
     supabase
       .from("projects")
       .select(
-        "pydantic_fields, schema_revision",
+        "pydantic_fields, schema_revision, automation_mode",
       )
       .eq("id", id)
       .single(),
@@ -97,6 +97,17 @@ export default async function LlmInsightsPage({
     getProjectAccessContext(id, user),
   ]);
 
+  // A fonte de auto-revisão some sem quebrar a página se a query falhar — o
+  // que aconteceria numa janela de deploy em que o código já subiu mas a
+  // migration que expõe os vereditos em `final_answers` ainda não foi
+  // aplicada. Silêncio aqui seria uma taxa incompleta sem aviso nenhum.
+  if (finalAnswersError) {
+    console.error(
+      `[llm-insights] projeto ${id}: fonte de auto-revisão indisponível, taxa calculada só com a Comparação —`,
+      finalAnswersError.message,
+    );
+  }
+
   // Fail-open em contexto de acesso indisponível (erro transitório de query):
   // não rebaixa um coordenador legítimo a não-coordenador por falha transiente.
   // Seguro aqui porque isCoordinator só liga affordances no LlmInsightsView
@@ -125,6 +136,7 @@ export default async function LlmInsightsPage({
 
   const { errors, reviewedEntries } = computeLlmErrorMetrics({
     fields: allFields,
+    automationMode: project?.automation_mode ?? null,
     documentTitles,
     responses,
     reviews,

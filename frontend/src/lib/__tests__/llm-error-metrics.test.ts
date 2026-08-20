@@ -88,6 +88,7 @@ function equiv(
 function run(overrides: Partial<LlmErrorMetricsInput> = {}) {
   return computeLlmErrorMetrics({
     fields: [field()],
+    automationMode: "auto_review_llm",
     documentTitles: new Map([["doc1", "Documento 1"]]),
     responses: [],
     reviews: [],
@@ -251,6 +252,54 @@ describe("computeLlmErrorMetrics — fonte Auto-revisão", () => {
     expect(reviewedEntries).toHaveLength(0);
   });
 
+  // O bug que o replay em produção pegou: num projeto de Comparação a view
+  // devolve 'consenso' para a grade inteira, porque `field_reviews` nunca é
+  // materializado ali. Sem este gate o denominador triplicava.
+  it("ignora a fonte inteira fora do modo auto_review_llm", () => {
+    const entrada = {
+      documentTitles: titles,
+      responses: [llmDoc2, humanDoc2],
+      finalAnswers: [finalAnswer({ document_id: "doc2", provenance: "consenso" })],
+    };
+
+    expect(run({ ...entrada, automationMode: "compare_llm" }).reviewedEntries).toHaveLength(0);
+    expect(run({ ...entrada, automationMode: "compare_humans" }).reviewedEntries).toHaveLength(0);
+    expect(run({ ...entrada, automationMode: "none" }).reviewedEntries).toHaveLength(0);
+    expect(run({ ...entrada, automationMode: null }).reviewedEntries).toHaveLength(0);
+    expect(run({ ...entrada, automationMode: "auto_review_llm" }).reviewedEntries).toHaveLength(1);
+  });
+
+  // Espelha `computeBacklogRows`, que só varre codificações completas: num
+  // documento pela metade a ausência de `field_reviews` não prova concordância.
+  it("exige codificação humana COMPLETA para tratar consenso como acerto", () => {
+    const fields = [
+      field({ name: "x", required: true }),
+      field({ name: "y", required: true }),
+    ];
+
+    const incompleta = run({
+      fields,
+      documentTitles: titles,
+      responses: [
+        llmDoc2,
+        response({ id: "rh2", document_id: "doc2", answers: { x: "NI", y: "" } }),
+      ],
+      finalAnswers: [finalAnswer({ document_id: "doc2", provenance: "consenso" })],
+    });
+    expect(incompleta.reviewedEntries).toHaveLength(0);
+
+    const completa = run({
+      fields,
+      documentTitles: titles,
+      responses: [
+        llmDoc2,
+        response({ id: "rh2", document_id: "doc2", answers: { x: "NI", y: "N/A" } }),
+      ],
+      finalAnswers: [finalAnswer({ document_id: "doc2", provenance: "consenso" })],
+    });
+    expect(completa.reviewedEntries).toHaveLength(1);
+  });
+
   it("não conta campo que ainda não existia quando o humano codificou", () => {
     const { reviewedEntries } = run({
       documentTitles: titles,
@@ -359,6 +408,24 @@ describe("computeLlmErrorMetrics — deduplicação entre as fontes", () => {
           final_decided_at: "2026-03-01T00:00:00Z",
           human_response_id: "rh",
           llm_response_id: "rllm",
+        }),
+      ],
+    });
+
+    expect(reviewedEntries).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+  });
+
+  it("colapsa o mesmo campo revisado por vários revisores em uma entrada", () => {
+    const { errors, reviewedEntries } = run({
+      responses: [llmResp, humanResp],
+      reviews: [
+        // Dois revisores, o mesmo (documento, campo): o mais recente decide.
+        review({ verdict: "N/A", created_at: "2026-02-01T00:00:00Z" }),
+        review({
+          verdict: "NI",
+          chosen_response_id: "rllm",
+          created_at: "2026-02-10T00:00:00Z",
         }),
       ],
     });

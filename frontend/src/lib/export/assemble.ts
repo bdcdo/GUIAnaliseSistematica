@@ -165,6 +165,13 @@ function multiFieldAgrees(
 // Valor concordante de um campo entre as respostas de um documento, ou null se
 // houver divergência. Multi compara conjuntos de opções; demais tipos usam
 // normalizeForComparison.
+//
+// Igualdade LITERAL, de propósito por ora: ao contrário da Comparação e da
+// métrica de erro do LLM — que fundem respostas por union-find sobre pares de
+// `response_equivalences` — aqui duas respostas marcadas como equivalentes
+// ainda contam como divergentes. Fundi-las exigiria decidir QUAL valor vai para
+// a célula, e a saída certa é um dicionário canônico de respostas, não uma
+// escolha arbitrária dentro do grupo. Ver issue bdcdo/dataframeitGUI#702.
 function fieldAgreementValue(
   docResponses: ExportResponse[],
   fieldName: string,
