@@ -17,10 +17,6 @@ import {
 
 export type GetExportDatasetResult = ExportDataset | { error: string };
 
-// O PostgREST limita cada query a `max_rows` (1000 por padrão, hospedado e local).
-// Sem paginar, um projeto grande teria a exportação truncada SILENCIOSAMENTE —
-// contradizendo a FR-008 ("conjunto completo"). Buscamos por páginas com .range()
-// até uma página vir incompleta. `build()` recria a query a cada página porque um
 // Retorna o conjunto completo do projeto (documentos + respostas + gabarito)
 // já montado como planilhas de strings. Gate coordinator-only (fail-closed);
 // lê documents.metadata APENAS aqui — nunca na listagem da página. As 4 queries
@@ -55,20 +51,23 @@ export async function getExportDataset(
         .from("documents")
         .select("id, external_id, title, created_at, metadata")
         .eq("project_id", projectId)
-        .is("excluded_at", null)
+        .is("excluded_at", null),
+      ["id"],
     ),
     fetchAllPaged<ExportResponse>(() =>
       supabase
         .from("responses")
         .select("document_id, respondent_name, respondent_type, answers")
         .eq("project_id", projectId)
-        .eq("is_latest", true)
+        .eq("is_latest", true),
+      ["id"],
     ),
     fetchAllPaged<ExportReview>(() =>
       supabase
         .from("reviews")
         .select("document_id, field_name, verdict, comment")
-        .eq("project_id", projectId)
+        .eq("project_id", projectId),
+      ["id"],
     ),
   ]);
 

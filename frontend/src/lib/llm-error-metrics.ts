@@ -600,18 +600,28 @@ function autoReviewCandidates(
   });
 }
 
+// Único ponto que decide se a fonte de auto-revisão vale para um projeto.
+// Sem esse gate, um projeto de Comparação (`compare_llm`) veria toda a sua
+// grade documento × campo entrar como acerto: medido no Zolgensma, o
+// denominador saltava de 898 para 2944 e a taxa despencava de 37% para 11% —
+// puro ruído de linhas 'consenso' que nunca passaram por auto-revisão, porque
+// `field_reviews` não é materializado nesse modo.
+//
+// Exportado porque a página também precisa da resposta ANTES de consultar o
+// banco: a view `final_answers` é cara (uma chamada de
+// `is_auto_review_reconciliation_pending`, SECURITY DEFINER, por linha
+// documento × campo) e não faz sentido pagá-la para descartar o resultado.
+export function usesAutoReviewSource(automationMode: string | null): boolean {
+  return automationMode === "auto_review_llm";
+}
+
 export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
   errors: LlmError[];
   reviewedEntries: ReviewedEntry[];
 } {
   const ctx = buildContext(input);
 
-  // Sem o gate de modo, um projeto de Comparação (`compare_llm`) veria toda a
-  // sua grade documento × campo entrar como acerto: medido no projeto
-  // Zolgensma, o denominador saltava de 898 para 2944 e a taxa despencava de
-  // 37% para 11% — puro ruído de linhas 'consenso' que nunca passaram por
-  // auto-revisão, porque `field_reviews` não é materializado nesse modo.
-  const autoReviewEnabled = input.automationMode === "auto_review_llm";
+  const autoReviewEnabled = usesAutoReviewSource(input.automationMode);
 
   const candidates = [
     ...comparisonCandidates(input.reviews, ctx),

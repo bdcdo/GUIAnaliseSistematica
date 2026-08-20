@@ -6,6 +6,8 @@ import { LlmInsightsView } from "@/components/stats/LlmInsightsView";
 import { fetchAllPaged } from "@/lib/supabase/fetch-all-paged";
 import {
   computeLlmErrorMetrics,
+  isMeasurableField,
+  usesAutoReviewSource,
   type MetricsEquivalence,
   type MetricsFinalAnswer,
   type MetricsResponse,
@@ -13,97 +15,156 @@ import {
 } from "@/lib/llm-error-metrics";
 import type { PydanticField } from "@/lib/types";
 
+interface DocumentRow {
+  id: string;
+  title: string | null;
+  external_id: string | null;
+}
+
+interface ErrorResolutionRow {
+  document_id: string;
+  field_name: string;
+  resolved_at: string | null;
+}
+
 // Carga de dados da página. Fora do componente porque o RSC fica ilegível com
 // sete queries inline — e porque a lista de colunas é o contrato real com
 // `computeLlmErrorMetrics`.
+//
+// Duas fases, e não uma só: `automation_mode` decide se a view `final_answers`
+// vale a pena, e ela é a query mais cara da página (`CROSS JOIN LATERAL` de
+// `is_auto_review_reconciliation_pending`, SECURITY DEFINER e não-inlinável,
+// uma execução por linha documento × campo — 2944 no Zolgensma). Pagar uma ida
+// a mais ao banco em série é mais barato que varrer a view inteira para
+// descartá-la em todo projeto que não usa auto-revisão.
 async function loadInsightsData(
   supabase: Awaited<ReturnType<typeof createSupabaseServer>>,
   id: string,
   user: Awaited<ReturnType<typeof requirePageAuthUser>>,
 ) {
-  const [
-    { data: project },
-    { data: responses },
-    { data: reviews },
-    { data: documents },
-    { data: errorResolutions },
-    { data: equivalencePairs },
-    { data: finalAnswers, error: finalAnswersError },
-    accessResult,
-  ] = await Promise.all([
+  const [{ data: project }, accessResult] = await Promise.all([
     supabase
       .from("projects")
-      .select(
-        "pydantic_fields, schema_revision, automation_mode",
-      )
+      .select("pydantic_fields, schema_revision, automation_mode")
       .eq("id", id)
       .single(),
+    getProjectAccessContext(id, user),
+  ]);
+
+  const [
+    responsesResult,
+    reviewsResult,
+    documentsResult,
+    errorResolutionsResult,
+    equivalencesResult,
+    finalAnswersResult,
+  ] = await Promise.all([
     // Todas as responses, de todas as rodadas e dos dois tipos de respondente:
     // o union-find de equivalência precisa dos dois endpoints de cada par, e
     // `chosen_response_id` pode apontar para uma resposta que não é mais
     // `is_latest`. Paginado — um projeto grande passa de 1000 responses.
-    fetchAllPaged<MetricsResponse>(() =>
-      supabase
-        .from("responses")
-        .select(
-          "id, document_id, respondent_type, is_latest, answers, justifications, answer_field_hashes, created_at, schema_version_major, schema_version_minor, schema_version_patch",
-        )
-        .eq("project_id", id),
+    fetchAllPaged<MetricsResponse>(
+      () =>
+        supabase
+          .from("responses")
+          .select(
+            "id, document_id, respondent_type, is_latest, answers, justifications, answer_field_hashes, created_at, schema_version_major, schema_version_minor, schema_version_patch",
+          )
+          .eq("project_id", id),
+      ["id"],
     ),
-    fetchAllPaged<MetricsReview>(() =>
-      supabase
-        .from("reviews")
-        .select(
-          "document_id, field_name, verdict, chosen_response_id, comment, created_at",
-        )
-        .eq("project_id", id)
-        .not("chosen_response_id", "is", null),
+    fetchAllPaged<MetricsReview>(
+      () =>
+        supabase
+          .from("reviews")
+          .select(
+            "document_id, field_name, verdict, chosen_response_id, comment, created_at",
+          )
+          .eq("project_id", id)
+          .not("chosen_response_id", "is", null),
+      ["id"],
     ),
-    supabase
-      .from("documents")
-      .select("id, title, external_id")
-      .eq("project_id", id)
-      .is("excluded_at", null)
-      .is("exclusion_pending_at", null),
-    supabase
-      .from("error_resolutions")
-      .select("document_id, field_name, resolved_at")
-      .eq("project_id", id),
+    // Só os documentos ativos: a métrica usa as CHAVES deste conjunto para
+    // decidir o que medir, então um documento excluído some da taxa junto com
+    // o título. Paginado pelo mesmo motivo das responses — sem isso, acima de
+    // 1000 documentos o excedente sairia da métrica sem erro nenhum.
+    fetchAllPaged<DocumentRow>(
+      () =>
+        supabase
+          .from("documents")
+          .select("id, title, external_id")
+          .eq("project_id", id)
+          .is("excluded_at", null)
+          .is("exclusion_pending_at", null),
+      ["id"],
+    ),
+    fetchAllPaged<ErrorResolutionRow>(
+      () =>
+        supabase
+          .from("error_resolutions")
+          .select("document_id, field_name, resolved_at")
+          .eq("project_id", id),
+      ["id"],
+    ),
     // As colunas de snapshot são obrigatórias: `filterCurrentEquivalencePairs`
     // é fail-closed e descarta todo par que venha sem elas.
-    fetchAllPaged<MetricsEquivalence>(() =>
-      supabase
-        .from("response_equivalences")
-        .select(
-          "document_id, field_name, response_a_id, response_b_id, response_a_answer_snapshot, response_b_answer_snapshot",
-        )
-        .eq("project_id", id)
-        .is("superseded_at", null),
+    fetchAllPaged<MetricsEquivalence>(
+      () =>
+        supabase
+          .from("response_equivalences")
+          .select(
+            "document_id, field_name, response_a_id, response_b_id, response_a_answer_snapshot, response_b_answer_snapshot",
+          )
+          .eq("project_id", id)
+          .is("superseded_at", null),
+      ["id"],
     ),
     // Fonte de veredito do fluxo de auto-revisão. A RPC desse fluxo grava em
     // `field_reviews` e nunca em `reviews`, então sem esta query os projetos
     // em `automation_mode = 'auto_review_llm'` não teriam taxa nenhuma.
-    fetchAllPaged<MetricsFinalAnswer>(() =>
-      supabase
-        .from("final_answers")
-        .select(
-          "document_id, field_name, provenance, final_verdict, self_reviewed_at, final_decided_at, human_response_id, llm_response_id, human_answer_snapshot, llm_answer_snapshot, arbitrator_comment",
+    // `final_answers` é view: não tem PK, e (documento, campo) é a ordem total
+    // que a invariante de uma única resposta LLM `is_latest` por documento
+    // sustenta.
+    usesAutoReviewSource(project?.automation_mode ?? null)
+      ? fetchAllPaged<MetricsFinalAnswer>(
+          () =>
+            supabase
+              .from("final_answers")
+              .select(
+                "document_id, field_name, provenance, final_verdict, self_reviewed_at, final_decided_at, human_response_id, llm_response_id, human_answer_snapshot, llm_answer_snapshot, arbitrator_comment",
+              )
+              .eq("project_id", id),
+          ["document_id", "field_name"],
         )
-        .eq("project_id", id),
-    ),
-    getProjectAccessContext(id, user),
+      : { data: [] as MetricsFinalAnswer[], error: null },
   ]);
 
   return {
     project,
-    responses,
-    reviews,
-    documents,
-    errorResolutions,
-    equivalencePairs,
-    finalAnswers,
-    finalAnswersError,
     accessResult,
+    responses: responsesResult.data,
+    reviews: reviewsResult.data,
+    documents: documentsResult.data,
+    errorResolutions: errorResolutionsResult.data,
+    equivalences: equivalencesResult.data,
+    finalAnswers: finalAnswersResult.data,
+    // Falha numa fonte ESTRUTURAL não pode virar número: `fetchAllPaged`
+    // devolve o que já acumulou junto com o erro, então ignorá-lo exibiria uma
+    // taxa calculada sobre um recorte arbitrário dos dados — ou "0 erros / 0%"
+    // sem aviso nenhum. Todas as cinco entram: sem `documents` a métrica mede
+    // zero documento, e sem `error_resolutions` erros já resolvidos reaparecem
+    // como abertos.
+    structuralError:
+      responsesResult.error ??
+      reviewsResult.error ??
+      documentsResult.error ??
+      errorResolutionsResult.error ??
+      equivalencesResult.error,
+    // `final_answers` é a exceção deliberada: é fonte OPCIONAL, e o modo de
+    // falha esperado é a janela de deploy em que o código já subiu mas a
+    // migration que expõe os vereditos ainda não foi aplicada. Degradar para a
+    // Comparação é melhor que derrubar a página — mas em silêncio, não.
+    finalAnswersError: finalAnswersResult.error,
   };
 }
 
@@ -138,20 +199,38 @@ export default async function LlmInsightsPage({
 
   const {
     project,
+    accessResult,
     responses,
     reviews,
     documents,
     errorResolutions,
-    equivalencePairs,
+    equivalences,
     finalAnswers,
+    structuralError,
     finalAnswersError,
-    accessResult,
   } = await loadInsightsData(supabase, id, user);
 
-  // A fonte de auto-revisão some sem quebrar a página se a query falhar — o
-  // que aconteceria numa janela de deploy em que o código já subiu mas a
-  // migration que expõe os vereditos em `final_answers` ainda não foi
-  // aplicada. Silêncio aqui seria uma taxa incompleta sem aviso nenhum.
+  if (structuralError) {
+    console.error(
+      `[llm-insights] projeto ${id}: leitura incompleta, taxa não calculada —`,
+      structuralError.message,
+    );
+    return (
+      <div className="mx-auto max-w-4xl p-6">
+        <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm">
+          <p className="font-medium text-destructive">
+            Não foi possível carregar a taxa de erro do LLM agora.
+          </p>
+          <p className="mt-1 text-muted-foreground">
+            Parte dos dados não veio, e uma taxa calculada sobre dados
+            incompletos seria enganosa. Isso costuma ser temporário — recarregue
+            a página em instantes.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (finalAnswersError) {
     console.error(
       `[llm-insights] projeto ${id}: fonte de auto-revisão indisponível, taxa calculada só com a Comparação —`,
@@ -179,26 +258,26 @@ export default async function LlmInsightsPage({
     fields: allFields,
     automationMode: project?.automation_mode ?? null,
     documentTitles: new Map(
-      documents?.map((d) => [d.id, d.title || d.external_id || d.id]) || [],
+      documents.map((d) => [d.id, d.title || d.external_id || d.id]),
     ),
     responses,
     reviews,
     finalAnswers,
-    equivalences: equivalencePairs,
+    equivalences,
     errorResolutions: new Map(
-      errorResolutions?.map((r) => [
+      errorResolutions.map((r) => [
         `${r.document_id}:${r.field_name}`,
         r.resolved_at,
-      ]) || [],
+      ]),
     ),
   });
 
   const summary = buildSummary(responses, reviewedEntries);
 
-  // Visible fields for the dropdown filter (same criteria as the error suppression).
-  const visibleFields = allFields.filter(
-    (f) => f.target !== "llm_only" && f.target !== "none",
-  );
+  // O dropdown de filtro por campo lista exatamente os campos que a métrica
+  // mede — mesmo predicado, não uma cópia dele (um campo `human_only` no filtro
+  // seria uma opção que nunca casa com erro nenhum).
+  const visibleFields = allFields.filter((f) => isMeasurableField(f));
 
   return (
     <div className="mx-auto max-w-4xl p-6">
