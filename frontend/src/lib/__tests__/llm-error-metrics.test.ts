@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   computeLlmErrorMetrics,
+  type AutoReviewProvenance,
   type LlmErrorMetricsInput,
   type MetricsEquivalence,
   type MetricsFinalAnswer,
@@ -203,15 +204,68 @@ describe("computeLlmErrorMetrics — fonte Comparação", () => {
 
   it("ignora campos fora da superfície de revisão humana", () => {
     const { reviewedEntries } = run({
-      fields: [field({ name: "a", target: "none" }), field({ name: "b", target: "llm_only" })],
-      responses: [response({ id: "rllm", respondent_type: "llm", answers: { a: "1", b: "2" } })],
+      fields: [
+        field({ name: "a", target: "none" }),
+        field({ name: "b", target: "llm_only" }),
+        // O LLM não recebe `human_only`, então não há resposta dele a julgar.
+        field({ name: "c", target: "human_only" }),
+      ],
+      responses: [
+        response({
+          id: "rllm",
+          respondent_type: "llm",
+          answers: { a: "1", b: "2", c: "3" },
+        }),
+      ],
       reviews: [
         review({ field_name: "a", verdict: "z" }),
         review({ field_name: "b", verdict: "z" }),
+        review({ field_name: "c", verdict: "z" }),
       ],
     });
 
     expect(reviewedEntries).toHaveLength(0);
+  });
+
+  it("não mede documento excluído do projeto", () => {
+    const { reviewedEntries } = run({
+      documentTitles: new Map(),
+      responses: [llmResp, humanResp],
+      reviews: [review({ verdict: "N/A" })],
+    });
+
+    expect(reviewedEntries).toHaveLength(0);
+  });
+
+  // `multi` tem semântica de conjunto, e é assim que a tela de Comparação o
+  // compara. Serializar o array na ordem em que veio faria de ["a","b"] vs
+  // ["b","a"] um erro do LLM que a Comparação exibe como concordância.
+  it("não conta erro quando o multi traz as mesmas opções em outra ordem", () => {
+    const { errors, reviewedEntries } = run({
+      fields: [field({ name: "x", type: "multi", options: ["a", "b"] })],
+      responses: [
+        response({ id: "rllm", respondent_type: "llm", answers: { x: ["a", "b"] } }),
+        response({ id: "rh", answers: { x: ["b", "a"] } }),
+      ],
+      reviews: [review({ verdict: '{"a":true,"b":true}' })],
+    });
+
+    expect(reviewedEntries).toHaveLength(1);
+    expect(errors).toHaveLength(0);
+  });
+
+  it("conta erro no multi quando as opções marcadas divergem", () => {
+    const { errors } = run({
+      fields: [field({ name: "x", type: "multi", options: ["a", "b"] })],
+      responses: [
+        response({ id: "rllm", respondent_type: "llm", answers: { x: ["a"] } }),
+        response({ id: "rh", answers: { x: ["a", "b"] } }),
+      ],
+      reviews: [review({ verdict: '{"a":true,"b":true}' })],
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].source).toBe("comparacao");
   });
 });
 
@@ -321,7 +375,7 @@ describe("computeLlmErrorMetrics — fonte Auto-revisão", () => {
 
   it("classifica cada proveniência no balde certo", () => {
     const cases: Array<{
-      provenance: string;
+      provenance: AutoReviewProvenance;
       final_verdict?: string | null;
       esperado: "acerto" | "erro" | "fora";
     }> = [
@@ -391,6 +445,144 @@ describe("computeLlmErrorMetrics — fonte Auto-revisão", () => {
       chosenResponseId: "rh2",
       llmResponseId: "rllm2",
       reviewedAt: "2026-03-01T00:00:00Z",
+    });
+  });
+
+  // `human_only` o LLM sequer recebe: `llm_runner._visible_fields` descarta
+  // 'none' e 'human_only' antes da chamada, e `computeDivergentFieldNames` pula
+  // os mesmos. Sem resposta do LLM não há divergência, sem divergência não há
+  // linha em `field_reviews`, e sem linha a view devolve 'consenso' — um acerto
+  // fabricado por campo por documento codificado.
+  it("não conta campo human_only como acerto do LLM", () => {
+    const { reviewedEntries } = run({
+      fields: [field({ name: "x", target: "human_only" })],
+      documentTitles: titles,
+      responses: [llmDoc2, humanDoc2],
+      finalAnswers: [finalAnswer({ document_id: "doc2", provenance: "consenso" })],
+    });
+
+    expect(reviewedEntries).toHaveLength(0);
+  });
+
+  // Simétrico ao teste da response humana logo acima: o `applicable.length < 2`
+  // de `computeDivergentFieldNames` avalia os DOIS lados. Um campo acrescentado
+  // ao schema depois da rodada LLM não gera linha nenhuma — e um gate que só
+  // olhasse o humano daria um acerto de graça em cada documento já codificado.
+  it("não conta campo que ainda não existia quando o LLM respondeu", () => {
+    const { reviewedEntries } = run({
+      documentTitles: titles,
+      responses: [
+        response({
+          id: "rllm2",
+          document_id: "doc2",
+          respondent_type: "llm",
+          answers: { outro: "v" },
+          answer_field_hashes: { outro: "h1" },
+        }),
+        humanDoc2,
+      ],
+      finalAnswers: [finalAnswer({ document_id: "doc2", provenance: "consenso" })],
+    });
+
+    expect(reviewedEntries).toHaveLength(0);
+  });
+
+  // O outro eixo do mesmo gate: a condicional pode esconder o campo de um lado
+  // só, quando as duas respostas discordam no campo-gatilho.
+  it("não conta campo condicional invisível para o LLM", () => {
+    const fields = [
+      field({ name: "gatilho", type: "single", options: ["sim", "nao"] }),
+      field({ name: "x", condition: { field: "gatilho", equals: "sim" } }),
+    ];
+
+    const { reviewedEntries } = run({
+      fields,
+      documentTitles: titles,
+      responses: [
+        response({
+          id: "rllm2",
+          document_id: "doc2",
+          respondent_type: "llm",
+          answers: { gatilho: "nao" },
+        }),
+        response({
+          id: "rh2",
+          document_id: "doc2",
+          answers: { gatilho: "sim", x: "N/A" },
+        }),
+      ],
+      finalAnswers: [
+        finalAnswer({ document_id: "doc2", field_name: "x", provenance: "consenso" }),
+      ],
+    });
+
+    expect(reviewedEntries).toHaveLength(0);
+  });
+
+  // A view junta `responses` e `projects`, nunca `documents`: o soft delete de
+  // um documento não apaga as responses dele, então ele continua produzindo a
+  // grade inteira como 'consenso'.
+  it("não mede documento excluído do projeto", () => {
+    const { reviewedEntries } = run({
+      documentTitles: new Map([["doc1", "Documento 1"]]),
+      responses: [llmDoc2, humanDoc2],
+      finalAnswers: [finalAnswer({ document_id: "doc2", provenance: "consenso" })],
+    });
+
+    expect(reviewedEntries).toHaveLength(0);
+  });
+
+  // O veredito foi dado sobre a rodada 1; a rodada 2 respondeu outra coisa por
+  // outro motivo, sob outra versão de schema. Parear o snapshot congelado com a
+  // justificativa corrente mostraria ao coordenador um argumento que defende
+  // uma resposta diferente da exibida.
+  it("descreve o erro pela response ARBITRADA, não pela rodada corrente", () => {
+    const rodada1 = response({
+      id: "rllm-r1",
+      document_id: "doc2",
+      respondent_type: "llm",
+      is_latest: false,
+      answers: { x: "NI" },
+      justifications: { x: "A petição não informa." },
+      created_at: "2026-01-10T00:00:00Z",
+    });
+    const rodada2 = response({
+      id: "rllm-r2",
+      document_id: "doc2",
+      respondent_type: "llm",
+      is_latest: true,
+      answers: { x: "sim" },
+      justifications: { x: "A nota técnica diz que sim." },
+      created_at: "2026-04-01T00:00:00Z",
+      schema_version_major: 2,
+      schema_version_minor: 1,
+      schema_version_patch: 0,
+    });
+
+    const { errors } = run({
+      documentTitles: titles,
+      responses: [rodada1, rodada2, humanDoc2],
+      finalAnswers: [
+        finalAnswer({
+          document_id: "doc2",
+          provenance: "arbitrado",
+          final_verdict: "humano",
+          final_decided_at: "2026-03-01T00:00:00Z",
+          human_response_id: "rh2",
+          llm_response_id: "rllm-r1",
+          human_answer_snapshot: "N/A",
+          llm_answer_snapshot: "NI",
+        }),
+      ],
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({
+      llmAnswer: "NI",
+      llmJustification: "A petição não informa.",
+      schemaVersion: "1.0.0",
+      llmResponseId: "rllm-r1",
+      source: "auto_revisao",
     });
   });
 

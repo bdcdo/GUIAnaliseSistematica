@@ -20,16 +20,23 @@
 // para o mesmo (documento, campo) — não há constraint cruzada impedindo — daí
 // a deduplicação em `pickWinner`.
 import { normalizeForComparison } from "@/lib/utils";
-import { isFieldVisible } from "@/lib/conditional";
 import {
   buildResponseGroupKeys,
   filterCurrentEquivalencePairs,
   type EquivalencePair,
 } from "@/lib/equivalence";
-import { fieldExistedWhenCoded } from "@/lib/answer-staleness";
+import { isFieldApplicable } from "@/lib/compare-divergence";
+import {
+  multiSelectionSets,
+  multiSelectionsAgree,
+} from "@/lib/compare-multi-options";
 import { isCodingComplete } from "@/lib/coding-completeness";
+import { resolveTarget } from "@/lib/pydantic-field";
 import { formatAnswer } from "@/lib/reviews/queries";
 import type { AnswerFieldHashes, PydanticField } from "@/lib/types";
+
+/** De qual das duas fontes o veredito veio. A UI usa para decidir affordances. */
+export type LlmErrorSource = "comparacao" | "auto_revisao";
 
 export interface LlmError {
   documentId: string;
@@ -45,6 +52,7 @@ export interface LlmError {
   schemaVersion: string | null;
   llmResponseId: string;
   chosenResponseId: string | null;
+  source: LlmErrorSource;
 }
 
 // Todo (doc, campo) que o LLM respondeu e que já tem veredito humano — de
@@ -84,11 +92,26 @@ export interface MetricsReview {
   created_at: string;
 }
 
+// Os valores que o `CASE` de `final_answers` emite, e nada além deles. União
+// literal em vez de `string` de propósito: com `string`, um estado terminal
+// novo (ou renomeado) na view cairia no ramo "pendente" e sumiria em silêncio
+// do numerador E do denominador — sem erro, sem log e sem teste vermelho. Assim
+// o drift vira erro de compilação em `classifyAutoReview`.
+export type AutoReviewProvenance =
+  | "consenso"
+  | "auto_corrigido"
+  | "equivalente"
+  | "ambiguo"
+  | "arbitrado"
+  | "aguarda_reconciliacao"
+  | "aguarda_auto_revisao"
+  | "aguarda_arbitragem";
+
 // Linha da view `final_answers` (uma por documento com LLM × campo do schema).
 export interface MetricsFinalAnswer {
   document_id: string;
   field_name: string;
-  provenance: string;
+  provenance: AutoReviewProvenance;
   final_verdict: string | null;
   self_reviewed_at: string | null;
   final_decided_at: string | null;
@@ -114,6 +137,10 @@ export interface LlmErrorMetricsInput {
    * usa auto-revisão" — para todo campo de todo documento.
    */
   automationMode: string | null;
+  /**
+   * Só os documentos ATIVOS do projeto. As chaves, e não só os valores, são
+   * consumidas: elas definem o conjunto de documentos que a métrica mede.
+   */
   documentTitles: Map<string, string>;
   /** Todas as responses do projeto, de todas as rodadas e respondentes. */
   responses: MetricsResponse[];
@@ -154,10 +181,25 @@ function formatSchemaVersion(response: {
   return `${schema_version_major}.${schema_version_minor}.${schema_version_patch}`;
 }
 
-// Campos que o coordenador removeu da superfície de revisão humana nunca são
-// erro: vereditos antigos sobre eles vazariam para a métrica.
-function isMeasurableField(field: PydanticField | undefined): field is PydanticField {
-  return !!field && field.target !== "none" && field.target !== "llm_only";
+// Campos sobre os quais faz sentido perguntar se o LLM acertou: os que o LLM
+// responde E o humano revisa. Os três excluídos saem por razões distintas —
+// `none` e `llm_only` o coordenador tirou da superfície de revisão humana, e
+// `human_only` o LLM sequer recebe (`llm_runner._visible_fields` o descarta).
+//
+// `human_only` é o mais traiçoeiro dos três na fonte de auto-revisão: sem
+// resposta do LLM não há divergência, sem divergência `computeDivergentFieldNames`
+// não gera linha em `field_reviews`, e sem linha a view emite 'consenso' — um
+// acerto fabricado por campo `human_only` por documento codificado, sempre no
+// sentido de deflacionar a taxa.
+//
+// O default de `target` sai de `resolveTarget`, nunca de um `!== x` local
+// (regra (c2) do CLAUDE.md).
+export function isMeasurableField(
+  field: PydanticField | undefined,
+): field is PydanticField {
+  if (!field) return false;
+  const target = resolveTarget(field.target);
+  return target !== "none" && target !== "llm_only" && target !== "human_only";
 }
 
 // "O LLM acertou este campo?" a partir da proveniência da auto-revisão. O mapa
@@ -181,8 +223,18 @@ function classifyAutoReview(
     // 'ambiguo' é terminal mas não produz gabarito: fica fora do numerador E
     // do denominador, como já acontece com o veredito "ambiguo" da Comparação.
     // Os 'aguarda_*' são pendências, não acertos.
-    default:
+    case "ambiguo":
+    case "aguarda_reconciliacao":
+    case "aguarda_auto_revisao":
+    case "aguarda_arbitragem":
       return "pendente";
+    default: {
+      // Inalcançável pelo tipo. O `never` é o gate: acrescentar um estado ao
+      // `CASE` da view sem tratá-lo aqui não compila.
+      const unhandled: never = row.provenance;
+      void unhandled;
+      return "pendente";
+    }
   }
 }
 
@@ -198,23 +250,29 @@ function beats(candidate: Candidate, incumbent: Candidate): boolean {
 // Contexto derivado uma vez e compartilhado pelas duas fontes.
 interface MetricsContext {
   fieldMap: Map<string, PydanticField>;
+  isActiveDocument: (docId: string) => boolean;
   titleOf: (docId: string) => string;
   resolvedAtOf: (docId: string, fieldName: string) => string | null;
   responsesByDoc: Map<string, MetricsResponse[]>;
+  responseById: Map<string, MetricsResponse>;
   llmLatestByDoc: Map<string, MetricsResponse>;
   /** Classes de equivalência por (documento, campo), memoizadas. */
   groupKeysFor: (docId: string, fieldName: string) => Map<string, string>;
+  /** `isCodingComplete` da response, memoizado por id. */
+  codingIsComplete: (response: MetricsResponse) => boolean;
 }
 
 function buildContext(input: LlmErrorMetricsInput): MetricsContext {
   const { fields, documentTitles, responses, equivalences, errorResolutions } = input;
 
   const responsesByDoc = new Map<string, MetricsResponse[]>();
+  const responseById = new Map<string, MetricsResponse>();
   const llmLatestByDoc = new Map<string, MetricsResponse>();
   for (const response of responses) {
     const bucket = responsesByDoc.get(response.document_id);
     if (bucket) bucket.push(response);
     else responsesByDoc.set(response.document_id, [response]);
+    responseById.set(response.id, response);
     if (response.respondent_type === "llm" && response.is_latest) {
       llmLatestByDoc.set(response.document_id, response);
     }
@@ -259,28 +317,77 @@ function buildContext(input: LlmErrorMetricsInput): MetricsContext {
     return groupKeys;
   };
 
+  // Memoizado por response: a fonte de auto-revisão pergunta uma vez por
+  // (documento, campo), mas completude é propriedade da RESPONSE — só os checks
+  // de aplicabilidade dependem do campo. Sem o cache, um projeto de 5000
+  // documentos × 40 campos reavaliava `isCodingComplete` (que por sua vez itera
+  // todos os campos) centenas de milhares de vezes por render.
+  const completeCache = new Map<string, boolean>();
+  const codingIsComplete = (response: MetricsResponse) => {
+    const cached = completeCache.get(response.id);
+    if (cached !== undefined) return cached;
+    const complete = isCodingComplete(
+      fields,
+      response.answers ?? {},
+      response.answer_field_hashes ?? undefined,
+    );
+    completeCache.set(response.id, complete);
+    return complete;
+  };
+
   return {
     fieldMap: new Map(fields.map((f) => [f.name, f])),
+    isActiveDocument: (docId) => documentTitles.has(docId),
     titleOf: (docId) => documentTitles.get(docId) || docId,
     resolvedAtOf: (docId, fieldName) =>
       errorResolutions.get(`${docId}:${fieldName}`) ?? null,
     responsesByDoc,
+    responseById,
     llmLatestByDoc,
     groupKeysFor,
+    codingIsComplete,
   };
 }
 
-// O LLM errou este campo, na leitura da Comparação? Uma única noção de "mesma
-// resposta": as classes do union-find já fundem tanto pares marcados como
-// equivalentes pelo revisor quanto respostas de texto idêntico, e propagam por
-// transitividade (A≡B, B≡C ⇒ A≡C). É a mesma primitiva que a tela de
-// Comparação usa para decidir divergência.
+// O LLM errou este campo, na leitura da Comparação? Para tudo que não é `multi`,
+// uma única noção de "mesma resposta": as classes do union-find já fundem tanto
+// pares marcados como equivalentes pelo revisor quanto respostas de texto
+// idêntico, e propagam por transitividade (A≡B, B≡C ⇒ A≡C). É a mesma primitiva
+// que a tela de Comparação usa para decidir divergência.
 function comparisonIsError(
   review: MetricsReview,
+  field: PydanticField,
   llmResponse: MetricsResponse,
   ctx: MetricsContext,
 ): boolean {
   if (review.chosen_response_id === llmResponse.id) return false;
+
+  const chosen = review.chosen_response_id
+    ? ctx.responseById.get(review.chosen_response_id)
+    : undefined;
+
+  // `multi` tem semântica de CONJUNTO de opções, e é assim que
+  // `computeDivergentFieldNames` o compara — enquanto `normalizeForComparison`
+  // serializa o array na ordem em que veio, e faria de ["a","b"] vs ["b","a"]
+  // um erro do LLM que a tela de Comparação exibe como concordância. `multi`
+  // fica de fora do union-find pelo mesmo motivo que lá: a sua UI de revisão
+  // (MultiOptionReview) não tem cards de equivalência, não há par a fundir.
+  //
+  // Hoje o ramo é defensivo: `MultiOptionReview` submete sem
+  // `chosenResponseId`, e a página filtra `chosen_response_id IS NOT NULL`, de
+  // modo que nenhum review de `multi` chega até aqui. Ele existe para que a
+  // afirmação "esta métrica usa as primitivas da Comparação" seja verdadeira
+  // por construção, e não por acidente da UI atual.
+  if (field.type === "multi" && field.options?.length) {
+    if (!chosen) return true;
+    return !multiSelectionsAgree(
+      field.options,
+      multiSelectionSets([
+        llmResponse.answers?.[review.field_name],
+        chosen.answers?.[review.field_name],
+      ]),
+    );
+  }
 
   const groupKeys = ctx.groupKeysFor(review.document_id, review.field_name);
   const llmKey = groupKeys.get(llmResponse.id);
@@ -307,6 +414,11 @@ function comparisonCandidates(
   const candidates: Candidate[] = [];
 
   for (const review of reviews) {
+    // Documento excluído (soft delete) sai da métrica inteira, não só do
+    // título: medir o acerto do LLM sobre um documento que o coordenador tirou
+    // do projeto é ruído em ambos os sentidos.
+    if (!ctx.isActiveDocument(review.document_id)) continue;
+
     const llmResponse = ctx.llmLatestByDoc.get(review.document_id);
     if (!llmResponse) continue;
 
@@ -314,7 +426,7 @@ function comparisonCandidates(
     if (!isMeasurableField(field)) continue;
 
     const llmAnswer = llmResponse.answers?.[review.field_name];
-    const isError = comparisonIsError(review, llmResponse, ctx);
+    const isError = comparisonIsError(review, field, llmResponse, ctx);
 
     const shared = {
       documentId: review.document_id,
@@ -341,6 +453,7 @@ function comparisonCandidates(
             resolvedAt: ctx.resolvedAtOf(review.document_id, review.field_name),
             llmResponseId: llmResponse.id,
             chosenResponseId: review.chosen_response_id,
+            source: "comparacao",
           }
         : null,
       entry: { ...shared, isError },
@@ -354,40 +467,56 @@ function comparisonCandidates(
 // do LLM, e marca 'consenso' sempre que não há linha em `field_reviews` —
 // inclusive em documentos que ninguém codificou. O gate espelha
 // `computeBacklogRows` (`auto-review-backlog.ts`), que é quem MATERIALIZA as
-// linhas: ele só varre codificações humanas COMPLETAS. Um gate mais frouxo
-// leria a ausência de linha num documento pela metade como concordância,
-// quando ela só significa que o documento ainda não era elegível ao backlog.
-function hasCompleteHumanCoding(
+// linhas, e precisa espelhá-lo nos DOIS eixos que ele usa:
+//
+//   • codificação humana COMPLETA (`isCodingComplete`), senão a ausência de
+//     linha num documento pela metade viraria concordância;
+//   • campo APLICÁVEL às duas responses (`isFieldApplicable`), como no
+//     `applicable.length < 2` de `computeDivergentFieldNames`. Sem o lado do
+//     LLM, um campo acrescentado ao schema depois da rodada — ausente do
+//     `answer_field_hashes` dela — e um condicional visível só para o humano
+//     entravam como acerto: acrescentar um campo obrigatório hoje daria um
+//     acerto de graça em cada documento já codificado.
+function hasComparableHumanCoding(
   docId: string,
   field: PydanticField,
-  fields: PydanticField[],
+  llmResponse: MetricsResponse,
   ctx: MetricsContext,
 ): boolean {
+  if (
+    !isFieldApplicable(
+      field,
+      llmResponse.answers,
+      llmResponse.answer_field_hashes ?? undefined,
+    )
+  )
+    return false;
+
   return (ctx.responsesByDoc.get(docId) ?? []).some(
     (response) =>
       response.respondent_type === "humano" &&
       response.is_latest &&
-      fieldExistedWhenCoded(
+      isFieldApplicable(
+        field,
+        response.answers,
         response.answer_field_hashes ?? undefined,
-        field.name,
       ) &&
-      isFieldVisible(field, response.answers ?? {}) &&
-      isCodingComplete(
-        fields,
-        response.answers ?? {},
-        response.answer_field_hashes ?? undefined,
-      ),
+      ctx.codingIsComplete(response),
   );
 }
 
 type SharedEntryFields = Omit<ReviewedEntry, "isError">;
 
 // Os snapshots congelam os valores sobre os quais o veredito foi dado; a
-// resposta atual pode já ter sido revisada desde então.
+// resposta atual pode já ter sido revisada desde então. `arbitratedLlm` é a
+// response a que o veredito se refere (`row.llm_response_id`), que depois de uma
+// nova rodada NÃO é mais a `is_latest`: parear o snapshot da rodada 1 com a
+// justificativa e a versão de schema da rodada 2 mostraria ao coordenador um
+// argumento que defende outra resposta, e arquivaria o erro sob a versão errada.
 function buildAutoReviewError(
   row: MetricsFinalAnswer,
   field: PydanticField,
-  llmResponse: MetricsResponse,
+  arbitratedLlm: MetricsResponse,
   shared: SharedEntryFields,
   ctx: MetricsContext,
 ): LlmError {
@@ -395,35 +524,47 @@ function buildAutoReviewError(
     ...shared,
     fieldDescription: field.description || row.field_name,
     llmAnswer: formatAnswer(
-      row.llm_answer_snapshot ?? llmResponse.answers?.[row.field_name],
+      row.llm_answer_snapshot ?? arbitratedLlm.answers?.[row.field_name],
     ),
-    llmJustification: llmResponse.justifications?.[row.field_name] || null,
+    llmJustification: arbitratedLlm.justifications?.[row.field_name] || null,
     chosenVerdict: formatAnswer(row.human_answer_snapshot),
     reviewerComment: row.arbitrator_comment,
     resolvedAt: ctx.resolvedAtOf(row.document_id, row.field_name),
-    llmResponseId: row.llm_response_id ?? llmResponse.id,
+    llmResponseId: arbitratedLlm.id,
     chosenResponseId: row.human_response_id,
+    source: "auto_revisao",
   };
 }
 
 /* ── Fonte B: Auto-revisão (view `final_answers`) ── */
-// `null` quando a linha não é mensurável: campo fora da superfície de revisão,
-// documento sem LLM corrente, codificação humana ausente ou incompleta, ou
-// veredito ainda pendente.
+// `null` quando a linha não é mensurável: documento excluído, campo fora da
+// superfície de revisão, documento sem LLM corrente, codificação humana ausente
+// ou incompleta, campo inaplicável a um dos lados, ou veredito ainda pendente.
 function autoReviewCandidate(
   row: MetricsFinalAnswer,
-  fields: PydanticField[],
   ctx: MetricsContext,
 ): Candidate | null {
+  // A view junta só `responses` e `projects` — nunca `documents` —, então
+  // documentos com `excluded_at`/`exclusion_pending_at` continuam nela com as
+  // responses que sobreviveram ao soft delete.
+  if (!ctx.isActiveDocument(row.document_id)) return null;
+
   const field = ctx.fieldMap.get(row.field_name);
   if (!isMeasurableField(field)) return null;
 
   const llmResponse = ctx.llmLatestByDoc.get(row.document_id);
   if (!llmResponse) return null;
-  if (!hasCompleteHumanCoding(row.document_id, field, fields, ctx)) return null;
+  if (!hasComparableHumanCoding(row.document_id, field, llmResponse, ctx))
+    return null;
 
   const outcome = classifyAutoReview(row);
   if (outcome === "pendente") return null;
+
+  // A response sobre a qual o veredito se deu, que só coincide com a corrente
+  // enquanto não houve nova rodada. Em 'consenso' não há `llm_response_id`.
+  const arbitratedLlm =
+    (row.llm_response_id ? ctx.responseById.get(row.llm_response_id) : undefined) ??
+    llmResponse;
 
   const isError = outcome === "erro";
   const decidedAt = row.final_decided_at ?? row.self_reviewed_at ?? null;
@@ -431,10 +572,10 @@ function autoReviewCandidate(
     documentId: row.document_id,
     documentTitle: ctx.titleOf(row.document_id),
     fieldName: row.field_name,
-    schemaVersion: formatSchemaVersion(llmResponse),
+    schemaVersion: formatSchemaVersion(arbitratedLlm),
     // Consenso não tem instante de decisão; a data da resposta do LLM é o que
     // situa a entrada no tempo para o filtro de período.
-    reviewedAt: decidedAt ?? llmResponse.created_at,
+    reviewedAt: decidedAt ?? arbitratedLlm.created_at,
   };
 
   return {
@@ -443,7 +584,7 @@ function autoReviewCandidate(
     decidedAt,
     isError,
     error: isError
-      ? buildAutoReviewError(row, field, llmResponse, shared, ctx)
+      ? buildAutoReviewError(row, field, arbitratedLlm, shared, ctx)
       : null,
     entry: { ...shared, isError },
   };
@@ -451,11 +592,10 @@ function autoReviewCandidate(
 
 function autoReviewCandidates(
   finalAnswers: MetricsFinalAnswer[],
-  fields: PydanticField[],
   ctx: MetricsContext,
 ): Candidate[] {
   return finalAnswers.flatMap((row) => {
-    const candidate = autoReviewCandidate(row, fields, ctx);
+    const candidate = autoReviewCandidate(row, ctx);
     return candidate ? [candidate] : [];
   });
 }
@@ -475,9 +615,7 @@ export function computeLlmErrorMetrics(input: LlmErrorMetricsInput): {
 
   const candidates = [
     ...comparisonCandidates(input.reviews, ctx),
-    ...(autoReviewEnabled
-      ? autoReviewCandidates(input.finalAnswers, input.fields, ctx)
-      : []),
+    ...(autoReviewEnabled ? autoReviewCandidates(input.finalAnswers, ctx) : []),
   ];
 
   /* ── Deduplicação por (documento, campo) ── */
