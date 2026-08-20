@@ -121,17 +121,26 @@ export function LlmErrorCard({
               <FileText className="size-3.5" />
             </Link>
           </Button>
-          {!error.resolvedAt && onMarkEquivalent && error.chosenResponseId && (
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={isPending}
-              onClick={onMarkEquivalent}
-              title="Marcar respostas como equivalentes"
-            >
-              <Equal className="size-3.5" />
-            </Button>
-          )}
+          {/* Só na Comparação: `markLlmEquivalent` grava em
+              `response_equivalences`, e a classificação da auto-revisão lê
+              apenas `provenance`/`final_verdict` de `field_reviews`. Ali o
+              botão salvaria o par, mostraria o toast de sucesso e devolveria o
+              mesmo erro intacto. O análogo correto naquele fluxo é um
+              `self_verdict = 'equivalente'` — ver bdcdo/dataframeitGUI#705. */}
+          {error.source === "comparacao" &&
+            !error.resolvedAt &&
+            onMarkEquivalent &&
+            error.chosenResponseId && (
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={isPending}
+                onClick={onMarkEquivalent}
+                title="Marcar respostas como equivalentes"
+              >
+                <Equal className="size-3.5" />
+              </Button>
+            )}
           {error.resolvedAt ? (
             <Button
               variant="ghost"

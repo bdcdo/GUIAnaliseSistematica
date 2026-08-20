@@ -110,6 +110,10 @@ export function LlmInsightsView({
   };
 
   const handleMarkEquivalent = (e: LlmError) => {
+    // Mesma fronteira do affordance no card, aqui como fail-closed: gravar
+    // `response_equivalences` para um erro de auto-revisão não muda a
+    // classificação dele (bdcdo/dataframeitGUI#705).
+    if (e.source !== "comparacao") return;
     if (!e.chosenResponseId) return;
     startTransition(async () => {
       const result = await markLlmEquivalent(
