@@ -788,10 +788,15 @@ describe("saveResponse — unicidade da resposta corrente (#609)", () => {
     expect(state.existingReadCount).toBe(1);
   });
 
+  // O SQLSTATE aqui é contrato, não detalhe: 40001 (serialization_failure) faz
+  // drivers e schedulers retentarem sozinhos, e esta condição só sai do lugar
+  // quando alguém recarrega a página. Em 2026-08-20 essa promessa falsa
+  // saturou os 2 vCPU do banco com ~1.700 transações/s, 99,9% em rollback.
+  // Se este teste voltar a aceitar 40001, o loop volta junto.
   it("rodada alterada atomicamente no banco devolve mensagem de recarga", async () => {
     state.existingResponse = null;
     state.responseInsertErrorQueue = [
-      { code: "40001", message: "a rodada atual mudou; recarregue o formulario" },
+      { code: "P0R01", message: "a rodada atual mudou; recarregue o formulario" },
     ];
     const saveResponse = await loadSaveResponse();
     const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
@@ -801,6 +806,17 @@ describe("saveResponse — unicidade da resposta corrente (#609)", () => {
       error: "A rodada mudou enquanto este formulário estava aberto. Recarregue a página.",
     });
     expect(state.assignmentUpdatePayload).toBeNull();
+  });
+
+  it("40001 deixa de significar rodada alterada e propaga como erro cru", async () => {
+    state.existingResponse = null;
+    state.responseInsertErrorQueue = [
+      { code: "40001", message: "could not serialize access" },
+    ];
+    const saveResponse = await loadSaveResponse();
+    const r = await saveResponse("proj-1", "doc-1", { q1: "a" });
+
+    expect(r).toEqual({ success: false, error: "could not serialize access" });
   });
 
   it("conflito nas DUAS tentativas devolve erro explícito, sem girar", async () => {
