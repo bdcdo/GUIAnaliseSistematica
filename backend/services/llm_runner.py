@@ -1276,7 +1276,7 @@ def _format_publish_failures(
     publish_failures: list[_PublishFailure],
     partial_warnings: list[str],
     *,
-    aborted_early: bool = False,
+    consecutive: int | None = None,
 ) -> str:
     """Mensagem de reprovação por falha de publicação, no formato de seções.
 
@@ -1297,16 +1297,22 @@ def _format_publish_failures(
             _dedup_key(failure.message), f"doc={failure.doc_id}: {failure.message}"
         )
     doc_ids = ", ".join(failure.doc_id for failure in publish_failures)
+    # `consecutive` é o tamanho da sequência que disparou o corte, e não o total
+    # acumulado no laço: uma falha isolada lá atrás continua em publish_failures
+    # depois de o contador ter sido zerado por uma publicação bem-sucedida.
+    # Anunciar o total como se fosse sequência infla exatamente o diagnóstico
+    # que separa "causa da run" de "azar isolado".
     abertura = (
-        f"Publicação interrompida após {len(publish_failures)} falhas seguidas"
-        if aborted_early
+        f"Publicação interrompida após {consecutive} falhas seguidas"
+        if consecutive is not None
         else f"Publicação falhou em {len(publish_failures)} doc(s)"
     )
     sections = [f"{abertura}. Sem resposta gravada: {doc_ids}."]
-    if aborted_early:
+    if consecutive is not None:
         sections.append(
-            "Falha seguida em toda linha indica causa da run, não do documento; "
-            "os documentos seguintes não chegaram a ser tentados."
+            f"Total de {len(publish_failures)} falha(s) na run. Falha seguida em "
+            "toda linha indica causa da run, não do documento; os documentos "
+            "seguintes não chegaram a ser tentados."
         )
     sections.append("Erros do banco: " + " || ".join(list(samples.values())[:3]))
     if partial_warnings:
@@ -1702,7 +1708,9 @@ def _process_and_save_rows(
             if consecutive_failures >= _MAX_CONSECUTIVE_PUBLISH_FAILURES:
                 raise RuntimeError(
                     _format_publish_failures(
-                        publish_failures, partial_warnings, aborted_early=True
+                        publish_failures,
+                        partial_warnings,
+                        consecutive=consecutive_failures,
                     )
                 ) from exc
 

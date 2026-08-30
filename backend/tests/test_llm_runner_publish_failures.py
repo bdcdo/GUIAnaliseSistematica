@@ -95,9 +95,33 @@ def test_format_sem_warnings_nao_inventa_a_cauda():
 def test_format_distingue_corte_por_falhas_seguidas():
     falhas = [_PublishFailure(f"doc-{i}", "[42501] rls") for i in range(1, 6)]
 
-    corte = _format_publish_failures(falhas, [], aborted_early=True)
+    corte = _format_publish_failures(falhas, [], consecutive=5)
     fim = _format_publish_failures(falhas, [])
 
     assert "interrompida" in corte.lower()
+    assert "5 falhas seguidas" in corte
     assert "não chegaram a ser tentados" in corte
     assert "interrompida" not in fim.lower()
+    assert "5 doc(s)" in fim
+
+
+def test_format_conta_a_sequencia_e_nao_o_total_no_corte():
+    """ "N falhas seguidas" tem que ser a sequência, não o acumulado do laço.
+
+    O corte dispara na quinta falha *consecutiva*, e `consecutive_failures` é
+    zerado a cada publicação bem-sucedida. Uma falha isolada lá atrás continua
+    em `publish_failures`, então usar `len()` na abertura anuncia uma sequência
+    maior do que a que de fato houve — inflando justamente o diagnóstico que
+    separa "causa da run" de "azar isolado".
+    """
+    falhas = [_PublishFailure("doc-0", "[23505] duplicate key")] + [
+        _PublishFailure(f"doc-{i}", "[42501] rls") for i in range(6, 11)
+    ]
+
+    msg = _format_publish_failures(falhas, [], consecutive=5)
+
+    assert "5 falhas seguidas" in msg
+    assert "6 falhas seguidas" not in msg
+    # A lista completa continua íntegra: são 6 documentos sem resposta gravada.
+    for doc in ("doc-0", "doc-6", "doc-7", "doc-8", "doc-9", "doc-10"):
+        assert doc in msg

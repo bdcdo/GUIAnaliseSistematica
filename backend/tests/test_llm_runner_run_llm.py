@@ -177,6 +177,12 @@ class _FakeSupabase:
         self._tables = tables
         self._rpc_errors = rpc_errors or {}
         self.rpc_calls: list[tuple[str, dict]] = []
+        # rpc_calls só grava sucesso, porque _RaisingQuery levanta antes do
+        # on_execute. Isso é fiel ao real e é o que faz _published_responses
+        # medir publicação efetiva, mas deixa "recusada" indistinguível de
+        # "nunca tentada". rpc_attempts registra a tentativa antes de decidir o
+        # erro, e é ele que testemunha o que o laço parou de tentar.
+        self.rpc_attempts: list[tuple[str, dict]] = []
         self.operation_log: list[
             tuple[str, str, dict, list[tuple[str, str, object]]]
         ] = []
@@ -194,6 +200,7 @@ class _FakeSupabase:
         # documento só. Discriminar por isinstance e não por callable(): uma
         # classe de exceção também é callable, e um valor legado passado como
         # classe seria chamado em vez de levantado.
+        self.rpc_attempts.append((name, params))
         error = self._rpc_errors.get(name)
         if error is not None and not isinstance(error, Exception):
             error = error(params)
@@ -449,6 +456,15 @@ def _failing_publish(failures: dict[str, PostgrestAPIError]):
 
 def _published_doc_ids(sb: _FakeSupabase) -> list[str]:
     return [row["document_id"] for row in _published_responses(sb)]
+
+
+def _attempted_doc_ids(sb: _FakeSupabase) -> list[str]:
+    """Documentos cuja publicação foi tentada, tenham sido aceitos ou não."""
+    return [
+        params["p_response"]["document_id"]
+        for name, params in sb.rpc_attempts
+        if name == "publish_latest_llm_response"
+    ]
 
 
 def teardown_function(_fn):
@@ -849,9 +865,12 @@ def test_run_llm_stale_round_from_the_database_aborts_the_whole_run(monkeypatch)
 
     _run_llm_sync(monkeypatch, sb, row_specs)
 
-    # doc-2 e doc-3 nunca foram tentados: é isso que distingue abortar de
-    # tolerar, e a contagem de publicações é a única testemunha disso.
+    # doc-2 e doc-3 nunca foram TENTADOS: é isso que distingue abortar de
+    # tolerar. A contagem de publicações sozinha não testemunha isso — ela
+    # seria idêntica se as três tivessem sido tentadas e recusadas —, então
+    # quem responde é rpc_attempts.
     assert _published_doc_ids(sb) == ["doc-0"]
+    assert _attempted_doc_ids(sb) == ["doc-0", "doc-1"]
     assert _jobs[JOB_ID]["status"] == "error"
     error_update = _last_update_where(sb.table("llm_runs"), status="error")
     assert error_update is not None
@@ -916,11 +935,15 @@ def test_run_llm_stops_after_consecutive_publish_failures(monkeypatch):
     # doc-0 publica; doc-1..doc-5 falham e o corte para no quinto consecutivo.
     # doc-6 em diante nunca são tentados.
     assert _published_doc_ids(sb) == ["doc-0"]
+    # Comparar a lista de tentativas como conjunto, e não por substring: "doc-1"
+    # casa dentro de "doc-10" e a asserção passaria por acidente numa run maior.
+    assert _attempted_doc_ids(sb) == [f"doc-{i}" for i in range(6)]
     assert _jobs[JOB_ID]["status"] == "error"
     error_update = _last_update_where(sb.table("llm_runs"), status="error")
     assert error_update is not None
-    assert "doc-5" in error_update["error_message"]
-    assert "doc-6" not in error_update["error_message"]
+    # A mensagem se declara corte, e com o número da sequência, não do total.
+    assert "5 falhas seguidas" in error_update["error_message"]
+    assert "não chegaram a ser tentados" in error_update["error_message"]
 
 
 def test_run_llm_publish_failure_keeps_the_partial_coverage_diagnosis(monkeypatch):
@@ -951,6 +974,101 @@ def test_run_llm_publish_failure_keeps_the_partial_coverage_diagnosis(monkeypatc
     assert error_update is not None
     assert "doc-1" in error_update["error_message"]
     assert "cobertura parcial" in error_update["error_message"]
+
+
+def test_run_llm_falhas_intercaladas_nao_disparam_o_corte(monkeypatch):
+    """O corte é por falhas SEGUIDAS, e sucesso no meio zera a contagem.
+
+    Sem este teste a palavra "consecutivas" na constante não é exercitada:
+    remover o `consecutive_failures = 0` do caminho de sucesso, ou trocar o
+    gatilho pelo total acumulado, passaria despercebido. Aqui há 6 falhas, mais
+    que o limiar de 5, e nenhuma sequência maior que 1 — o laço tem de ir até o
+    fim e publicar todos os pares.
+    """
+    docs = _docs(12)
+    row_specs = {
+        d["id"]: {"campo_a": "a", "campo_b": "b", "campo_c": "c"} for d in docs
+    }
+    impares = {
+        f"doc-{i}": _api_error("23505", _UNIQUE_VIOLATION) for i in range(1, 12, 2)
+    }
+    sb = _build_supabase(
+        _project_row(),
+        docs,
+        rpc_errors={"publish_latest_llm_response": _failing_publish(impares)},
+    )
+
+    _run_llm_sync(monkeypatch, sb, row_specs)
+
+    assert _published_doc_ids(sb) == [f"doc-{i}" for i in range(0, 12, 2)]
+    # Toda linha foi tentada: o corte não disparou em momento nenhum.
+    assert len(_attempted_doc_ids(sb)) == 12
+    error_update = _last_update_where(sb.table("llm_runs"), status="error")
+    assert error_update is not None
+    assert "6 doc(s)" in error_update["error_message"]
+    assert "seguidas" not in error_update["error_message"]
+
+
+def test_run_llm_falha_de_publicacao_vence_a_run_comprometida(monkeypatch):
+    """Quando as duas guardas disparam, a mensagem é a da publicação.
+
+    A ordem é justificada no docstring de _raise_if_publish_failed: a mensagem
+    da run comprometida afirma que as respostas foram gravadas com
+    is_latest=false, o que é falso para linha que nunca chegou ao banco. Sem
+    este teste, inverter as duas chamadas não quebra nada.
+    """
+    docs = _docs(4)
+    row_specs = {
+        d["id"]: {"campo_a": "a", "campo_b": "b", "campo_c": "c"} for d in docs
+    }
+    # 2 de 4 parciais: ratio 0.5, acima do run_failure_threshold de 0.3.
+    row_specs["doc-2"] = {"campo_a": "a"}
+    row_specs["doc-3"] = {"campo_a": "a"}
+    sb = _build_supabase(
+        _project_row(),
+        docs,
+        rpc_errors={
+            "publish_latest_llm_response": _failing_publish(
+                {"doc-1": _api_error("23505", _UNIQUE_VIOLATION)}
+            )
+        },
+    )
+
+    _run_llm_sync(monkeypatch, sb, row_specs)
+
+    error_update = _last_update_where(sb.table("llm_runs"), status="error")
+    assert error_update is not None
+    assert error_update["error_message"].startswith("Publicação falhou")
+    assert "Run comprometida" not in error_update["error_message"]
+    # E o diagnóstico de cobertura não se perde: vai na cauda.
+    assert "cobertura parcial" in error_update["error_message"]
+
+
+def test_run_llm_falha_em_todas_as_linhas_abaixo_do_limiar(monkeypatch):
+    """Run curta em que tudo falha: nada publica e o corte não mascara nada.
+
+    Com 3 documentos o limiar de 5 nunca é alcançado, então este é o caminho
+    sem corte, com publish_failures cobrindo o laço inteiro.
+    """
+    docs = _docs(3)
+    row_specs = {
+        d["id"]: {"campo_a": "a", "campo_b": "b", "campo_c": "c"} for d in docs
+    }
+    todas = {f"doc-{i}": _api_error("42501", "rls") for i in range(3)}
+    sb = _build_supabase(
+        _project_row(),
+        docs,
+        rpc_errors={"publish_latest_llm_response": _failing_publish(todas)},
+    )
+
+    _run_llm_sync(monkeypatch, sb, row_specs)
+
+    assert _published_doc_ids(sb) == []
+    assert len(_attempted_doc_ids(sb)) == 3
+    error_update = _last_update_where(sb.table("llm_runs"), status="error")
+    assert error_update is not None
+    assert "3 doc(s)" in error_update["error_message"]
+    assert "seguidas" not in error_update["error_message"]
 
 
 # Erro determinístico de configuração: o provider recusa o modelo em toda
