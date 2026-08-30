@@ -736,6 +736,46 @@ def test_run_llm_skips_excluded_documents(monkeypatch):
     assert {row["document_id"] for row in inserts} == {"doc-0", "doc-1"}
 
 
+def test_run_llm_skips_documents_pending_exclusion(monkeypatch):
+    """Guarda o filtro `.is_("exclusion_pending_at", "null")` em run_llm.
+
+    Segunda ocorrencia do mesmo padrao que
+    test_run_llm_skips_excluded_documents cobre para `excluded_at`. A
+    migration 20260702190000_documents_exclusion_pending nomeia a fila do
+    LLM entre as que passam a filtrar pedido de exclusao pendente, e
+    aplicou a linha nova nos call sites do frontend; este, o unico
+    consumidor Python de `documents`, ficou de fora. Efeito medido em
+    producao em 30/08/2026: a GUI anunciava 22 documentos e a run
+    processava 26.
+
+    Como em `excluded_at`, o filtro precisa ser aplicado de verdade pelo
+    _FakeQuery (ver _FakeQuery._matches); sem isso o teste passaria com o
+    filtro quebrado.
+    """
+    docs = _docs(2)
+    docs.append(
+        {
+            "id": "doc-pending-exclusion",
+            "project_id": PROJECT_ID,
+            "text": "texto em revisao de escopo",
+            "title": "Doc com exclusao pendente",
+            "external_id": None,
+            "excluded_at": None,
+            "exclusion_pending_at": "2026-08-06T14:47:34Z",
+        }
+    )
+    row_specs = {
+        d["id"]: {"campo_a": "a", "campo_b": "b", "campo_c": "c"} for d in docs
+    }
+    sb = _build_supabase(_project_row(), docs)
+
+    _run_llm_sync(monkeypatch, sb, row_specs)
+
+    assert _jobs[JOB_ID]["status"] == "completed"
+    inserts = _published_responses(sb)
+    assert {row["document_id"] for row in inserts} == {"doc-0", "doc-1"}
+
+
 def test_run_llm_partial_run_does_not_fail(monkeypatch):
     docs = _docs(4)
     row_specs = {

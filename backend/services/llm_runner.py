@@ -834,11 +834,21 @@ def _load_documents_for_run(
     max_response_count: int | None,
     sample_size: int | None,
 ) -> list[dict]:
+    # Os dois filtros de escopo, e nao so o soft delete. `excluded_at` e a
+    # exclusao ja aprovada pelo coordenador; `exclusion_pending_at` e o pedido
+    # do pesquisador ainda em revisao, derivado por trigger de
+    # project_comments (20260702190000_documents_exclusion_pending). Aquela
+    # migration nomeia a fila do LLM entre as que passam a filtrar o pedido
+    # pendente, e aplicou a linha nova nos ~14 call sites do frontend; este,
+    # unico consumidor Python de `documents`, ficou de fora. O sintoma medido
+    # em 30/08/2026: a tela de configuracao anunciava 22 documentos, contando
+    # pelos dois campos, e a run processava 26.
     query = (
         sb.table("documents")
         .select("id, text, title, external_id")
         .eq("project_id", project_id)
         .is_("excluded_at", "null")
+        .is_("exclusion_pending_at", "null")
     )
     if document_ids:
         query = query.in_("id", document_ids)
