@@ -1561,10 +1561,9 @@ def _record_processed_row_outcome(
 ) -> None:
     """Update run diagnostics, counters, warnings, and the throttled heartbeat.
 
-    Provider errors are deduplicated by the complete message hash: grouping by
-    a shared prefix previously merged distinct failures. MD5 is only a compact
-    deduplication key, never a security primitive. Persisting progress here also
-    keeps a live run distinguishable from an abandoned one during scale-to-zero.
+    Provider errors are deduplicated by `_dedup_key`, which owns that mechanic
+    and the reasoning behind it. Persisting progress here also keeps a live run
+    distinguishable from an abandoned one during scale-to-zero.
     """
     # Estes contadores medem o que o LLM processou, não o que chegou ao banco:
     # são incrementados antes da RPC de publicação, e uma linha que falha ao
@@ -1666,18 +1665,21 @@ def _process_and_save_rows(
             sb.rpc("publish_latest_llm_response", {"p_response": response}).execute()
             consecutive_failures = 0
         except PostgrestAPIError as exc:
-            # Régua por exclusão, e não allowlist de SQLSTATE toleráveis: quando
-            # o corpo da resposta não é JSON parseável, o postgrest preenche
-            # `code` com o status HTTP, e uma allowlist engoliria isso como se
-            # fosse erro do banco. O `str()` aqui é defesa explícita, não
-            # correção: nenhum int iguala uma str em Python, então a
-            # comparação já recusaria o 502 sem ele, e nenhum teste consegue
-            # distinguir as duas formas. Quem de fato precisa normalizar `code`
-            # é _describe_postgrest_error, para não imprimir "None".
-            # O que não é APIError sobe intacto — inclusive
-            # httpx.ReadTimeout, de propósito: timeout não distingue "não
-            # gravou" de "gravou e a resposta se perdeu", e tratá-lo como falha
-            # de linha registraria como perdida uma linha publicada.
+            # Régua por exclusão, e não allowlist de SQLSTATE toleráveis:
+            # quando o corpo da resposta não é JSON parseável, o postgrest
+            # preenche `code` com o status HTTP, e uma allowlist engoliria isso
+            # como se fosse erro do banco. Um APIError com qualquer outro code é
+            # o banco recusando esta linha.
+            #
+            # O que não é APIError sobe intacto, httpx.ReadTimeout inclusive e
+            # de propósito: timeout não distingue "não gravou" de "gravou e a
+            # resposta se perdeu", e tratá-lo como falha de linha registraria
+            # como perdida uma linha publicada.
+            #
+            # O `str()` abaixo é defesa explícita, não correção: nenhum int
+            # iguala uma str em Python, então a comparação já recusaria o 502
+            # sem ele, e nenhum teste consegue distinguir as duas formas. Quem
+            # de fato precisa normalizar `code` é _describe_postgrest_error.
             if str(exc.code or "") == _ROUND_CHANGED_SQLSTATE:
                 # A rodada deixou de ser a corrente: o defeito é da run, não da
                 # linha, e nada do que vier depois pode ser gravado. Envelopado
