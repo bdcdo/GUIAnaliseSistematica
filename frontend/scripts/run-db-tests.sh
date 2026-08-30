@@ -40,6 +40,7 @@ TESTS_DIR="supabase/tests"
 # pgTAP — roda por `supabase test db`.
 PGTAP_SUITES=(
   responses_llm_actor_integrity
+  response_references_document_scoped
 )
 
 # Suítes de gate (fail-closed): qualquer falha aqui derruba o exit code.
