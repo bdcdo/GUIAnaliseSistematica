@@ -1669,8 +1669,12 @@ def _process_and_save_rows(
             # Régua por exclusão, e não allowlist de SQLSTATE toleráveis: quando
             # o corpo da resposta não é JSON parseável, o postgrest preenche
             # `code` com o status HTTP, e uma allowlist engoliria isso como se
-            # fosse erro do banco. Daí também o `str()`, já que `code` pode
-            # chegar como int. O que não é APIError sobe intacto — inclusive
+            # fosse erro do banco. O `str()` aqui é defesa explícita, não
+            # correção: nenhum int iguala uma str em Python, então a
+            # comparação já recusaria o 502 sem ele, e nenhum teste consegue
+            # distinguir as duas formas. Quem de fato precisa normalizar `code`
+            # é _describe_postgrest_error, para não imprimir "None".
+            # O que não é APIError sobe intacto — inclusive
             # httpx.ReadTimeout, de propósito: timeout não distingue "não
             # gravou" de "gravou e a resposta se perdeu", e tratá-lo como falha
             # de linha registraria como perdida uma linha publicada.

@@ -859,13 +859,14 @@ def test_run_llm_stale_round_from_the_database_aborts_the_whole_run(monkeypatch)
 
 
 def test_run_llm_treats_non_sqlstate_code_as_a_row_failure(monkeypatch):
-    """`code` int não casa com P0R01 por desenho, não por acidente.
+    """502 no lugar do SQLSTATE cai no ramo de falha de linha, e formata.
 
-    Quando o corpo da resposta não é JSON parseável, generate_default_error_message
-    preenche `code` com o status HTTP — um int. A comparação normaliza para str
-    antes de comparar; sem isso o ramo certo seria alcançado por acaso, e a
-    formatação da mensagem quebraria. mypy não checa este módulo, então só o
-    teste segura.
+    Quando o corpo da resposta não é JSON parseável,
+    generate_default_error_message preenche `code` com o status HTTP — um int.
+    Este teste fixa o comportamento observável: a linha falha, as demais
+    publicam e a mensagem sai montada. Ele NÃO protege a normalização com
+    `str()` na comparação, que é indistinguível por teste (nenhum int iguala
+    uma str); o que morde ali é o unitário de _describe_postgrest_error.
     """
     docs = _docs(3)
     row_specs = {
