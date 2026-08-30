@@ -839,10 +839,10 @@ def _load_documents_for_run(
     # do pesquisador ainda em revisao, derivado por trigger de
     # project_comments (20260702190000_documents_exclusion_pending). Aquela
     # migration nomeia a fila do LLM entre as que passam a filtrar o pedido
-    # pendente, e aplicou a linha nova nos ~14 call sites do frontend; este,
-    # unico consumidor Python de `documents`, ficou de fora. O sintoma medido
-    # em 30/08/2026: a tela de configuracao anunciava 22 documentos, contando
-    # pelos dois campos, e a run processava 26.
+    # pendente, e aplicou a linha nova nos call sites do frontend; este, unico
+    # consumidor Python de `documents`, ficou de fora. O sintoma medido em
+    # 30/08/2026: a tela LLM -> Configurar, que conta pelos dois campos,
+    # anunciava 22 documentos, e a run processava 26.
     query = (
         sb.table("documents")
         .select("id, text, title, external_id")
