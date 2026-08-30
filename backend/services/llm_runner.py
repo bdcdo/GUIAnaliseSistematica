@@ -1677,6 +1677,18 @@ def _process_and_save_rows(
             # como se fosse erro do banco. Um APIError com qualquer outro code é
             # o banco recusando esta linha.
             #
+            # Isto INVERTE a convenção do outro ponto do repo que discrimina
+            # erro do Postgres: `persistResponse`, em src/actions/responses.ts,
+            # confere o nome do índice antes de classificar um 23505, porque lá
+            # o objetivo é reconhecer UM conflito esperado e tratar o resto como
+            # erro. Aqui o objetivo é o oposto — sobreviver ao que for recusa
+            # daquela linha e reservar o abort para o que invalida a run —, e
+            # por isso a enumeração fica do lado que aborta. A consequência
+            # aceita: um 23505 em responses_one_latest_llm_per_document, que
+            # pode indicar duas runs concorrentes sobre o mesmo projeto, conta
+            # como falha de linha e não interrompe. O corte por falhas
+            # consecutivas é o que limita o estrago nesse caso.
+            #
             # O que não é APIError sobe intacto, httpx.ReadTimeout inclusive e
             # de propósito: timeout não distingue "não gravou" de "gravou e a
             # resposta se perdeu", e tratá-lo como falha de linha registraria

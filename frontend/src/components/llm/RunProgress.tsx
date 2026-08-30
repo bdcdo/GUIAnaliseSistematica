@@ -84,10 +84,19 @@ export function RunProgress({
 
           Granularidade DIFERE de `progress` (na Progress acima):
             - progress = iter no result_df (incrementa antes do INSERT)
-            - processed_* = INSERT em responses concluido
+            - processed_* = linha classificada pelo LLM, ANTES da publicacao
           Durante a fase de saving as duas medidas podem divergir
           transitoriamente (ate ~2s, throttle do _persist_run_progress).
-          Convergem ao final. Ver llm_runner.py:run_llm save loop. */}
+
+          Estes contadores nao medem gravacao. _record_processed_row_outcome
+          incrementa antes da RPC publish_latest_llm_response, entao uma linha
+          que o banco recusa ja contou aqui, e a diferenca NAO se fecha ao
+          final: desde que a run passou a sobreviver a falha de linha, o
+          caminho de erro persiste esses contadores inflados em llm_runs. Quais
+          documentos ficaram sem resposta se le na mensagem de erro da run, nao
+          daqui; a contagem real gravada e a de getLlmRunStats, que conta em
+          responses e por isso pode ser menor que a soma destes badges. Ver o
+          comentario em _record_processed_row_outcome (llm_runner.py). */}
       {(processedComplete > 0 ||
         processedPartial > 0 ||
         processedEmpty > 0) && (
