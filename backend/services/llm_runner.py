@@ -23,6 +23,7 @@ import pandas as pd
 # tupla em import-time do módulo mantém esses testes válidos sem que eles
 # precisem conhecer este import.
 from dataframeit.errors import RECOVERABLE_ERRORS
+from supabase import PostgrestAPIError
 
 from services.auto_review_reconciliation import wake_auto_review_reconciliation
 from services.condition_evaluator import evaluate_condition, extract_field_conditions
@@ -36,6 +37,20 @@ _jobs: dict[str, dict] = {}
 
 _JUSTIFICATION_FIELD_SUFFIX = "_justification"
 _GENERATED_JUSTIFICATION_FIELDS_ATTR = "__generated_justification_fields__"
+
+# SQLSTATE reservado por publish_latest_llm_response e por
+# enforce_current_response_round_write para "a rodada corrente mudou".
+# Migrations 20260820170000_round_write_allows_maintenance.sql e
+# 20260827160000_llm_publish_demotes_across_rounds.sql; espelho no frontend em
+# src/actions/responses.ts. Deliberadamente não é 40001: aquele código promete
+# que repetir pode dar certo, e aqui a condição nunca converge sozinha.
+_ROUND_CHANGED_SQLSTATE = "P0R01"
+
+# Falha de publicação quase nunca é de uma linha só: RLS negada, pool esgotado
+# e gateway fora falham nas N. O corte tolera a falha isolada sem pagar N
+# round-trips condenados quando a causa é da run inteira, que produziriam N
+# cópias da mesma mensagem no lugar de um diagnóstico.
+_MAX_CONSECUTIVE_PUBLISH_FAILURES = 5
 
 
 def _status_from_row(row: dict) -> dict:
@@ -1206,6 +1221,122 @@ def _run_dataframeit_batches(
     return pd.concat(result_frames, ignore_index=True)
 
 
+@dataclass(frozen=True)
+class _PublishFailure:
+    """Uma linha que o banco recusou, com a mensagem que ele devolveu."""
+
+    doc_id: str
+    message: str
+
+
+@dataclass(frozen=True)
+class _SaveLoopOutcome:
+    """O que o laço de gravação apurou, para as guardas de `run_llm` decidirem.
+
+    Dataclass e não tupla pelo mesmo motivo registrado em `_RunMetadata`: um
+    dado novo passa a ser acrescentado num lugar só, em vez de na assinatura
+    mais no call site. Aqui pesa também que o mypy ignora este módulo por
+    inteiro (`ignore_errors` em pyproject.toml), então o nome do campo é a
+    única documentação executável que resta.
+    """
+
+    partial_warnings: list[str]
+    dfi_error_samples: dict[str, str]
+    publish_failures: list[_PublishFailure]
+
+
+def _dedup_key(message: str) -> str:
+    """Resumo estável de mensagem de erro, para agrupar falhas idênticas.
+
+    MD5 aqui é chave compacta de deduplicação, nunca primitiva de segurança.
+    Agrupar por prefixo comum, como se fazia antes, fundia falhas distintas.
+    Hashear sempre a mensagem crua: incluir o `doc=` na entrada torna cada
+    chave única e transforma a deduplicação em no-op.
+    """
+    return hashlib.md5(
+        message.encode("utf-8", errors="replace"), usedforsecurity=False
+    ).hexdigest()[:16]
+
+
+def _describe_postgrest_error(exc: PostgrestAPIError) -> str:
+    """Mensagem legível de um APIError, sem o doc_id.
+
+    Não usar `str(exc)`: o construtor da lib guarda o dict do corpo de erro em
+    `args` e só depois chama `Exception.__init__(self, str(self))`, quando
+    `args[0]` ainda é o dict — a string que sobra é `{'message': ..., 'code':
+    ...}`, que iria crua para `llm_runs.error_message` e daí para a tela. E
+    `code` nem sempre é SQLSTATE: quando o corpo da resposta não é JSON
+    parseável, `generate_default_error_message` põe o status HTTP (int) ali.
+    """
+    code = str(exc.code) if exc.code is not None else "sem código"
+    return f"[{code}] {exc.message or 'sem mensagem'}"
+
+
+def _format_publish_failures(
+    publish_failures: list[_PublishFailure],
+    partial_warnings: list[str],
+    *,
+    aborted_early: bool = False,
+) -> str:
+    """Mensagem de reprovação por falha de publicação, no formato de seções.
+
+    Todos os `document_id` entram: saber exatamente quais documentos ficaram de
+    fora é o que permite decidir a rerodada, e é a informação que não existe em
+    nenhum outro lugar depois que o processo morre. As mensagens detalhadas
+    param em três, deduplicadas — a quarta cópia da mesma recusa do Postgres não
+    acrescenta diagnóstico.
+
+    A cauda de cobertura parcial existe porque `partial_warnings` só alcançam
+    `llm_runs.error_message` pelo caminho de sucesso, em _persist_run_completion;
+    sem ela, uma run que falhou ao publicar perderia também o diagnóstico do que
+    o LLM respondeu mal.
+    """
+    samples: dict[str, str] = {}
+    for failure in publish_failures:
+        samples.setdefault(
+            _dedup_key(failure.message), f"doc={failure.doc_id}: {failure.message}"
+        )
+    doc_ids = ", ".join(failure.doc_id for failure in publish_failures)
+    abertura = (
+        f"Publicação interrompida após {len(publish_failures)} falhas seguidas"
+        if aborted_early
+        else f"Publicação falhou em {len(publish_failures)} doc(s)"
+    )
+    sections = [f"{abertura}. Sem resposta gravada: {doc_ids}."]
+    if aborted_early:
+        sections.append(
+            "Falha seguida em toda linha indica causa da run, não do documento; "
+            "os documentos seguintes não chegaram a ser tentados."
+        )
+    sections.append("Erros do banco: " + " || ".join(list(samples.values())[:3]))
+    if partial_warnings:
+        sections.append(
+            f"Também: {len(partial_warnings)} doc(s) com cobertura parcial "
+            f"({' || '.join(partial_warnings[:2])})."
+        )
+    return " ".join(sections)
+
+
+def _raise_if_publish_failed(outcome: _SaveLoopOutcome) -> None:
+    """Reprova a run quando alguma linha não chegou ao banco.
+
+    Tolerância zero, e deliberadamente no fim: quando este raise sai, as demais
+    linhas já estão gravadas, que é justamente o que a resiliência entrega.
+    Resposta parcial ao menos ficou registrada; linha que não publicou é dado
+    perdido com o custo do LLM já pago.
+
+    Chamada antes de _raise_if_run_compromised porque só uma das duas mensagens
+    cabe em llm_runs.error_message, e a daquela afirma que as respostas foram
+    gravadas com is_latest=false — o que é falso para linhas que nunca chegaram
+    ao banco.
+    """
+    if not outcome.publish_failures:
+        return
+    raise RuntimeError(
+        _format_publish_failures(outcome.publish_failures, outcome.partial_warnings)
+    )
+
+
 def _raise_if_run_compromised(
     partial_warnings: list[str],
     dfi_error_samples: dict[str, str],
@@ -1435,6 +1566,14 @@ def _record_processed_row_outcome(
     deduplication key, never a security primitive. Persisting progress here also
     keeps a live run distinguishable from an abandoned one during scale-to-zero.
     """
+    # Estes contadores medem o que o LLM processou, não o que chegou ao banco:
+    # são incrementados antes da RPC de publicação, e uma linha que falha ao
+    # publicar já contou aqui. A ordem é deliberada — testes existentes cruzam
+    # processed_* com a contagem de publicações. O `except` genérico de run_llm
+    # passa estes counters para _persist_run_error, então os números gravados em
+    # llm_runs incluem linhas que nunca foram escritas; é por isso que a
+    # contagem de falhas de publicação precisa aparecer na mensagem, ao lado
+    # deles, em vez de deixar o leitor inferir a diferença.
     if processed_row.is_empty:
         jobs_state["processed_empty"] += 1
     elif processed_row.is_partial:
@@ -1453,10 +1592,7 @@ def _record_processed_row_outcome(
         )
 
     if processed_row.dfi_error:
-        key = hashlib.md5(
-            processed_row.dfi_error.encode("utf-8", errors="replace"),
-            usedforsecurity=False,
-        ).hexdigest()[:16]
+        key = _dedup_key(processed_row.dfi_error)
         if key not in dfi_error_samples:
             dfi_error_samples[key] = (
                 f"doc={processed_row.doc_id}: {processed_row.dfi_error}"
@@ -1487,10 +1623,12 @@ def _process_and_save_rows(
     prepared_model: _PreparedLlmModel,
     partial_coverage_threshold: float,
     run: _RunMetadata,
-) -> tuple[list[str], dict[str, str]]:
+) -> _SaveLoopOutcome:
     """Transform and persist each dataframeit row in its canonical shape."""
     partial_warnings: list[str] = []
     dfi_error_samples: dict[str, str] = {}
+    publish_failures: list[_PublishFailure] = []
+    consecutive_failures = 0
     field_conditions = extract_field_conditions(prepared_model.model_class)
     expected_llm_fields = _expected_llm_fields(prepared_model.model_class)
 
@@ -1520,9 +1658,49 @@ def _process_and_save_rows(
             job_id=job_id,
             llm_error_msg=processed_row.llm_error_msg,
         )
-        sb.rpc("publish_latest_llm_response", {"p_response": response}).execute()
+        # O `try` cobre só a RPC. As três chamadas acima são puras sobre o
+        # DataFrame, e exceção nelas é bug nosso, que deve continuar abortando;
+        # envolver a iteração inteira transformaria defeito de código em "falha
+        # de linha" silenciosa.
+        try:
+            sb.rpc("publish_latest_llm_response", {"p_response": response}).execute()
+            consecutive_failures = 0
+        except PostgrestAPIError as exc:
+            # Régua por exclusão, e não allowlist de SQLSTATE toleráveis: quando
+            # o corpo da resposta não é JSON parseável, o postgrest preenche
+            # `code` com o status HTTP, e uma allowlist engoliria isso como se
+            # fosse erro do banco. Daí também o `str()`, já que `code` pode
+            # chegar como int. O que não é APIError sobe intacto — inclusive
+            # httpx.ReadTimeout, de propósito: timeout não distingue "não
+            # gravou" de "gravou e a resposta se perdeu", e tratá-lo como falha
+            # de linha registraria como perdida uma linha publicada.
+            if str(exc.code or "") == _ROUND_CHANGED_SQLSTATE:
+                # A rodada deixou de ser a corrente: o defeito é da run, não da
+                # linha, e nada do que vier depois pode ser gravado. Envelopado
+                # em RuntimeError porque str(APIError) é o dict cru e cairia
+                # assim em llm_runs.error_message.
+                raise RuntimeError(
+                    "A rodada do projeto deixou de ser a corrente durante a "
+                    f"publicação (SQLSTATE {_ROUND_CHANGED_SQLSTATE}). As "
+                    "respostas restantes não foram gravadas."
+                ) from exc
+            message = _describe_postgrest_error(exc)
+            logger.warning(
+                "publish falhou doc=%s: %s",
+                processed_row.doc_id,
+                message,
+                exc_info=True,
+            )
+            publish_failures.append(_PublishFailure(processed_row.doc_id, message))
+            consecutive_failures += 1
+            if consecutive_failures >= _MAX_CONSECUTIVE_PUBLISH_FAILURES:
+                raise RuntimeError(
+                    _format_publish_failures(
+                        publish_failures, partial_warnings, aborted_early=True
+                    )
+                ) from exc
 
-    return partial_warnings, dfi_error_samples
+    return _SaveLoopOutcome(partial_warnings, dfi_error_samples, publish_failures)
 
 
 async def run_llm(
@@ -1631,7 +1809,7 @@ async def run_llm(
             schema_version_minor=schema_version_minor,
             schema_version_patch=schema_version_patch,
         )
-        partial_warnings, dfi_error_samples = _process_and_save_rows(
+        outcome = _process_and_save_rows(
             sb,
             job_id,
             _jobs[job_id],
@@ -1646,9 +1824,10 @@ async def run_llm(
             "id", project_id
         ).execute()
 
+        _raise_if_publish_failed(outcome)
         _raise_if_run_compromised(
-            partial_warnings,
-            dfi_error_samples,
+            outcome.partial_warnings,
+            outcome.dfi_error_samples,
             len(result_df),
             run_config.run_failure_threshold,
         )
@@ -1659,7 +1838,7 @@ async def run_llm(
             job_id,
             _jobs[job_id]["progress"],
             _jobs[job_id]["total"],
-            warnings=partial_warnings or None,
+            warnings=outcome.partial_warnings or None,
             counters=_jobs[job_id],
         )
 
