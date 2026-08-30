@@ -55,6 +55,7 @@ GATE_SUITES=(
   member_permission_rpcs
   project_members_column_guard
   responses_one_latest_human
+  responses_one_latest_llm_cross_round
   auto_review_assignment_concurrency
   responses_latest_human_concurrency
   response_round_serialization
