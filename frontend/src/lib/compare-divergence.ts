@@ -24,6 +24,25 @@ interface ResponseLike {
   answerFieldHashes?: AnswerFieldHashes;
 }
 
+// Um campo só é comparável numa response quando duas coisas valem: ele já
+// existia no schema contra o qual ela foi codificada, e a condição de
+// visibilidade dela o mantém à mostra. Fora daí não há resposta para comparar —
+// a ausência é do schema ou da condicional, nunca do respondente.
+//
+// Exportado porque a métrica de erro do LLM precisa do MESMO predicado: a view
+// `final_answers` devolve 'consenso' para todo campo sem linha em
+// `field_reviews`, e é este filtro que decide quais campos chegam a produzir
+// linha. Um gate que só olhasse um dos lados leria "campo inaplicável ao LLM"
+// como concordância (ver `hasComparableHumanCoding` em llm-error-metrics.ts).
+export function isFieldApplicable(
+  field: PydanticField,
+  answers: Record<string, unknown> | null | undefined,
+  answerFieldHashes: AnswerFieldHashes | undefined,
+): boolean {
+  if (!fieldExistedWhenCoded(answerFieldHashes, field.name)) return false;
+  return isFieldVisible(field, answers ?? {});
+}
+
 // Returns the names of fields whose responses diverge.
 // `equivalencesByField` maps fieldName -> list of equivalence pairs for that
 // (document, field). When provided, free-text fields use union-find class keys
@@ -43,15 +62,9 @@ export function computeDivergentFieldNames(
     )
       continue;
 
-    const applicable = responses.filter((r) => {
-      if (!fieldExistedWhenCoded(r.answerFieldHashes, field.name)) return false;
-      if (
-        field.condition &&
-        !isFieldVisible(field, (r.answers as Record<string, unknown>) ?? {})
-      )
-        return false;
-      return true;
-    });
+    const applicable = responses.filter((r) =>
+      isFieldApplicable(field, r.answers, r.answerFieldHashes),
+    );
     if (applicable.length < 2) continue;
 
     if (field.type === "multi" && field.options?.length) {
