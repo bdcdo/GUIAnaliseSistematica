@@ -51,6 +51,11 @@ interface ResponseRow {
   // Campos de versão: necessários para aplicar o piso `latest_major` (#247),
   // o MESMO que a fila (compare/page.tsx) e o fecho (compare-sync.ts) usam.
   is_latest?: boolean;
+  // Rascunho nunca submetido; entra na regra 2 de `responseQualifiesForVersion`
+  // (#678). Opcional aqui porque o shape descreve a linha crua vinda do
+  // PostgREST; `toVersioned` é quem normaliza para o campo obrigatório de
+  // `VersionedResponse`.
+  is_partial?: boolean;
   pydantic_hash?: string | null;
   schema_version_major?: number | null;
   schema_version_minor?: number | null;
@@ -72,8 +77,12 @@ function toResponseLike(r: ResponseRow) {
 // (superseded → fora) ser defesa REAL no dado, não só uma garantia implícita do
 // WHERE: se um caller futuro relaxar/copiar a query sem o filtro, o predicado
 // ainda exclui superseded em vez de contá-los (regressão #213).
+// `is_partial` entra pelo mesmo motivo que `is_latest`: a regra 2 do predicado
+// (rascunho → fora) precisa decidir sobre o dado, e nenhuma das queries abaixo
+// filtra por ela no WHERE. Trazê-la aqui é o que faz o #678 ficar corrigido nas
+// cinco queries de uma vez, em vez de exigir a cláusula repetida em cada uma.
 const RESPONSE_VERSION_COLS =
-  "is_latest, pydantic_hash, schema_version_major, schema_version_minor, schema_version_patch";
+  "is_latest, is_partial, pydantic_hash, schema_version_major, schema_version_minor, schema_version_patch";
 
 // Monta o shape `VersionedResponse` a partir de uma linha de `responses`.
 // `is_latest` vem do SELECT (ver RESPONSE_VERSION_COLS), mas a coluna é
@@ -85,6 +94,7 @@ function toVersioned(
   r: Pick<
     ResponseRow,
     | "is_latest"
+    | "is_partial"
     | "pydantic_hash"
     | "schema_version_major"
     | "schema_version_minor"
@@ -95,6 +105,11 @@ function toVersioned(
   return {
     respondent_type: respondentType,
     is_latest: r.is_latest ?? true,
+    // `responses.is_partial` é NOT NULL DEFAULT false desde a migration
+    // 20260425, então o `??` só cobre o caso de a coluna não ter sido pedida no
+    // select — que o campo obrigatório em `VersionedResponse` já barra em tempo
+    // de compilação. O default espelha o do banco (#678).
+    is_partial: r.is_partial ?? false,
     pydantic_hash: r.pydantic_hash ?? null,
     schema_version_major: r.schema_version_major ?? null,
     schema_version_minor: r.schema_version_minor ?? null,
@@ -555,6 +570,7 @@ interface ComparisonProjectRow extends ComparisonProjectSettings {
 interface HumanResponseMeta extends Pick<
   ResponseRow,
   | "is_latest"
+  | "is_partial"
   | "pydantic_hash"
   | "schema_version_major"
   | "schema_version_minor"

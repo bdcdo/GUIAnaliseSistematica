@@ -44,9 +44,16 @@ export interface SchemaVersion {
 // Campos mínimos de uma resposta necessários para decidir se ela qualifica sob
 // um piso de versão. Tanto `CompareResponse` (página) quanto a linha buscada em
 // compare-sync.ts satisfazem este shape.
+//
+// `is_partial` é obrigatório de propósito (não opcional): é o que obriga cada
+// caller a trazer a coluna do banco. Antes do #678 ela não era pedida em lugar
+// nenhum da comparação, e o resultado foi contar rascunho como codificação em
+// 21 dos 194 documentos ativos do Zolgensma. Tornar o campo opcional aqui
+// reabriria exatamente esse buraco, agora em silêncio.
 export interface VersionedResponse {
   respondent_type: "humano" | "llm";
   is_latest: boolean;
+  is_partial: boolean;
   pydantic_hash: string | null;
   schema_version_major: number | null;
   schema_version_minor: number | null;
@@ -175,13 +182,25 @@ export function versionGate(project: ProjectVersionRow): {
 //      mais recente no dedup de documentos, ou após unificação de membros) tem
 //      is_latest=false e não deve reaparecer como segundo card / inflar a
 //      contagem. Antes a cláusula mantinha humano por engano;
-//   2. sem filtro de versão (minVersion null = filtro "all"), qualifica;
-//   3. respostas pré-versionamento (pydantic_hash NULL, gravadas antes da
+//   2. rascunhos (is_partial=true) ficam de fora. Para humano, `is_partial`
+//      significa "nunca submetida" — o valor sai do botão, não do
+//      preenchimento (`actions/responses.ts`, `isAutoSave`), com cliquet: uma
+//      vez enviada, auto-save posterior não rebaixa o sinal. Para LLM
+//      significa "cobertura abaixo do limiar", e a CHECK
+//      `responses_partial_llm_not_latest` já garante que parcial nunca seja
+//      is_latest — logo esta regra é redundante para LLM e load-bearing para
+//      humano. Sem ela, `is_latest` virava proxy de "codificou" e um rascunho
+//      auto-salvo tirava o documento da fila do próprio pesquisador e o
+//      empurrava para a Comparação (#678). A auto-revisão já exigia
+//      `is_partial = false` em seis camadas; a comparação era a metade do
+//      sistema que não aplicava a regra;
+//   3. sem filtro de versão (minVersion null = filtro "all"), qualifica;
+//   4. respostas pré-versionamento (pydantic_hash NULL, gravadas antes da
 //      migration 20260420) são descartadas com filtro ativo — não há como
 //      situá-las;
-//   4. com semver gravado (fonte de verdade), a versão da resposta precisa ser
+//   5. com semver gravado (fonte de verdade), a versão da resposta precisa ser
 //      >= o piso;
-//   5. SEM semver gravado: as respostas LLM nascem com schema_version NULL
+//   6. SEM semver gravado: as respostas LLM nascem com schema_version NULL
 //      porque o backend não popula esses campos no insert (o B1 deste PR passa
 //      a popular, mas só nos inserts futuros; as respostas legadas seguem NULL
 //      até um backfill). Para não esvaziar a comparação, usamos o
@@ -196,6 +215,7 @@ export function responseQualifiesForVersion(
   project: ProjectVersionContext,
 ): boolean {
   if (!r.is_latest) return false;
+  if (r.is_partial) return false;
   if (!minVersion) return true;
   if (r.pydantic_hash === null) return false;
   if (r.schema_version_major !== null) {

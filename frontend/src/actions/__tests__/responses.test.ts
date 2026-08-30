@@ -591,6 +591,11 @@ describe("saveResponse — gravação pelo envio explícito", () => {
     const versioned: VersionedResponse = {
       respondent_type: "humano",
       is_latest: true,
+      // Derivado do payload, não fixado: assim o caso também prova que um
+      // submit grava `is_partial: false` e portanto passa pela regra 2 do
+      // predicado (#678). Fixar `false` aqui tornaria a asserção vácua quanto
+      // a isso.
+      is_partial: payload.is_partial as boolean,
       pydantic_hash: payload.pydantic_hash as string,
       schema_version_major: payload.schema_version_major as number,
       schema_version_minor: payload.schema_version_minor as number,
