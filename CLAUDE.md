@@ -86,7 +86,7 @@ cd ../worktrees/<descricao-curta>
 Trabalhar la (todos os edits, commits, push, `gh pr create`). Apos o merge do PR:
 
 ```bash
-cd /home/brunodcdo/Desktop/OpenClaw/LabDados/dataframeitGUI
+cd <raiz do repositorio>
 git worktree remove ../worktrees/<descricao-curta>
 ```
 
