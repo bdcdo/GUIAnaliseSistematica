@@ -57,7 +57,7 @@ repos:
   # sejam bumpados; sao PRs separados (grupo `backend-minor-patch` vs. avulso),
   # entao a convergencia e eventual e nenhum gate compara os dois hoje — ver #554.
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.22
+    rev: v0.16.4
     hooks:
       - id: ruff-check
         args: [--fix]
